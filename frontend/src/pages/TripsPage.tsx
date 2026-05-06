@@ -111,7 +111,7 @@ export default function TripsPage() {
           <h3 className="text-sm font-medium text-gray-400 mb-4 flex items-center gap-2">
             <Plane size={14} /> Próximas Viagens
           </h3>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {upcoming.map(trip => (
               <TripCard key={trip.id} trip={trip} onClick={() => navigate(`/trips/${trip.id}`)} />
             ))}
@@ -125,7 +125,7 @@ export default function TripsPage() {
           <h3 className="text-sm font-medium text-gray-400 mb-4 flex items-center gap-2">
             <Calendar size={14} /> Viagens Anteriores
           </h3>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {past.map(trip => (
               <TripCard key={trip.id} trip={trip} onClick={() => navigate(`/trips/${trip.id}`)} isPast />
             ))}
@@ -144,7 +144,7 @@ export default function TripsPage() {
       {/* Modal */}
       {showModal && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setShowModal(false)}>
-          <div className="bg-[#1a1a1a] rounded-2xl p-6 w-[520px] border border-[#333] max-h-[90vh] overflow-y-auto"
+          <div className="bg-[#1a1a1a] rounded-2xl p-6 max-w-[90vw] w-[520px] border border-[#333] max-h-[90vh] overflow-y-auto"
             onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-6">
               <h3 className="text-lg font-bold">Nova Viagem</h3>
@@ -185,7 +185,7 @@ export default function TripsPage() {
 
               <div className="border border-[#222] rounded-xl p-4">
                 <p className="text-xs text-gray-500 mb-3">Custos Estimados</p>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="text-xs text-gray-600 block mb-1">✈️ Voos (€)</label>
                     <input type="number" step="0.01" min="0"
@@ -263,7 +263,7 @@ function TripCard({ trip, onClick, isPast }: { trip: Trip; onClick: () => void; 
       className={`bg-[#161616] rounded-2xl border border-[#222] p-5 cursor-pointer hover:border-cyan-500/50 transition-all ${isPast ? 'opacity-70' : ''}`}>
       <div className="flex items-start justify-between mb-3">
         <div className="flex items-center gap-3">
-          <span className="text-3xl">{flag}</span>
+          <span className="text-2xl sm:text-3xl">{flag}</span>
           <div>
             <h4 className="font-bold text-lg">{trip.destination}</h4>
             {trip.country && trip.country !== trip.destination && <p className="text-sm text-gray-500">{trip.country}</p>}

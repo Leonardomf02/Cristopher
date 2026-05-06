@@ -431,7 +431,7 @@ export default function LolPage() {
           {csSession?.active && (
             <div className="px-4 pb-4 space-y-4">
               {/* Teams */}
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 {/* My Team */}
                 <div>
                   <p className="text-[10px] text-blue-400 font-medium mb-2 uppercase tracking-wider">Tua Equipa</p>
@@ -482,7 +482,7 @@ export default function LolPage() {
               )}
 
               {/* Team Comp Analysis */}
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <CompAnalysis label="Tua Equipa" comp={csSession.my_comp} color="blue" />
                 <CompAnalysis label="Inimigo" comp={csSession.their_comp} color="red" />
               </div>
@@ -505,7 +505,7 @@ export default function LolPage() {
                       picks.length > 0 && (
                         <div key={enemy} className="bg-[#0d0d0d] rounded-lg p-3 border border-red-500/20">
                           <p className="text-xs text-red-300 font-semibold mb-2">vs {enemy}</p>
-                          <div className="grid grid-cols-2 gap-1.5">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
                             {picks.slice(0, 6).map((p) => (
                               <div key={p.champion} className={`flex items-center justify-between px-2 py-1 rounded ${
                                 p.winrate >= 60 ? 'bg-green-500/10 border border-green-500/20' :
@@ -618,7 +618,7 @@ export default function LolPage() {
           </div>
 
           {/* Teams grid */}
-          <div className="grid grid-cols-2 gap-0">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-0">
             {/* My Team */}
             <div className="border-r border-[#1a1a1a]">
               <div className="flex items-center justify-between px-4 py-2 bg-blue-500/5 border-b border-[#1a1a1a]">
@@ -1160,7 +1160,7 @@ export default function LolPage() {
           )}
 
           {/* Peak LP & Day-of-Week Performance */}
-          <div className="grid grid-cols-2 gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
             {/* Peak LP & Ranking */}
             {(peakStats?.has_data || rankInfo?.ranked) && (
               <div className="bg-[#161616] rounded-2xl border border-[#222] p-5">
@@ -1238,7 +1238,7 @@ export default function LolPage() {
           </div>
 
           {/* ── NEW STATS: Hour Performance + Post-Streak WR ── */}
-          <div className="grid grid-cols-2 gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
             {/* WR by Hour of Day */}
             {detailedStats?.hour_performance && detailedStats.hour_performance.some((h: any) => h.games > 0) && (
               <div className="bg-[#161616] rounded-2xl border border-[#222] p-5">
@@ -1271,7 +1271,7 @@ export default function LolPage() {
                 <div className="bg-[#161616] rounded-2xl border border-[#222] p-5">
                   <h3 className="text-sm font-medium text-gray-300 mb-3">🔥 WR Pós-Streak (após 2+ derrotas)</h3>
                   <div className="flex items-center gap-4">
-                    <div className={`text-3xl font-bold ${(detailedStats.post_streak_wr ?? 0) >= 50 ? 'text-green-400' : 'text-red-400'}`}>
+                    <div className={`text-2xl sm:text-3xl font-bold ${(detailedStats.post_streak_wr ?? 0) >= 50 ? 'text-green-400' : 'text-red-400'}`}>
                       {detailedStats.post_streak_wr}%
                     </div>
                     <div className="text-xs text-gray-500">
@@ -1289,7 +1289,7 @@ export default function LolPage() {
               {detailedStats?.side_performance && Object.keys(detailedStats.side_performance).length > 0 && (
                 <div className="bg-[#161616] rounded-2xl border border-[#222] p-5">
                   <h3 className="text-sm font-medium text-gray-300 mb-3">🔵🔴 Winrate por Lado</h3>
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     {detailedStats.side_performance.blue && (
                       <div className="bg-[#111] rounded-xl p-3 text-center border border-blue-500/20">
                         <p className="text-[10px] text-blue-400 mb-1">Blue Side</p>
@@ -1408,7 +1408,7 @@ export default function LolPage() {
             </div>
           )}
 
-          <div className="grid grid-cols-2 gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
             {/* Role Stats */}
             {detailedStats?.role_stats && (
               <div className="bg-[#161616] rounded-2xl border border-[#222] p-5">
@@ -1773,7 +1773,7 @@ export default function LolPage() {
       {/* Riot API Config Modal */}
       {showConfigModal && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setShowConfigModal(false)}>
-          <div className="bg-[#1a1a1a] rounded-2xl p-6 w-[460px] border border-[#333]"
+          <div className="bg-[#1a1a1a] rounded-2xl p-6 max-w-[90vw] w-[460px] border border-[#333]"
             onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-6">
               <h3 className="text-lg font-bold">Configurar Riot API</h3>
@@ -1781,7 +1781,7 @@ export default function LolPage() {
             </div>
 
             <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="text-xs text-gray-500 block mb-1">Game Name</label>
                   <input type="text" value={riotGameName}
@@ -2265,7 +2265,7 @@ function MatchupRow({ m, ddVersion }: { m: MatchupEntry; ddVersion: string }) {
         </div>
 
         {/* Score comparison */}
-        <div className="w-[140px] shrink-0">
+        <div className="max-w-[90vw] w-[140px] shrink-0">
           {/* Score bars */}
           <div className="flex items-center gap-1">
             <div className="flex-1 h-2 bg-[#1a1a1a] rounded-full overflow-hidden flex justify-end">
@@ -2704,7 +2704,7 @@ function AIPredictionPanel({ stats, history, calibration, onResolve }: {
         {/* Main accuracy display */}
         <div className="flex items-center justify-center gap-6">
           <div className="text-center">
-            <p className={`text-4xl font-black ${accColor}`}>
+            <p className={`text-3xl sm:text-4xl font-black ${accColor}`}>
               {hasData ? `${accuracy}%` : '—'}
             </p>
             <p className="text-[10px] text-gray-500 mt-1">Precisão</p>

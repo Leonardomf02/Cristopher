@@ -91,7 +91,7 @@ export function InsightsTab({ startStr, endStr }: { startStr: string; endStr: st
 
       <FocusScoreCard focus={focus} />
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <BestHourCard best={bestHour} worst={worstHour} firstDistraction={firstDistraction} />
         <DeepWorkChart hours={deepWork} />
       </div>
@@ -155,7 +155,7 @@ function FocusScoreCard({ focus }: { focus: { average: number | null; series: Fo
       )}
 
       {(focus.best_day || focus.worst_day) && (
-        <div className="grid grid-cols-2 gap-3 mt-4 text-xs">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4 text-xs">
           {focus.best_day && (
             <div className="rounded-lg bg-green-500/10 border border-green-500/30 p-2">
               <div className="text-green-400 font-medium">Melhor dia</div>
@@ -194,7 +194,7 @@ function BestHourCard({ best, worst, firstDistraction }: { best: DeepWorkHour | 
         <div className="space-y-3">
           <div>
             <div className="flex items-baseline gap-2">
-              <span className="text-3xl font-bold text-green-400">
+              <span className="text-2xl sm:text-3xl font-bold text-green-400">
                 {best.hour.toString().padStart(2, '0')}:00
               </span>
               <span className="text-sm text-gray-500">— {best.score} pts</span>
@@ -470,7 +470,7 @@ function CreateGoalModal({ onClose }: { onClose: () => void }) {
 
           <div>
             <label className="text-xs text-gray-500 mb-1 block">Direção</label>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <button
                 onClick={() => setDirection('max')}
                 className={`px-3 py-2 rounded-lg text-sm font-medium border ${

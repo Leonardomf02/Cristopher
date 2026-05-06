@@ -249,7 +249,7 @@ export default function AppUsagePage() {
           <button onClick={() => nav(-1)} className="p-2 rounded-lg hover:bg-white/5">
             <ChevronLeft size={18} />
           </button>
-          <div className="text-center min-w-[260px]">
+          <div className="text-center min-max-w-[90vw] w-[260px]">
             <div className="text-lg font-semibold capitalize">{headerLabel}</div>
             <button onClick={() => setAnchor(new Date())} className="text-xs text-blue-400 hover:text-blue-300">
               Hoje

@@ -254,7 +254,7 @@ export default function Dashboard() {
     <div>
       {/* Header */}
       <div className="mb-8">
-        <h2 className="text-3xl font-bold">{greeting}! 👋</h2>
+        <h2 className="text-2xl sm:text-3xl font-bold">{greeting}! 👋</h2>
         <p className="text-gray-500 mt-1">{format(today, "EEEE, d 'de' MMMM 'de' yyyy", { locale: pt })}</p>
       </div>
 
@@ -691,7 +691,7 @@ export default function Dashboard() {
                     isSelected ? 'bg-white/10 ring-2 ring-pink-400/50' : 'hover:bg-white/10'
                   }`}
                 >
-                  <span className="text-3xl group-hover:scale-125 transition-transform">{m.emoji}</span>
+                  <span className="text-2xl sm:text-3xl group-hover:scale-125 transition-transform">{m.emoji}</span>
                   <span className="text-[10px] text-gray-600 group-hover:text-gray-400">{m.label}</span>
                 </button>
               );
@@ -919,7 +919,7 @@ export default function Dashboard() {
             <button onClick={e => { e.stopPropagation(); setWeekOffset(o => o - 1); }} className="p-1 hover:bg-white/10 rounded">
               <ChevronLeft size={14} className="text-gray-500" />
             </button>
-            <span className="text-xs text-gray-500 min-w-[100px] text-center">
+            <span className="text-xs text-gray-500 min-max-w-[90vw] w-[100px] text-center">
               {weekOffset === 0 ? 'Esta semana' : weekOffset === -1 ? 'Semana passada' : `${Math.abs(weekOffset)} sem. atrás`}
             </span>
             <button onClick={e => { e.stopPropagation(); setWeekOffset(o => Math.min(0, o + 1)); }} className="p-1 hover:bg-white/10 rounded" disabled={weekOffset >= 0}>
@@ -929,7 +929,7 @@ export default function Dashboard() {
         </button>
 
         {showWeeklyReview && wr && (
-          <div className="p-4 pt-0 grid grid-cols-2 md:grid-cols-3 gap-3">
+          <div className="p-4 pt-0 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
             {/* Events */}
             <div className="bg-[#1a1a1a] rounded-xl p-3">
               <p className="text-[10px] text-gray-500 mb-1 flex items-center gap-1"><Calendar size={10} /> Eventos</p>

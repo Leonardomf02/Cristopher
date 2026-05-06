@@ -121,8 +121,8 @@ export default function TripDetail() {
       <div className="flex items-start justify-between mb-8">
         <div>
           <div className="flex items-center gap-3 mb-1">
-            <span className="text-4xl">{COUNTRY_FLAGS[trip.destination] || '🌍'}</span>
-            <h2 className="text-3xl font-bold">{trip.destination}</h2>
+            <span className="text-3xl sm:text-4xl">{COUNTRY_FLAGS[trip.destination] || '🌍'}</span>
+            <h2 className="text-2xl sm:text-3xl font-bold">{trip.destination}</h2>
           </div>
           {trip.country && trip.country !== trip.destination && <p className="text-gray-500 ml-14">{trip.country}</p>}
           <p className="text-sm text-gray-500 mt-2 ml-14">
@@ -316,7 +316,7 @@ export default function TripDetail() {
       {/* Add Place Modal */}
       {showPlaceModal && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setShowPlaceModal(false)}>
-          <div className="bg-[#1a1a1a] rounded-2xl p-6 w-[420px] border border-[#333]" onClick={e => e.stopPropagation()}>
+          <div className="bg-[#1a1a1a] rounded-2xl p-6 max-w-[90vw] w-[420px] border border-[#333]" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-bold">Adicionar Sítio</h3>
               <button onClick={() => setShowPlaceModal(false)} className="text-gray-500 hover:text-white"><X size={20} /></button>
@@ -357,7 +357,7 @@ export default function TripDetail() {
       {/* Add Expense Modal */}
       {showExpenseModal && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setShowExpenseModal(false)}>
-          <div className="bg-[#1a1a1a] rounded-2xl p-6 w-[420px] border border-[#333]" onClick={e => e.stopPropagation()}>
+          <div className="bg-[#1a1a1a] rounded-2xl p-6 max-w-[90vw] w-[420px] border border-[#333]" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-bold">Adicionar Gasto</h3>
               <button onClick={() => setShowExpenseModal(false)} className="text-gray-500 hover:text-white"><X size={20} /></button>
@@ -398,7 +398,7 @@ export default function TripDetail() {
       {/* Add Rating Modal */}
       {showRatingModal && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setShowRatingModal(false)}>
-          <div className="bg-[#1a1a1a] rounded-2xl p-6 w-[440px] border border-[#333]" onClick={e => e.stopPropagation()}>
+          <div className="bg-[#1a1a1a] rounded-2xl p-6 max-w-[90vw] w-[440px] border border-[#333]" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-bold">Adicionar Rating</h3>
               <button onClick={() => setShowRatingModal(false)} className="text-gray-500 hover:text-white"><X size={20} /></button>

@@ -168,7 +168,7 @@ export default function IdeasPage() {
       </button>
       <div className="flex items-center gap-3 mb-2">
         <Lightbulb size={28} className="text-yellow-400" />
-        <h2 className="text-3xl font-bold">Ideias → To-dos</h2>
+        <h2 className="text-2xl sm:text-3xl font-bold">Ideias → To-dos</h2>
       </div>
       <p className="text-sm text-gray-500 mb-8">
         Despeja tudo o que tens na cabeça (texto ou áudio). A IA transforma em tarefas accionáveis.

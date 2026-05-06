@@ -249,7 +249,7 @@ export default function SleepPage() {
       {/* Modal */}
       {showModal && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setShowModal(false)}>
-          <div className="bg-[#1a1a1a] rounded-2xl p-6 w-[420px] border border-[#333]" onClick={e => e.stopPropagation()}>
+          <div className="bg-[#1a1a1a] rounded-2xl p-6 max-w-[90vw] w-[420px] border border-[#333]" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-6">
               <h3 className="text-lg font-bold">{editingEntry ? 'Editar Sono' : 'Registar Sono'}</h3>
               <button onClick={() => setShowModal(false)} className="text-gray-500 hover:text-white"><X size={20} /></button>
@@ -280,7 +280,7 @@ export default function SleepPage() {
               </div>
 
               <div className="bg-[#222] rounded-xl p-3 text-center">
-                <p className="text-3xl font-bold text-purple-400">{form.hours}h</p>
+                <p className="text-2xl sm:text-3xl font-bold text-purple-400">{form.hours}h</p>
                 <p className="text-xs text-gray-500">de sono</p>
               </div>
 

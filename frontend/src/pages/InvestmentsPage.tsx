@@ -257,16 +257,16 @@ export default function InvestmentsPage() {
   return (
     <div className="max-w-6xl mx-auto space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-3xl font-bold text-white">Investimentos</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold text-white">Investimentos</h1>
           <p className="text-sm text-gray-500 mt-1">
             {summary?.latest_statement
               ? `Último extrato: ${summary.latest_statement}`
               : 'Importa dados para começar'}
           </p>
         </div>
-        <div className="flex gap-2 items-center">
+        <div className="flex gap-2 items-center flex-wrap">
           <button
             onClick={() => loadData()}
             className="flex items-center gap-2 px-3 py-2 bg-[#1a1a1a] border border-[#333] rounded-xl text-gray-300 hover:bg-[#222] transition-colors"
@@ -383,7 +383,7 @@ export default function InvestmentsPage() {
 
       {/* Summary Cards */}
       {summary && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
           <SummaryCard label="Valor Total" value={eur(filteredPositions.reduce((s, p) => s + (p.current_value_eur ?? 0), 0))} />
           <SummaryCard
             label="Retorno"
@@ -477,7 +477,7 @@ export default function InvestmentsPage() {
           <select
             value={filterMonth}
             onChange={e => setFilterMonth(e.target.value)}
-            className="bg-[#1a1a1a] border border-[#333] rounded-xl px-3 py-1.5 text-sm text-gray-300 focus:outline-none focus:border-[#555] min-w-[180px]"
+            className="bg-[#1a1a1a] border border-[#333] rounded-xl px-3 py-1.5 text-sm text-gray-300 focus:outline-none focus:border-[#555] min-max-w-[90vw] w-[180px]"
           >
             {availableMonths.map(m => (
               <option key={m} value={m}>
@@ -570,6 +570,7 @@ function PositionsTable({ positions, eur, pl, onPriceUpdated }: { positions: Pos
 
   return (
     <div className="bg-[#161616] border border-[#222] rounded-2xl overflow-hidden">
+      <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-[#222] text-gray-500 text-xs">
@@ -686,6 +687,7 @@ function PositionsTable({ positions, eur, pl, onPriceUpdated }: { positions: Pos
           </tr>
         </tfoot>
       </table>
+      </div>
     </div>
   );
 }
@@ -703,6 +705,7 @@ function TradesTable({ trades, eur }: { trades: Trade[]; eur: (v: number) => str
 
   return (
     <div className="bg-[#161616] border border-[#222] rounded-2xl overflow-hidden">
+      <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-[#222] text-gray-500 text-xs">
@@ -755,6 +758,7 @@ function TradesTable({ trades, eur }: { trades: Trade[]; eur: (v: number) => str
           ))}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }
@@ -772,6 +776,7 @@ function TransactionsTable({ transactions, eur }: { transactions: Transaction[];
 
   return (
     <div className="bg-[#161616] border border-[#222] rounded-2xl overflow-hidden">
+      <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-[#222] text-gray-500 text-xs">
@@ -808,6 +813,7 @@ function TransactionsTable({ transactions, eur }: { transactions: Transaction[];
           ))}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }
@@ -1404,6 +1410,7 @@ function SuggestedPlanTable({
         </div>
       </div>
 
+      <div className="overflow-x-auto">
       <table className="w-full text-xs">
         <thead>
           <tr className="text-gray-500 border-b border-[#222]">
@@ -1458,6 +1465,7 @@ function SuggestedPlanTable({
           </tr>
         </tbody>
       </table>
+      </div>
 
       <div className="flex justify-end">
         <button
@@ -1841,7 +1849,7 @@ function PlannerPanel({ positions, transactions, eur }: {
         <div className="flex items-center gap-3 mb-4 p-3 bg-[#1a1a1a] border border-[#333] rounded-xl">
           <div className="flex items-center gap-2">
             <button onClick={() => navigateMonth(-1)} className="p-1 rounded hover:bg-[#333] text-gray-400 hover:text-white transition-colors"><ChevronLeft size={16} /></button>
-            <div className="flex items-center gap-1.5 min-w-[140px] justify-center">
+            <div className="flex items-center gap-1.5 min-max-w-[90vw] w-[140px] justify-center">
               <Calendar size={14} className="text-blue-400" />
               <span className="text-sm font-medium text-white">{monthLabel}</span>
             </div>
@@ -3906,7 +3914,7 @@ function CalibrationCard({ data }: { data: any }) {
         <Target size={14} className="text-purple-400" /> Calibração
         <span className="text-xs text-gray-500 font-normal">N={data.sample_size}</span>
       </h3>
-      <div className="grid grid-cols-2 gap-2 mb-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3">
         <Metric label="hit rate" value={`${o.hit_rate_pct ?? '?'}%`} />
         <Metric label="retorno médio" value={o.avg_return_pct != null ? `${o.avg_return_pct > 0 ? '+' : ''}${o.avg_return_pct}%` : '?'}
           tone={(o.avg_return_pct ?? 0) > 0 ? 'green' : 'red'} />
@@ -3972,7 +3980,7 @@ function BacktestCard({ data }: { data: any }) {
         <BarChart3 size={14} className="text-purple-400" /> Backtest vs SPY
         <span className="text-xs text-gray-500 font-normal">N={data.sample_size}</span>
       </h3>
-      <div className="grid grid-cols-2 gap-2 mb-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3">
         <Metric
           label="bate SPY"
           value={`${data.hit_rate_vs_spy_pct}%`}

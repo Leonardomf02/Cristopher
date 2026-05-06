@@ -73,7 +73,7 @@ export default function CodeActivityPage() {
     <div className="max-w-6xl mx-auto">
       <div className="flex items-center gap-3 mb-2">
         <Code2 size={28} className="text-blue-400" />
-        <h2 className="text-3xl font-bold">Atividade VS Code</h2>
+        <h2 className="text-2xl sm:text-3xl font-bold">Atividade VS Code</h2>
       </div>
       <p className="text-sm text-gray-500 mb-8">
         Resumo do que mexeste no editor — vem do Local History do VS Code, sem precisar de git.

@@ -160,7 +160,7 @@ export default function HabitAnalyticsPage() {
           </button>
         </div>
       ) : (
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {analytics.habits.map((h: any) => (
             <div key={h.id} className="bg-[#161616] rounded-2xl border border-[#222] p-5">
               {/* Habit header */}

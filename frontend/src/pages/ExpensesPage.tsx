@@ -190,12 +190,12 @@ export default function ExpensesPage() {
   return (
     <div>
       {/* Header */}
-      <div className="flex items-center justify-between mb-8">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-6 lg:mb-8">
         <div>
           <h2 className="text-2xl font-bold">Gastos</h2>
           <p className="text-gray-500 text-sm mt-1 capitalize">{format(currentMonth, "MMMM 'de' yyyy", { locale: pt })}</p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
           <div className="flex items-center gap-1">
             <button onClick={() => setCurrentMonth(subMonths(currentMonth, 1))} className="p-2 hover:bg-white/10 rounded-lg">
               <ChevronLeft size={18} />
@@ -208,31 +208,31 @@ export default function ExpensesPage() {
               <ChevronRight size={18} />
             </button>
           </div>
-          <label className="flex items-center gap-2 px-4 py-2 bg-[#222] hover:bg-[#2a2a2a] rounded-xl text-sm font-medium cursor-pointer border border-[#333]">
-            <FileSpreadsheet size={16} /> {csvImporting ? 'A importar...' : 'CSV'}
+          <label className="flex items-center gap-2 px-3 sm:px-4 py-2 bg-[#222] hover:bg-[#2a2a2a] rounded-xl text-sm font-medium cursor-pointer border border-[#333]">
+            <FileSpreadsheet size={16} /> <span className="hidden sm:inline">{csvImporting ? 'A importar...' : 'CSV'}</span>
             <input type="file" className="hidden" accept=".csv"
               onChange={e => { const f = e.target.files?.[0]; if (f) handleCSVImport(f); e.target.value = ''; }}
               disabled={csvImporting} />
           </label>
-          <label className="flex items-center gap-2 px-4 py-2 bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 rounded-xl text-sm font-medium cursor-pointer border border-blue-500/30">
-            <FileText size={16} /> {pdfImporting ? 'A importar...' : 'Revolut PDF'}
+          <label className="flex items-center gap-2 px-3 sm:px-4 py-2 bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 rounded-xl text-sm font-medium cursor-pointer border border-blue-500/30">
+            <FileText size={16} /> <span className="hidden sm:inline">{pdfImporting ? 'A importar...' : 'Revolut PDF'}</span><span className="sm:hidden">PDF</span>
             <input type="file" className="hidden" accept=".pdf"
               onChange={e => { const f = e.target.files?.[0]; if (f) handlePDFImport(f); e.target.value = ''; }}
               disabled={pdfImporting} />
           </label>
           <button onClick={handleRecategorize} disabled={recategorizing || expenses.length === 0}
-            className="flex items-center gap-2 px-4 py-2 bg-purple-600/20 hover:bg-purple-600/30 text-purple-400 rounded-xl text-sm font-medium border border-purple-500/30 disabled:opacity-50">
-            <Sparkles size={16} /> {recategorizing ? 'A categorizar...' : 'IA'}
+            className="flex items-center gap-2 px-3 sm:px-4 py-2 bg-purple-600/20 hover:bg-purple-600/30 text-purple-400 rounded-xl text-sm font-medium border border-purple-500/30 disabled:opacity-50">
+            <Sparkles size={16} /> <span className="hidden sm:inline">{recategorizing ? 'A categorizar...' : 'IA'}</span><span className="sm:hidden">IA</span>
           </button>
           <button onClick={openNew}
-            className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 rounded-xl text-sm font-medium">
-            <Plus size={16} /> Novo Gasto
+            className="flex items-center gap-2 px-3 sm:px-4 py-2 bg-green-600 hover:bg-green-700 rounded-xl text-sm font-medium">
+            <Plus size={16} /> <span className="hidden sm:inline">Novo Gasto</span><span className="sm:hidden">Novo</span>
           </button>
         </div>
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 mb-8">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4 mb-6 lg:mb-8">
         <div className="bg-[#161616] rounded-2xl p-5 border border-[#222]">
           <div className="flex items-center justify-between mb-1">
             <p className="text-xs text-gray-500">Rendimento</p>
@@ -568,7 +568,7 @@ export default function ExpensesPage() {
       {/* Modal */}
       {showModal && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setShowModal(false)}>
-          <div className="bg-[#1a1a1a] rounded-2xl p-6 w-[480px] border border-[#333]" onClick={e => e.stopPropagation()}>
+          <div className="bg-[#1a1a1a] rounded-2xl p-6 max-w-[90vw] w-[480px] border border-[#333]" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-6">
               <h3 className="text-lg font-bold">{editingExpense ? 'Editar Gasto' : 'Novo Gasto'}</h3>
               <button onClick={() => setShowModal(false)} className="text-gray-500 hover:text-white"><X size={20} /></button>
@@ -661,7 +661,7 @@ export default function ExpensesPage() {
       {/* Subscription Modal */}
       {showSubModal && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => { setShowSubModal(false); setEditingSub(null); }}>
-          <div className="bg-[#1a1a1a] rounded-2xl p-6 w-[420px] border border-[#333]" onClick={e => e.stopPropagation()}>
+          <div className="bg-[#1a1a1a] rounded-2xl p-6 max-w-[90vw] w-[420px] border border-[#333]" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-6">
               <h3 className="text-lg font-bold">{editingSub ? 'Editar Subscrição' : 'Nova Subscrição'}</h3>
               <button onClick={() => { setShowSubModal(false); setEditingSub(null); }} className="text-gray-500 hover:text-white"><X size={20} /></button>

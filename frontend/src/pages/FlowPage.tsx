@@ -250,7 +250,7 @@ export default function FlowPage() {
         <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/80 backdrop-blur-sm">
           <div className="text-center space-y-8 p-12 max-w-lg">
             <div className="text-8xl animate-bounce">⏰</div>
-            <h2 className="text-4xl font-bold text-white">
+            <h2 className="text-3xl sm:text-4xl font-bold text-white">
               {phase === 'break' ? 'Tempo de trabalho terminou!' : phase === 'idle' ? 'Pausa terminou!' : 'Flow terminou!'}
             </h2>
             <p className="text-xl text-gray-300">
@@ -270,7 +270,7 @@ export default function FlowPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold flex items-center gap-3">
+          <h1 className="text-2xl sm:text-3xl font-bold flex items-center gap-3">
             <Timer className="text-blue-400" /> Flow
           </h1>
           <p className="text-gray-500 text-sm mt-1">Timer de foco com ciclos de trabalho e pausa</p>
@@ -447,7 +447,7 @@ export default function FlowPage() {
       )}
 
       {/* Today's Sessions + Stats */}
-      <div className="grid grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
         {/* Today's Sessions */}
         <div>
           <h2 className="text-lg font-bold mb-4 flex items-center gap-2">
@@ -494,7 +494,7 @@ export default function FlowPage() {
           </h2>
           {stats && (
             <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="bg-[#161616] rounded-xl border border-[#222] p-4">
                   <p className="text-xs text-gray-500 mb-1">Total Sessões</p>
                   <p className="text-2xl font-bold">{stats.total_sessions}</p>
@@ -694,7 +694,7 @@ export default function FlowPage() {
                     : 'bg-[#1a1a1a] border border-[#222] hover:border-[#333]'
                 }`}
               >
-                <span className="text-3xl block mb-2">{s.emoji}</span>
+                <span className="text-2xl sm:text-3xl block mb-2">{s.emoji}</span>
                 <p className="text-sm font-medium">{s.label}</p>
                 <p className="text-[10px] text-gray-500 mt-1">{s.desc}</p>
                 {activeSound === s.id && (
@@ -727,7 +727,7 @@ export default function FlowPage() {
       {/* Preset Modal */}
       {showPresetModal && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setShowPresetModal(false)}>
-          <div className="bg-[#1a1a1a] rounded-2xl border border-[#333] p-6 w-[440px] max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+          <div className="bg-[#1a1a1a] rounded-2xl border border-[#333] p-6 max-w-[90vw] w-[440px] max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-6">
               <h3 className="text-lg font-bold">{editingPreset ? 'Editar Preset' : 'Novo Preset'}</h3>
               <button onClick={() => setShowPresetModal(false)} className="text-gray-500 hover:text-white"><X size={20} /></button>
@@ -745,7 +745,7 @@ export default function FlowPage() {
               </div>
 
               {/* Work / Break */}
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="text-xs text-gray-400 mb-1 block">Foco (minutos)</label>
                   <input type="number" value={presetForm.work_minutes}

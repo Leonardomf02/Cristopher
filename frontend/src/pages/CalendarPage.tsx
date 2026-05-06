@@ -438,7 +438,7 @@ export default function CalendarPage() {
 
     return (
       <div className="overflow-x-auto">
-        <div className="grid grid-cols-8 gap-px min-w-[800px]">
+        <div className="grid grid-cols-8 gap-px min-max-w-[90vw] w-[800px]">
           <div className="text-xs text-gray-500 p-2" />
           {days.map(day => (
             <div key={day.toISOString()} className={`text-center p-2 rounded-t-lg ${
@@ -827,7 +827,7 @@ export default function CalendarPage() {
       {/* Event Modal */}
       {showModal && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setShowModal(false)}>
-          <div className="bg-[#1a1a1a] rounded-2xl p-6 w-[480px] border border-[#333]" onClick={e => e.stopPropagation()}>
+          <div className="bg-[#1a1a1a] rounded-2xl p-6 max-w-[90vw] w-[480px] border border-[#333]" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-6">
               <h3 className="text-lg font-bold">{editingEvent ? 'Editar Evento' : 'Novo Evento'}</h3>
               <button onClick={() => setShowModal(false)} className="text-gray-500 hover:text-white">
@@ -1006,7 +1006,7 @@ export default function CalendarPage() {
       {/* Apple Calendar Import Modal */}
       {showImportModal && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setShowImportModal(false)}>
-          <div className="bg-[#1a1a1a] rounded-2xl p-6 w-[420px] border border-[#333] max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+          <div className="bg-[#1a1a1a] rounded-2xl p-6 max-w-[90vw] w-[420px] border border-[#333] max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-bold flex items-center gap-2">
                 <Download size={20} className="text-blue-400" />
@@ -1205,7 +1205,7 @@ export default function CalendarPage() {
       {/* Habit Create/Edit Modal */}
       {showHabitModal && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setShowHabitModal(false)}>
-          <div className="bg-[#1a1a1a] rounded-2xl p-6 w-[420px] border border-[#333]" onClick={e => e.stopPropagation()}>
+          <div className="bg-[#1a1a1a] rounded-2xl p-6 max-w-[90vw] w-[420px] border border-[#333]" onClick={e => e.stopPropagation()}>
             <h3 className="text-lg font-bold mb-4">{editingHabit ? 'Editar Hábito' : 'Novo Hábito'}</h3>
 
             <div className="space-y-4">
@@ -1307,7 +1307,7 @@ export default function CalendarPage() {
       {/* Check Habit Time Modal */}
       {showCheckModal && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setShowCheckModal(null)}>
-          <div className="bg-[#1a1a1a] rounded-2xl p-6 w-[340px] border border-[#333]" onClick={e => e.stopPropagation()}>
+          <div className="bg-[#1a1a1a] rounded-2xl p-6 max-w-[90vw] w-[340px] border border-[#333]" onClick={e => e.stopPropagation()}>
             <h3 className="text-lg font-bold mb-2">A que horas fizeste?</h3>
             <p className="text-sm text-gray-500 mb-4">{showCheckModal.habitName}</p>
             <input
@@ -1394,7 +1394,7 @@ export default function CalendarPage() {
       {/* Template Create Modal */}
       {showTemplateCreateModal && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setShowTemplateCreateModal(false)}>
-          <div className="bg-[#1a1a1a] rounded-2xl p-6 w-[480px] border border-[#333] max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+          <div className="bg-[#1a1a1a] rounded-2xl p-6 max-w-[90vw] w-[480px] border border-[#333] max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
             <h3 className="text-lg font-bold mb-4">Novo Template de Dia</h3>
             <div className="space-y-4">
               <div className="flex gap-3">

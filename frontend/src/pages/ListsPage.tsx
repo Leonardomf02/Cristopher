@@ -140,26 +140,26 @@ export default function ListsPage() {
   return (
     <div>
       {/* Header */}
-      <div className="flex items-center justify-between mb-8">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-6 lg:mb-8">
         <div>
           <h2 className="text-2xl font-bold">Reminders</h2>
           <p className="text-gray-500 text-sm mt-1">{lists.length} lista{lists.length !== 1 ? 's' : ''}</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <button onClick={() => navigate('/ideas')}
-            className="flex items-center gap-2 px-4 py-2 bg-yellow-500 hover:bg-yellow-600 text-black rounded-xl text-sm font-semibold">
-            <Sparkles size={16} /> Despejar ideias (IA)
+            className="flex items-center gap-2 px-3 sm:px-4 py-2 bg-yellow-500 hover:bg-yellow-600 text-black rounded-xl text-sm font-semibold">
+            <Sparkles size={16} /> <span className="hidden sm:inline">Despejar ideias (IA)</span><span className="sm:hidden">IA</span>
           </button>
           <button onClick={() => setShowNewList(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-xl text-sm font-medium">
-            <Plus size={16} /> Nova Lista
+            className="flex items-center gap-2 px-3 sm:px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-xl text-sm font-medium">
+            <Plus size={16} /> <span className="hidden sm:inline">Nova Lista</span><span className="sm:hidden">Lista</span>
           </button>
         </div>
       </div>
 
-      <div className="flex gap-6 h-[calc(100vh-200px)]">
+      <div className="flex flex-col lg:flex-row gap-3 lg:gap-6 lg:h-[calc(100vh-200px)]">
         {/* Lists sidebar */}
-        <div className="w-64 shrink-0 space-y-2 overflow-y-auto">
+        <div className="w-full lg:w-64 lg:shrink-0 space-y-2 lg:overflow-y-auto max-h-48 lg:max-h-none overflow-y-auto">
           {lists.map(list => (
             <div key={list.id}
               onClick={() => selectList(list)}
@@ -323,16 +323,18 @@ export default function ListsPage() {
           ) : (
             <div className="flex items-center justify-center h-full text-gray-600">
               <div className="text-center">
-                <p className="text-4xl mb-3">📝</p>
+                <p className="text-3xl sm:text-4xl mb-3">📝</p>
                 <p className="text-sm">Seleciona ou cria uma lista</p>
               </div>
             </div>
           )}
         </div>
 
-        {/* Detail Panel — Apple Reminders style */}
+        {/* Detail Panel — Apple Reminders style. Em mobile aparece como overlay fixo. */}
         {selectedItem && selectedList && (
-          <div className="w-80 shrink-0 bg-[#161616] rounded-2xl border border-[#222] p-5 overflow-y-auto">
+          <>
+            <div onClick={() => setSelectedItem(null)} className="lg:hidden fixed inset-0 bg-black/60 z-30" />
+            <div className="lg:w-80 lg:shrink-0 lg:static lg:rounded-2xl bg-[#161616] border border-[#222] p-5 overflow-y-auto fixed inset-x-3 bottom-3 top-20 rounded-2xl z-40 lg:inset-auto lg:top-auto lg:bottom-auto">
             <div className="flex items-center justify-between mb-5">
               <h4 className="text-sm font-bold text-gray-400">Detalhes</h4>
               <button onClick={() => setSelectedItem(null)}
@@ -466,14 +468,15 @@ export default function ListsPage() {
                 Apagar item
               </button>
             </div>
-          </div>
+            </div>
+          </>
         )}
       </div>
 
       {/* New List Modal */}
       {showNewList && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setShowNewList(false)}>
-          <div className="bg-[#1a1a1a] rounded-2xl p-6 w-[420px] border border-[#333]" onClick={e => e.stopPropagation()}>
+          <div className="bg-[#1a1a1a] rounded-2xl p-6 max-w-[90vw] w-[420px] border border-[#333]" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-6">
               <h3 className="text-lg font-bold">Nova Lista</h3>
               <button onClick={() => setShowNewList(false)} className="text-gray-500 hover:text-white"><X size={20} /></button>

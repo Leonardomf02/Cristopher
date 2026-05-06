@@ -102,10 +102,13 @@ export default function NotesPage() {
 
   const allNotesCount = folders.reduce((sum, f) => sum + f.note_count, 0);
 
+  // Em mobile mostramos editor OU listas, conforme houver nota seleccionada.
+  const mobileShowEditor = !!selectedNote;
+
   return (
-    <div className="flex gap-0 h-[calc(100vh-100px)]">
+    <div className="flex flex-col lg:flex-row gap-0 lg:h-[calc(100vh-100px)]">
       {/* Folders sidebar */}
-      <div className="w-56 shrink-0 border-r border-[#222] pr-4 flex flex-col">
+      <div className={`${mobileShowEditor ? 'hidden lg:flex' : 'flex'} w-full lg:w-56 lg:shrink-0 lg:border-r lg:border-[#222] lg:pr-4 flex-col max-h-60 lg:max-h-none border-b border-[#222] lg:border-b-0 pb-3 lg:pb-0 mb-3 lg:mb-0`}>
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-bold">Notas</h2>
           <button onClick={() => setShowNewFolder(true)}
@@ -160,7 +163,7 @@ export default function NotesPage() {
       </div>
 
       {/* Notes list */}
-      <div className="w-72 shrink-0 border-r border-[#222] flex flex-col">
+      <div className={`${mobileShowEditor ? 'hidden lg:flex' : 'flex'} w-full lg:w-72 lg:shrink-0 lg:border-r lg:border-[#222] flex-col max-h-[60vh] lg:max-h-none border-b border-[#222] lg:border-b-0 pb-3 lg:pb-0 mb-3 lg:mb-0`}>
         <div className="px-4 py-3 border-b border-[#222] flex items-center justify-between">
           <h3 className="text-sm font-bold text-gray-400">
             {selectedFolder === null
@@ -209,11 +212,15 @@ export default function NotesPage() {
       </div>
 
       {/* Note editor */}
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className={`${mobileShowEditor ? 'flex' : 'hidden lg:flex'} flex-1 flex-col min-w-0`}>
         {selectedNote ? (
           <>
             {/* Editor toolbar */}
-            <div className="px-6 py-3 border-b border-[#222] flex items-center gap-3">
+            <div className="px-3 sm:px-6 py-3 border-b border-[#222] flex items-center gap-2 sm:gap-3 flex-wrap">
+              <button onClick={() => setSelectedNote(null)}
+                className="lg:hidden p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-white/10 mr-1" aria-label="Voltar">
+                ←
+              </button>
               <button onClick={() => togglePin(selectedNote)}
                 className={`p-1.5 rounded-lg transition-colors ${
                   selectedNote.pinned ? 'text-yellow-400 bg-yellow-400/10' : 'text-gray-500 hover:text-gray-300'
@@ -302,7 +309,7 @@ export default function NotesPage() {
       {showNewFolder && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50"
           onClick={() => setShowNewFolder(false)}>
-          <div className="bg-[#1a1a1a] rounded-2xl p-6 w-[360px] border border-[#333]"
+          <div className="bg-[#1a1a1a] rounded-2xl p-6 max-w-[90vw] w-[360px] border border-[#333]"
             onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-bold">Nova Pasta</h3>

@@ -259,7 +259,7 @@ export default function Dashboard() {
       </div>
 
       {/* Today's Schedule (Agenda) + Habits + Trips */}
-      <div className="grid grid-cols-3 gap-6 mb-8">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
         {/* Today's Schedule */}
         <div className="col-span-2">
           <div className="bg-[#161616] rounded-2xl border border-[#222] overflow-hidden">
@@ -806,7 +806,7 @@ export default function Dashboard() {
       )}
 
       {/* Quick Stats */}
-      <div className="grid grid-cols-3 gap-4 mb-8">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
         <div onClick={() => navigate('/calendar')}
           className="bg-[#161616] rounded-2xl p-5 border border-[#222] cursor-pointer hover:border-blue-500/50 transition-all">
           <div className="flex items-center gap-2 text-xs text-gray-500 mb-2">
@@ -846,7 +846,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-4 mb-8">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
         <div onClick={() => navigate('/lol')}
           className="bg-[#161616] rounded-2xl p-5 border border-[#222] cursor-pointer hover:border-yellow-500/50 transition-all">
           <div className="flex items-center gap-2 text-xs text-gray-500 mb-2">

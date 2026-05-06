@@ -353,12 +353,12 @@ export default function CalendarPage() {
 
     return (
       <div>
-        <div className="grid grid-cols-7 gap-px mb-2">
+        <div className="grid grid-cols-3 sm:grid-cols-5 lg:grid-cols-7 gap-px mb-2">
           {['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'].map(d => (
             <div key={d} className="text-center text-xs text-gray-500 py-2 font-medium">{d}</div>
           ))}
         </div>
-        <div className="grid grid-cols-7 gap-px">
+        <div className="grid grid-cols-3 sm:grid-cols-5 lg:grid-cols-7 gap-px">
           {days.map(day => {
             const dayEvents = getEventsForDate(day);
             const dayCompletions = getCompletionsForDate(day);
@@ -527,7 +527,7 @@ export default function CalendarPage() {
     }
 
     return (
-      <div className="grid grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
         {/* Timeline with time blocks */}
         <div className="col-span-2">
           <h3 className="text-sm font-medium text-gray-400 mb-4">Timeline — Time Blocking</h3>
@@ -629,7 +629,7 @@ export default function CalendarPage() {
     const months = eachMonthOfInterval({ start: startOfYear(currentDate), end: endOfYear(currentDate) });
 
     return (
-      <div className="grid grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
         {months.map(month => {
           const mStart = startOfMonth(month);
           const mEnd = endOfMonth(month);
@@ -650,7 +650,7 @@ export default function CalendarPage() {
               <h3 className="text-sm font-medium text-gray-300 mb-2 capitalize">
                 {format(month, 'MMMM', { locale: pt })}
               </h3>
-              <div className="grid grid-cols-7 gap-0.5 text-center">
+              <div className="grid grid-cols-3 sm:grid-cols-5 lg:grid-cols-7 gap-0.5 text-center">
                 {['S', 'T', 'Q', 'Q', 'S', 'S', 'D'].map((d, i) => (
                   <div key={i} className="text-[9px] text-gray-600">{d}</div>
                 ))}

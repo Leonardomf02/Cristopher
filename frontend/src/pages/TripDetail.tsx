@@ -136,7 +136,7 @@ export default function TripDetail() {
       </div>
 
       {/* Cost Overview */}
-      <div className="grid grid-cols-5 gap-4 mb-8">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 mb-8">
         <div className="bg-[#161616] rounded-2xl p-4 border border-[#222]">
           <p className="text-xs text-gray-500 mb-1">✈️ Voos</p>
           <p className="text-lg font-bold">€{trip.flights_cost.toFixed(0)}</p>
@@ -165,7 +165,7 @@ export default function TripDetail() {
           <Star size={16} className="text-yellow-400" />
           <h3 className="text-sm font-medium text-gray-300">Avaliação da viagem (0-10)</h3>
         </div>
-        <div className="grid grid-cols-5 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
           <RatingSlider label="🍔 Comida"     value={trip.rating_food}      onChange={v => setTripRatingField('rating_food', v)} />
           <RatingSlider label="📍 Sítios"     value={trip.rating_places}    onChange={v => setTripRatingField('rating_places', v)} />
           <RatingSlider label="🍻 Noite"      value={trip.rating_nightlife} onChange={v => setTripRatingField('rating_nightlife', v)} />
@@ -174,7 +174,7 @@ export default function TripDetail() {
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
         {/* Places to visit */}
         <div className="col-span-2 space-y-6">
           {/* Suggested places */}

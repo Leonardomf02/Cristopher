@@ -127,7 +127,7 @@ export default function SleepPage() {
 
       {/* Stats Cards */}
       {stats && (
-        <div className="grid grid-cols-5 gap-4 mb-8">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 mb-8">
           <div className="bg-[#161616] rounded-2xl p-5 border border-[#222]">
             <div className="flex items-center gap-2 text-xs text-gray-500 mb-2">
               <Moon size={14} className="text-purple-400" /> Média
@@ -175,7 +175,7 @@ export default function SleepPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
         {/* Chart */}
         <div className="col-span-2">
           <div className="bg-[#161616] rounded-2xl border border-[#222] p-4">

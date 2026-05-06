@@ -1030,7 +1030,7 @@ function StatsPanel({ positions, allPositions, trades, transactions, summary, eu
       {/* 5. Valor líquido */}
       <div className="bg-[#161616] border border-[#222] rounded-2xl p-5">
         <h3 className="text-sm font-semibold text-white mb-4">Valor Líquido</h3>
-        <div className="grid grid-cols-3 gap-4 mb-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
           <div>
             <p className="text-xs text-gray-500 mb-1">Investido (líquido)</p>
             <p className="text-lg font-bold text-white font-mono">{eur(netValue.netInvested)}</p>
@@ -3624,7 +3624,7 @@ function SentimentDeltaCard({ data, history }: { data: any; history: any[] }) {
             {arrow}{z >= 0 ? '+' : ''}{z.toFixed(2)}
             <span className="text-[10px] text-gray-500 ml-auto">z-score</span>
           </div>
-          <div className="grid grid-cols-3 gap-2 mt-3 text-xs">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 mt-3 text-xs">
             <Metric label="MA7" value={d.ma7 >= 0 ? `+${d.ma7}` : `${d.ma7}`} />
             <Metric label="MA30" value={d.ma30 >= 0 ? `+${d.ma30}` : `${d.ma30}`} />
             <Metric label="delta" value={d.delta >= 0 ? `+${d.delta}` : `${d.delta}`}
@@ -3798,7 +3798,7 @@ function DecayCard({ data }: { data: any }) {
               </LineChart>
             </ResponsiveContainer>
           </div>
-          <div className="grid grid-cols-4 gap-1 mt-2 text-[10px]">
+          <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-1 mt-2 text-[10px]">
             {horizons.map(h => {
               const v = data.by_horizon[h];
               if (!v || v.n === 0) {

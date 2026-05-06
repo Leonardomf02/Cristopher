@@ -530,7 +530,7 @@ export default function LolPage() {
               {csSession.suggestions && csSession.suggestions.length > 0 && (
                 <div>
                   <p className="text-[10px] text-purple-400 font-medium mb-2 uppercase tracking-wider">Sugestões de Pick</p>
-                  <div className="grid grid-cols-4 gap-2">
+                  <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-2">
                     {csSession.suggestions.slice(0, 8).map((s) => (
                       <div key={s.champion} className={`bg-[#111] rounded-lg p-2 border ${
                         s.score >= 70 ? 'border-green-500/30' : s.score >= 50 ? 'border-[#333]' : 'border-red-500/20'
@@ -770,7 +770,7 @@ export default function LolPage() {
         const displayTotal = displayWins + displayLosses;
         const displayWinrate = useRiot ? (rankInfo!.winrate ?? stats.winrate) : stats.winrate;
         return (
-        <div className="grid grid-cols-4 gap-4 mb-8">
+        <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
           <div className="bg-[#161616] rounded-2xl p-5 border border-[#222]">
             <p className="text-xs text-gray-500 mb-1">Total Games</p>
             <p className="text-2xl font-bold">{displayTotal}</p>
@@ -799,7 +799,7 @@ export default function LolPage() {
         );
       })()}
 
-      <div className="grid grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
         {/* Game History */}
         <div className="col-span-2 space-y-4">
           {Object.keys(gamesByDate).length === 0 ? (
@@ -885,7 +885,7 @@ export default function LolPage() {
                         </div>
                         {/* Timeline details */}
                         {selectedTimeline && game.match_id === selectedTimeline.match_id && (
-                          <div className="px-4 pb-3 grid grid-cols-4 gap-2">
+                          <div className="px-4 pb-3 grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-2">
                             <div className="bg-[#111] rounded-lg p-2 text-center">
                               <p className="text-[10px] text-gray-500">Gold @15</p>
                               <p className="text-sm font-medium text-yellow-400">{selectedTimeline.gold_at_15 ? `${(selectedTimeline.gold_at_15 / 1000).toFixed(1)}k` : '—'}</p>
@@ -1084,7 +1084,7 @@ export default function LolPage() {
           {detailedStats && detailedStats.total > 0 && (
             <div className="bg-[#161616] rounded-2xl border border-[#222] p-5">
               <h3 className="text-sm font-medium text-gray-300 mb-4">📊 Visão Geral da Season</h3>
-              <div className="grid grid-cols-6 gap-3 mb-4">
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-4">
                 <div className="bg-[#111] rounded-xl p-3 text-center">
                   <p className="text-2xl font-bold">{detailedStats.total}</p>
                   <p className="text-[10px] text-gray-500">Total</p>
@@ -1114,7 +1114,7 @@ export default function LolPage() {
               </div>
 
               {/* KDA + Streaks + Game Length */}
-              <div className="grid grid-cols-4 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                 <div className="bg-[#111] rounded-xl p-3">
                   <p className="text-[10px] text-gray-500 mb-1">KDA Médio</p>
                   <p className="text-sm font-medium">
@@ -1316,7 +1316,7 @@ export default function LolPage() {
               {detailedStats?.champion_pool && (
                 <div className="bg-[#161616] rounded-2xl border border-[#222] p-5">
                   <h3 className="text-sm font-medium text-gray-300 mb-3">🎮 Champion Pool</h3>
-                  <div className="grid grid-cols-3 gap-2 mb-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 mb-3">
                     <div className="bg-[#111] rounded-xl p-2.5 text-center">
                       <p className="text-xl font-bold text-cyan-400">{detailedStats.champion_pool.unique_champs}</p>
                       <p className="text-[10px] text-gray-500">Únicos</p>
@@ -1351,7 +1351,7 @@ export default function LolPage() {
           {detailedStats?.duration_buckets && detailedStats.duration_buckets.some((d: any) => d.games > 0) && (
             <div className="bg-[#161616] rounded-2xl border border-[#222] p-5">
               <h3 className="text-sm font-medium text-gray-300 mb-3">⏱️ Winrate por Duração de Game</h3>
-              <div className="grid grid-cols-6 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
                 {detailedStats.duration_buckets.map((d: any) => (
                   <div key={d.label} className={`bg-[#111] rounded-xl p-3 text-center ${d.games === 0 ? 'opacity-40' : ''}`}>
                     <p className="text-[10px] text-gray-500 mb-1">{d.label}</p>
@@ -2741,7 +2741,7 @@ function AIPredictionPanel({ stats, history, calibration, onResolve }: {
 
         {/* By confidence level */}
         {hasData && Object.keys(stats.by_confidence).length > 0 && (
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
             {confLevels.map(lvl => {
               const data = stats.by_confidence[lvl];
               if (!data) return (

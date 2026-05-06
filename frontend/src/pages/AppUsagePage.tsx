@@ -286,7 +286,7 @@ export default function AppUsagePage() {
       </div>
 
       {/* Summary cards — always visible */}
-      <div className="grid grid-cols-4 gap-3 mb-4">
+      <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
         <SummaryCard label="Total" value={formatDuration(totalSeconds)} />
         <SummaryCard
           label={viewMode === 'day' ? 'Sessões' : 'Média/dia'}

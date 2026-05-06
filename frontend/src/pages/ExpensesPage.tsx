@@ -232,7 +232,7 @@ export default function ExpensesPage() {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-5 gap-4 mb-8">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 mb-8">
         <div className="bg-[#161616] rounded-2xl p-5 border border-[#222]">
           <div className="flex items-center justify-between mb-1">
             <p className="text-xs text-gray-500">Rendimento</p>
@@ -482,7 +482,7 @@ export default function ExpensesPage() {
         );
       })()}
 
-      <div className="grid grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
         {/* Expense List */}
         <div className="col-span-2">
           <div className="bg-[#161616] rounded-2xl border border-[#222] overflow-hidden">

@@ -408,7 +408,7 @@ export default function FlowPage() {
               <p className="text-gray-600 text-sm mt-1">Cria o teu primeiro preset de foco!</p>
             </div>
           ) : (
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {presets.map(p => (
                 <div key={p.id}
                   className="bg-[#161616] rounded-2xl border border-[#222] p-5 hover:border-[#333] transition-colors group relative">
@@ -683,7 +683,7 @@ export default function FlowPage() {
             <Music size={18} className="text-purple-400" /> Sons Ambiente
           </h2>
           <p className="text-xs text-gray-500 mb-4">Gerados localmente via Web Audio API — sem downloads</p>
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {AMBIENT_SOUNDS.map(s => (
               <button
                 key={s.id}

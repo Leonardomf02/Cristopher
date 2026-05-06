@@ -353,12 +353,15 @@ export default function CalendarPage() {
 
     return (
       <div>
-        <div className="grid grid-cols-3 sm:grid-cols-5 lg:grid-cols-7 gap-px mb-2">
+        <div className="grid grid-cols-7 gap-px mb-2">
           {['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'].map(d => (
-            <div key={d} className="text-center text-xs text-gray-500 py-2 font-medium">{d}</div>
+            <div key={d} className="text-center text-[10px] sm:text-xs text-gray-500 py-1 sm:py-2 font-medium">
+              <span className="sm:hidden">{d.charAt(0)}</span>
+              <span className="hidden sm:inline">{d}</span>
+            </div>
           ))}
         </div>
-        <div className="grid grid-cols-3 sm:grid-cols-5 lg:grid-cols-7 gap-px">
+        <div className="grid grid-cols-7 gap-px">
           {days.map(day => {
             const dayEvents = getEventsForDate(day);
             const dayCompletions = getCompletionsForDate(day);
@@ -369,7 +372,7 @@ export default function CalendarPage() {
                 key={day.toISOString()}
                 onClick={() => openNewEvent(day)}
                 onContextMenu={e => { e.preventDefault(); setDayTypeMenu({ date: format(day, 'yyyy-MM-dd'), x: e.clientX, y: e.clientY }); }}
-                className={`min-h-[100px] p-2 rounded-lg cursor-pointer transition-all border ${
+                className={`min-h-[60px] sm:min-h-[100px] p-1 sm:p-2 rounded-lg cursor-pointer transition-all border ${
                   isToday(day)
                     ? 'border-blue-500/50 bg-blue-500/5'
                     : isCurrentMonth
@@ -378,14 +381,14 @@ export default function CalendarPage() {
                 }`}
                 style={dt ? { borderTopColor: dt.color, borderTopWidth: '3px' } : undefined}
               >
-                <div className="flex items-center justify-between">
-                  <span className={`text-sm font-medium ${
+                <div className="flex items-center justify-between gap-1">
+                  <span className={`text-xs sm:text-sm font-medium ${
                     isToday(day) ? 'text-blue-400' : isCurrentMonth ? 'text-gray-300' : 'text-gray-600'
                   }`}>
                     {format(day, 'd')}
                   </span>
                   {dt && (
-                    <span className="text-[10px] px-1.5 py-0.5 rounded-full" style={{ backgroundColor: dt.color + '22', color: dt.color }}>
+                    <span className="hidden sm:inline text-[10px] px-1.5 py-0.5 rounded-full truncate" style={{ backgroundColor: dt.color + '22', color: dt.color }}>
                       {DAY_TYPE_PRESETS.find(p => p.name === dt.type_name)?.icon || '📌'} {dt.type_name}
                     </span>
                   )}
@@ -395,30 +398,32 @@ export default function CalendarPage() {
                     <div
                       key={`hc-${comp.id}`}
                       onClick={(e) => e.stopPropagation()}
-                      className="text-xs px-1.5 py-0.5 rounded truncate flex items-center gap-0.5"
+                      className="text-[10px] sm:text-xs px-1 sm:px-1.5 py-0.5 rounded truncate flex items-center gap-0.5"
                       style={{ backgroundColor: comp.habit_color + '22', color: comp.habit_color }}
                     >
                       <span className="text-[10px]">{comp.habit_icon}</span>
-                      {comp.completed_at} {comp.habit_name}
+                      <span className="hidden sm:inline">{comp.completed_at} {comp.habit_name}</span>
                     </div>
                   ))}
                   {dayEvents.slice(0, Math.max(1, 3 - dayCompletions.length)).map(ev => (
                     <div
                       key={`${ev.id}-${day.toISOString()}`}
                       onClick={(e) => { e.stopPropagation(); openEditEvent(ev); }}
-                      className={`text-xs px-1.5 py-0.5 rounded truncate cursor-pointer flex items-center gap-0.5 ${
+                      className={`text-[10px] sm:text-xs px-1 sm:px-1.5 py-0.5 rounded truncate cursor-pointer flex items-center gap-0.5 ${
                         ev.completed ? 'line-through opacity-50' : ''
                       }`}
                       style={{ backgroundColor: ev.color + '22', color: ev.color }}
                     >
                       {ev.is_reminder && <CheckSquare size={8} className="shrink-0" />}
                       {ev.recurrence && ev.recurrence !== 'none' && <Repeat size={8} className="shrink-0" />}
-                      {ev.start_time ? `${ev.start_time} ` : ''}
-                      {ev.title}
+                      <span className="truncate">
+                        <span className="hidden sm:inline">{ev.start_time ? `${ev.start_time} ` : ''}</span>
+                        {ev.title}
+                      </span>
                     </div>
                   ))}
                   {(dayEvents.length + dayCompletions.length) > 3 && (
-                    <div className="text-xs text-gray-500 px-1">+{dayEvents.length + dayCompletions.length - 3} mais</div>
+                    <div className="text-[10px] sm:text-xs text-gray-500 px-1">+{dayEvents.length + dayCompletions.length - 3}</div>
                   )}
                 </div>
               </div>
@@ -438,7 +443,7 @@ export default function CalendarPage() {
 
     return (
       <div className="overflow-x-auto">
-        <div className="grid grid-cols-8 gap-px min-max-w-[90vw] w-[800px]">
+        <div className="grid grid-cols-8 gap-px min-w-[800px]">
           <div className="text-xs text-gray-500 p-2" />
           {days.map(day => (
             <div key={day.toISOString()} className={`text-center p-2 rounded-t-lg ${
@@ -681,11 +686,11 @@ export default function CalendarPage() {
   return (
     <div>
       {/* Header */}
-      <div className="flex items-center justify-between mb-8">
-        <div>
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-6 lg:mb-8">
+        <div className="min-w-0">
           <h2 className="text-2xl font-bold capitalize">{headerLabel()}</h2>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
           {/* View mode tabs */}
           <div className="flex bg-[#161616] rounded-xl p-1">
             {(['day', 'week', 'month', 'year'] as ViewMode[]).map(mode => (
@@ -786,9 +791,9 @@ export default function CalendarPage() {
 
           <button
             onClick={() => openNewEvent()}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-xl text-sm font-medium transition-all shadow-lg shadow-blue-600/20"
+            className="flex items-center gap-2 px-3 sm:px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-xl text-sm font-medium transition-all shadow-lg shadow-blue-600/20"
           >
-            <Plus size={16} /> Novo Evento
+            <Plus size={16} /> <span className="hidden sm:inline">Novo Evento</span><span className="sm:hidden">Novo</span>
           </button>
         </div>
       </div>

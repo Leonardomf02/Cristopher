@@ -919,7 +919,7 @@ export default function Dashboard() {
             <button onClick={e => { e.stopPropagation(); setWeekOffset(o => o - 1); }} className="p-1 hover:bg-white/10 rounded">
               <ChevronLeft size={14} className="text-gray-500" />
             </button>
-            <span className="text-xs text-gray-500 min-max-w-[90vw] w-[100px] text-center">
+            <span className="text-xs text-gray-500 min-w-[100px] text-center">
               {weekOffset === 0 ? 'Esta semana' : weekOffset === -1 ? 'Semana passada' : `${Math.abs(weekOffset)} sem. atrás`}
             </span>
             <button onClick={e => { e.stopPropagation(); setWeekOffset(o => Math.min(0, o + 1)); }} className="p-1 hover:bg-white/10 rounded" disabled={weekOffset >= 0}>

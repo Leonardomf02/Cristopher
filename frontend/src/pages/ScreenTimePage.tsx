@@ -212,7 +212,7 @@ export default function ScreenTimePage() {
                   <div className="flex items-center gap-2 flex-wrap">
                     <input value={editLabel} onChange={e => setEditLabel(e.target.value)}
                       placeholder="ex: iPhone do Cris"
-                      className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-sm flex-1 min-max-w-[90vw] w-[160px]" />
+                      className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-sm flex-1 min-w-[160px]" />
                     <select value={editKind} onChange={e => setEditKind(e.target.value)}
                       className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-sm">
                       {KIND_OPTIONS.map(k => <option key={k.value} value={k.value}>{k.label}</option>)}

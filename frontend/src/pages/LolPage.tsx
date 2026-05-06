@@ -530,7 +530,7 @@ export default function LolPage() {
               {csSession.suggestions && csSession.suggestions.length > 0 && (
                 <div>
                   <p className="text-[10px] text-purple-400 font-medium mb-2 uppercase tracking-wider">Sugestões de Pick</p>
-                  <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
                     {csSession.suggestions.slice(0, 8).map((s) => (
                       <div key={s.champion} className={`bg-[#111] rounded-lg p-2 border ${
                         s.score >= 70 ? 'border-green-500/30' : s.score >= 50 ? 'border-[#333]' : 'border-red-500/20'
@@ -680,8 +680,8 @@ export default function LolPage() {
       )}
 
       {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3 min-w-0">
           <h2 className="text-2xl font-bold">LoL Tracker</h2>
           {seasons.length > 0 && (
             <select
@@ -692,7 +692,7 @@ export default function LolPage() {
                 else if (v === '__all__') setSelectedSeasonId('all');
                 else setSelectedSeasonId(Number(v));
               }}
-              className="bg-[#222] border border-[#333] rounded-lg px-3 py-1.5 text-sm text-gray-300 hover:border-cyan-500 focus:outline-none focus:border-cyan-500"
+              className="bg-[#222] border border-[#333] rounded-lg px-2 sm:px-3 py-1.5 text-sm text-gray-300 hover:border-cyan-500 focus:outline-none focus:border-cyan-500 max-w-[180px] sm:max-w-none"
               title="Mudar de season"
             >
               <option value="">Season atual</option>
@@ -705,7 +705,7 @@ export default function LolPage() {
             </select>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           {syncResult && (
             <span className="text-xs text-gray-400 mr-2">
               +{syncResult.imported} importadas
@@ -722,20 +722,20 @@ export default function LolPage() {
             <Settings size={16} />
           </button>
           <button onClick={() => handleSync(undefined, true)} disabled={syncing}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium bg-blue-600 hover:bg-blue-700 text-white"
+            className="flex items-center gap-2 px-3 sm:px-4 py-2 rounded-xl text-sm font-medium bg-blue-600 hover:bg-blue-700 text-white"
             title="Sincronizar games (season completa)">
             <RefreshCw size={16} className={syncing ? 'animate-spin' : ''} />
-            {syncing ? 'A sincronizar...' : 'Sync'}
+            <span className="hidden sm:inline">{syncing ? 'A sincronizar...' : 'Sync'}</span>
           </button>
         </div>
       </div>
 
       {/* Date Filter */}
-      <div className="flex items-center justify-between mb-6">
-        <div className="flex gap-1 bg-[#111] rounded-xl p-1">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
+        <div className="flex gap-1 bg-[#111] rounded-xl p-1 flex-wrap">
           {([['today', 'Hoje'], ['week', 'Semana'], ['month', 'Mês'], ['all', 'Todos']] as const).map(([key, label]) => (
             <button key={key} onClick={() => { setDateFilter(key); loadData(key); loadDetailedStats(key); }}
-              className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${
+              className={`px-3 sm:px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${
                 dateFilter === key ? 'bg-yellow-600 text-white' : 'text-gray-400 hover:text-white'
               }`}>
               {label}
@@ -744,16 +744,16 @@ export default function LolPage() {
         </div>
         <div className="flex gap-1 bg-[#111] rounded-xl p-1">
           <button onClick={() => { setActiveTab('main'); }}
-            className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${
+            className={`px-3 sm:px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${
               activeTab === 'main' ? 'bg-yellow-600 text-white' : 'text-gray-400 hover:text-white'
             }`}>
             Games
           </button>
           <button onClick={() => { setActiveTab('stats'); if (!detailedStats) loadDetailedStats(); if (metaChampions.length === 0) loadMetaTierList(); if (!seasonStats) loadSeasonStats(); loadPredictionStats(); }}
-            className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${
+            className={`px-3 sm:px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${
               activeTab === 'stats' ? 'bg-cyan-600 text-white' : 'text-gray-400 hover:text-white'
             }`}>
-            📊 Estatísticas
+            <span className="hidden sm:inline">📊 </span>Estatísticas
           </button>
         </div>
       </div>
@@ -770,7 +770,7 @@ export default function LolPage() {
         const displayTotal = displayWins + displayLosses;
         const displayWinrate = useRiot ? (rankInfo!.winrate ?? stats.winrate) : stats.winrate;
         return (
-        <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
           <div className="bg-[#161616] rounded-2xl p-5 border border-[#222]">
             <p className="text-xs text-gray-500 mb-1">Total Games</p>
             <p className="text-2xl font-bold">{displayTotal}</p>
@@ -885,7 +885,7 @@ export default function LolPage() {
                         </div>
                         {/* Timeline details */}
                         {selectedTimeline && game.match_id === selectedTimeline.match_id && (
-                          <div className="px-4 pb-3 grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+                          <div className="px-4 pb-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
                             <div className="bg-[#111] rounded-lg p-2 text-center">
                               <p className="text-[10px] text-gray-500">Gold @15</p>
                               <p className="text-sm font-medium text-yellow-400">{selectedTimeline.gold_at_15 ? `${(selectedTimeline.gold_at_15 / 1000).toFixed(1)}k` : '—'}</p>
@@ -1114,7 +1114,7 @@ export default function LolPage() {
               </div>
 
               {/* KDA + Streaks + Game Length */}
-              <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                 <div className="bg-[#111] rounded-xl p-3">
                   <p className="text-[10px] text-gray-500 mb-1">KDA Médio</p>
                   <p className="text-sm font-medium">

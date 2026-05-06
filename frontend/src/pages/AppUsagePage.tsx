@@ -249,7 +249,7 @@ export default function AppUsagePage() {
           <button onClick={() => nav(-1)} className="p-2 rounded-lg hover:bg-white/5">
             <ChevronLeft size={18} />
           </button>
-          <div className="text-center min-max-w-[90vw] w-[260px]">
+          <div className="text-center sm:min-w-[260px]">
             <div className="text-lg font-semibold capitalize">{headerLabel}</div>
             <button onClick={() => setAnchor(new Date())} className="text-xs text-blue-400 hover:text-blue-300">
               Hoje
@@ -286,7 +286,7 @@ export default function AppUsagePage() {
       </div>
 
       {/* Summary cards — always visible */}
-      <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
         <SummaryCard label="Total" value={formatDuration(totalSeconds)} />
         <SummaryCard
           label={viewMode === 'day' ? 'Sessões' : 'Média/dia'}

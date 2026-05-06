@@ -477,7 +477,7 @@ export default function InvestmentsPage() {
           <select
             value={filterMonth}
             onChange={e => setFilterMonth(e.target.value)}
-            className="bg-[#1a1a1a] border border-[#333] rounded-xl px-3 py-1.5 text-sm text-gray-300 focus:outline-none focus:border-[#555] min-max-w-[90vw] w-[180px]"
+            className="bg-[#1a1a1a] border border-[#333] rounded-xl px-3 py-1.5 text-sm text-gray-300 focus:outline-none focus:border-[#555] sm:min-w-[180px]"
           >
             {availableMonths.map(m => (
               <option key={m} value={m}>
@@ -1849,7 +1849,7 @@ function PlannerPanel({ positions, transactions, eur }: {
         <div className="flex items-center gap-3 mb-4 p-3 bg-[#1a1a1a] border border-[#333] rounded-xl">
           <div className="flex items-center gap-2">
             <button onClick={() => navigateMonth(-1)} className="p-1 rounded hover:bg-[#333] text-gray-400 hover:text-white transition-colors"><ChevronLeft size={16} /></button>
-            <div className="flex items-center gap-1.5 min-max-w-[90vw] w-[140px] justify-center">
+            <div className="flex items-center gap-1.5 min-w-[140px] justify-center">
               <Calendar size={14} className="text-blue-400" />
               <span className="text-sm font-medium text-white">{monthLabel}</span>
             </div>
@@ -3806,7 +3806,7 @@ function DecayCard({ data }: { data: any }) {
               </LineChart>
             </ResponsiveContainer>
           </div>
-          <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-1 mt-2 text-[10px]">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-1 mt-2 text-[10px]">
             {horizons.map(h => {
               const v = data.by_horizon[h];
               if (!v || v.n === 0) {

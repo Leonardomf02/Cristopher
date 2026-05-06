@@ -60,15 +60,15 @@ export default function HabitAnalyticsPage() {
   return (
     <div>
       {/* Header */}
-      <div className="flex items-center gap-4 mb-8">
-        <button onClick={() => navigate('/calendar')} className="p-2 hover:bg-white/10 rounded-xl transition-all">
+      <div className="flex flex-wrap items-center gap-3 sm:gap-4 mb-6 lg:mb-8">
+        <button onClick={() => navigate('/calendar')} className="p-2 hover:bg-white/10 rounded-xl transition-all shrink-0">
           <ArrowLeft size={20} />
         </button>
-        <div>
+        <div className="min-w-0">
           <h2 className="text-2xl font-bold">Habit Analytics</h2>
-          <p className="text-gray-500 text-sm mt-1">Dados dos últimos {days} dias</p>
+          <p className="text-gray-500 text-sm mt-1">Últimos {days} dias</p>
         </div>
-        <div className="ml-auto flex gap-2">
+        <div className="w-full sm:w-auto sm:ml-auto flex flex-wrap gap-2">
           {[30, 60, 90, 180, 365].map(d => (
             <button
               key={d}

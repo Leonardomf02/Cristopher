@@ -207,7 +207,7 @@ function AppShell() {
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 overflow-y-auto flex flex-col min-w-0">
+      <main className="flex-1 overflow-y-auto overflow-x-hidden flex flex-col min-w-0">
         {/* Top bar (apenas mobile) */}
         <header className="lg:hidden sticky top-0 z-20 bg-[#0f0f0f]/95 backdrop-blur border-b border-[#222] flex items-center gap-3 px-3 py-2.5">
           <button

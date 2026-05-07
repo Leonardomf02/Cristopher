@@ -442,7 +442,7 @@ export default function InvestmentsPage() {
 
       {/* Tabs + Month Filter */}
       <div className="flex items-center justify-between flex-wrap gap-3">
-        <div className="flex gap-1 bg-[#161616] rounded-xl p-1 w-fit">
+        <div className="flex gap-1 bg-[#161616] rounded-xl p-1 max-w-full overflow-x-auto">
           {([
             ['overview', 'Posições'],
             ['trades', `Trades${filterMonth !== 'all' ? ` (${filteredTrades.length})` : ''}`],
@@ -454,7 +454,7 @@ export default function InvestmentsPage() {
             <button
               key={key}
               onClick={() => setTab(key)}
-              className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+              className={`px-3 sm:px-4 py-2 text-sm font-medium rounded-lg transition-colors whitespace-nowrap shrink-0 ${
                 tab === key ? 'bg-white/10 text-white' : 'text-gray-500 hover:text-gray-300'
               }`}
             >

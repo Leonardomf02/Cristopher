@@ -372,7 +372,7 @@ export default function CalendarPage() {
                 key={day.toISOString()}
                 onClick={() => openNewEvent(day)}
                 onContextMenu={e => { e.preventDefault(); setDayTypeMenu({ date: format(day, 'yyyy-MM-dd'), x: e.clientX, y: e.clientY }); }}
-                className={`min-h-[60px] sm:min-h-[100px] p-1 sm:p-2 rounded-lg cursor-pointer transition-all border ${
+                className={`h-[68px] sm:h-auto sm:min-h-[100px] overflow-hidden p-1 sm:p-2 rounded-lg cursor-pointer transition-all border ${
                   isToday(day)
                     ? 'border-blue-500/50 bg-blue-500/5'
                     : isCurrentMonth

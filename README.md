@@ -32,7 +32,7 @@ npm install
 # Opção B: Manual (2 terminais)
 
 # Terminal 1 - Backend
-cd backend && source venv/bin/activate && uvicorn main:app --reload --port 8000
+cd backend && source venv/bin/activate && uvicorn main:app --reload --port 8001
 
 # Terminal 2 - Frontend
 cd frontend && npm run dev
@@ -40,8 +40,8 @@ cd frontend && npm run dev
 
 ### 3. Abrir
 
-- **App**: http://localhost:5173
-- **API Docs**: http://localhost:8000/docs
+- **App**: http://localhost:3001
+- **API Docs**: http://localhost:8001/docs
 
 ## Funcionalidades
 

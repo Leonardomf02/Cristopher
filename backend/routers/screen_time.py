@@ -5,15 +5,19 @@ aparecem se "Share Across Devices" estiver activo no Screen Time da Apple.
 """
 from __future__ import annotations
 
+import platform
+import subprocess
 from datetime import datetime, date, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
 from database import get_db
 from models import ScreenTimeDeviceLabel
 import screen_time_reader as reader
+from app_icons import get_icon_png_path
 
 router = APIRouter(prefix="/api/screen-time", tags=["Screen Time"])
 
@@ -55,13 +59,56 @@ def _attach_label(item: dict, labels: dict[str, dict]) -> dict:
 
 @router.get("/health")
 def health():
-    """Diz se a DB do Screen Time está acessível ao backend."""
+    """Diz se a DB do Screen Time está acessível ao backend.
+
+    Inclui o caminho do binário Python responsável (útil quando o utilizador
+    precisa de dar FDA directamente à Python.framework como fallback)."""
     ok, reason = reader.is_available()
+    python_app_path = ""
+    if platform.system() == "Darwin":
+        import sys
+        from pathlib import Path
+        candidates = [
+            Path(sys.exec_prefix) / "Resources" / "Python.app",
+            Path("/Library/Frameworks/Python.framework/Versions") / f"{sys.version_info.major}.{sys.version_info.minor}" / "Resources" / "Python.app",
+        ]
+        for c in candidates:
+            if c.exists():
+                python_app_path = str(c)
+                break
     return {
         "available": ok,
         "reason": reason,
         "db_path": str(reader.KNOWLEDGE_DB),
+        "python_app_path": python_app_path,
     }
+
+
+@router.get("/app-icon")
+def app_icon(bundle_id: str):
+    """Devolve o PNG do ícone da app pelo bundle_id (extraído de /Applications).
+
+    Cacheado em disco em uploads/app_icons. 404 se a app não estiver instalada
+    localmente ou se o .icns não for extraível.
+    """
+    path = get_icon_png_path(bundle_id)
+    if not path:
+        return Response(status_code=404)
+    # Cache forte: ícones quase nunca mudam — 1 dia
+    return FileResponse(path, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
+
+
+@router.post("/open-settings")
+def open_fda_settings():
+    """Abre System Settings → Privacy & Security → Full Disk Access (só macOS)."""
+    if platform.system() != "Darwin":
+        raise HTTPException(400, "Só funciona em macOS")
+    url = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
+    try:
+        subprocess.Popen(["open", url])
+    except Exception as e:
+        raise HTTPException(500, f"Falhou: {e}")
+    return {"opened": True}
 
 
 @router.get("/devices")
@@ -103,32 +150,85 @@ def by_app(
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
     device_id: Optional[str] = None,
+    mode: str = Query("raw", pattern="^(raw|apple)$"),
     db: Session = Depends(get_db),
 ):
-    """Agregado por app + device. Default: últimos 7 dias."""
+    """Agregado por app + device. Default: últimos 7 dias.
+
+    mode='apple' aplica gap-merge + ceil ao minuto para aproximar Settings da Apple.
+    """
     try:
         s, e = _range_to_unix(start_date, end_date)
-        items = reader.summary_by_app(s, e, device_id=device_id)
+        items = reader.summary_by_app(s, e, device_id=device_id, mode=mode)
     except reader.ScreenTimeUnavailable as ex:
         raise HTTPException(503, str(ex))
     labels = _labels_map(db)
     return [_attach_label(it, labels) for it in items]
+
+
+@router.get("/by-category")
+def by_category(
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+    device_id: Optional[str] = None,
+    mode: str = Query("raw", pattern="^(raw|apple)$"),
+):
+    """Agregado por categoria (estilo Apple Screen Time)."""
+    try:
+        s, e = _range_to_unix(start_date, end_date)
+        return reader.summary_by_category(s, e, device_id=device_id, mode=mode)
+    except reader.ScreenTimeUnavailable as ex:
+        raise HTTPException(503, str(ex))
 
 
 @router.get("/by-device")
 def by_device(
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
+    mode: str = Query("raw", pattern="^(raw|apple)$"),
     db: Session = Depends(get_db),
 ):
     """Total agregado por device no intervalo. Default: últimos 7 dias."""
     try:
         s, e = _range_to_unix(start_date, end_date)
-        items = reader.summary_by_device(s, e)
+        items = reader.summary_by_device(s, e, mode=mode)
     except reader.ScreenTimeUnavailable as ex:
         raise HTTPException(503, str(ex))
     labels = _labels_map(db)
     return [_attach_label(it, labels) for it in items]
+
+
+@router.get("/timeseries")
+def timeseries(
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+    bucket: str = Query("hour", pattern="^(hour|day)$"),
+    device_id: Optional[str] = None,
+    mode: str = Query("raw", pattern="^(raw|apple)$"),
+):
+    """Soma por hora ou por dia. Default: últimos 7 dias por dia."""
+    try:
+        s, e = _range_to_unix(start_date, end_date)
+        items = reader.summary_timeseries(s, e, bucket=bucket, device_id=device_id, mode=mode)
+    except reader.ScreenTimeUnavailable as ex:
+        raise HTTPException(503, str(ex))
+    return items
+
+
+@router.get("/timeseries-stacked")
+def timeseries_stacked(
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+    bucket: str = Query("hour", pattern="^(hour|day)$"),
+    device_id: Optional[str] = None,
+    mode: str = Query("raw", pattern="^(raw|apple)$"),
+):
+    """Soma por bucket E por categoria (para gráfico empilhado estilo Apple)."""
+    try:
+        s, e = _range_to_unix(start_date, end_date)
+        return reader.timeseries_stacked_by_category(s, e, bucket=bucket, device_id=device_id, mode=mode)
+    except reader.ScreenTimeUnavailable as ex:
+        raise HTTPException(503, str(ex))
 
 
 @router.get("/sessions")

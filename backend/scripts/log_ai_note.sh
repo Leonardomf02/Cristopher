@@ -15,7 +15,7 @@
 # Silencioso em caso de falha — nunca bloqueia o flow do assistente.
 set -e
 
-BACKEND="${CRISTOPHER_BACKEND:-http://localhost:8000}"
+BACKEND="${CRISTOPHER_BACKEND:-http://localhost:8001}"
 REPO_ROOT="$(git -C "$(pwd)" rev-parse --show-toplevel 2>/dev/null || true)"
 HOME_PREFIX="$HOME/"
 

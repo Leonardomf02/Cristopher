@@ -32,6 +32,15 @@ _alloc_cols = {row[1] for row in _cur.fetchall()}
 if _alloc_cols and "is_rotational" not in _alloc_cols:
     _cur.execute("ALTER TABLE investment_allocations ADD COLUMN is_rotational BOOLEAN DEFAULT 0")
     _conn.commit()
+# Monthly plan execution snapshot (locker)
+_cur.execute("PRAGMA table_info(investment_monthly_plans)")
+_mp_cols = {row[1] for row in _cur.fetchall()}
+if _mp_cols and "executed_at" not in _mp_cols:
+    _cur.execute("ALTER TABLE investment_monthly_plans ADD COLUMN executed_at DATETIME")
+    _conn.commit()
+if _mp_cols and "executed_snapshot" not in _mp_cols:
+    _cur.execute("ALTER TABLE investment_monthly_plans ADD COLUMN executed_snapshot TEXT")
+    _conn.commit()
 # Add game_hour and team_side to lol_games
 _cur.execute("PRAGMA table_info(lol_games)")
 _lol_cols = {row[1] for row in _cur.fetchall()}

@@ -1747,6 +1747,53 @@ async def get_counters_for_champion(champion_name: str):
     return {"champion": champion_name, "counters": counters.get(champion_name, [])}
 
 
+@router.get("/champions-list")
+async def champions_list():
+    """Lista todos os champions actuais (DDragon) para autocomplete no UI."""
+    await ensure_champion_data()
+    from champion_data import _champion_cache
+    if not _champion_cache:
+        return []
+    out = []
+    for ddkey, data in _champion_cache.items():
+        out.append({
+            "ddragon_key": ddkey,
+            "name": data.get("name", ddkey),
+            "title": data.get("title", ""),
+        })
+    out.sort(key=lambda x: x["name"])
+    return out
+
+
+@router.get("/counter-pick")
+async def counter_pick(
+    enemy: str = Query(..., min_length=2),
+    role: str = Query("jungle"),
+):
+    """Suggest picks against `enemy`. Returns two lists:
+    - personal: from the user's own match history (sorted by games, then WR)
+    - external: from public sources (op.gg + LeagueOfGraphs), sorted by WR
+    """
+    from meta_stats import fetch_external_counters
+
+    await _ensure_matchup_data()
+    personal_map = _get_enemy_counters([enemy])
+    personal = personal_map.get(enemy, [])
+
+    try:
+        external = await fetch_external_counters(enemy, role=role)
+    except Exception as e:
+        logger.warning(f"external counters failed for {enemy}: {e}")
+        external = []
+
+    return {
+        "enemy": enemy,
+        "role": role,
+        "personal": personal,
+        "external": external,
+    }
+
+
 @router.get("/champ-select/status")
 async def champ_select_status():
     """Check if League Client is running and if we're in champ select."""

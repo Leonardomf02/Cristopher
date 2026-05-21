@@ -1,0 +1,6 @@
+#!/bin/bash
+cd "/Users/cristovao/Documents/Projects/Cristopher/backend"
+"/Users/cristovao/Documents/Projects/Cristopher/backend/venv/bin/uvicorn" main:app --host 0.0.0.0 --port 8001 &
+CHILD=$!
+trap "kill $CHILD 2>/dev/null" EXIT INT TERM
+wait $CHILD

@@ -129,6 +129,12 @@ export const lolApi = {
   getChampSelectStatus: () => request<any>('/lol/champ-select/status'),
   getChampSelectSession: () => request<any>('/lol/champ-select/session'),
   getMetaStats: (source?: string) => request<any>('/lol/meta-stats' + (source && source !== 'all' ? `?source=${source}` : '')),
+  counterPick: (enemy: string, role: string = 'jungle') =>
+    request<{ enemy: string; role: string; personal: any[]; external: any[] }>(
+      `/lol/counter-pick?enemy=${encodeURIComponent(enemy)}&role=${encodeURIComponent(role)}`
+    ),
+  championsList: () =>
+    request<{ ddragon_key: string; name: string; title: string }[]>('/lol/champions-list'),
   seasonStats: (seasonId?: number) => request<any>('/lol/season-stats' + (seasonId ? `?season_id=${seasonId}` : '')),
   // Seasons (auto-archive on reset)
   listSeasons: () => request<any[]>('/lol/seasons'),
@@ -206,6 +212,10 @@ export const sleepApi = {
   create: (data: any) => request<any>('/sleep/', { method: 'POST', body: JSON.stringify(data) }),
   update: (id: number, data: any) => request<any>(`/sleep/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   delete: (id: number) => request<any>(`/sleep/${id}`, { method: 'DELETE' }),
+  estimate: (date?: string) =>
+    request<{ date: string; bedtime: string; wake_time: string; hours: number; last_activity: string; first_activity: string; source: string }>(
+      `/sleep/estimate${date ? `?date=${date}` : ''}`
+    ),
 };
 
 // ── Day Types ───────────────────────────────────────────────────
@@ -377,6 +387,18 @@ export const investmentsApi = {
       if (!res.ok) { const err = await res.json().catch(() => ({ detail: 'Erro' })); throw new Error(err.detail || 'Erro'); }
       return res.json();
     }),
+  executeMonthlyPlan: (month: string) =>
+    fetch(`/api/investments/monthly-plan/${month}/execute`, { method: 'POST' }).then(async res => {
+      if (!res.ok) { const err = await res.json().catch(() => ({ detail: 'Erro' })); throw new Error(err.detail || 'Erro'); }
+      return res.json();
+    }),
+  unexecuteMonthlyPlan: (month: string) =>
+    fetch(`/api/investments/monthly-plan/${month}/execute`, { method: 'DELETE' }).then(async res => {
+      if (!res.ok) { const err = await res.json().catch(() => ({ detail: 'Erro' })); throw new Error(err.detail || 'Erro'); }
+      return res.json();
+    }),
+  monthlyPlanHistory: (limit?: number) =>
+    request<any[]>(`/investments/monthly-plan-history${limit ? `?limit=${limit}` : ''}`),
   suggestions: () => request<any>('/investments/suggestions'),
   signalsAnalyzePlan: (extraQuestion?: string, excludedTickers?: string[]) =>
     fetch('/api/investments/signals/analyze-plan', {
@@ -779,6 +801,7 @@ export interface ScreenTimeDevice {
 export interface ScreenTimeAppRow {
   bundle_id: string;
   device_id: string;
+  category: string;
   total_seconds: number;
   session_count: number;
   label?: string;
@@ -794,8 +817,19 @@ export interface ScreenTimeDeviceRow {
   kind?: string;
 }
 
+export interface ScreenTimeCategoryRow {
+  category: string;
+  total_seconds: number;
+  app_count: number;
+}
+
 export const screenTimeApi = {
   health: () => request<{ available: boolean; reason: string; db_path: string }>('/screen-time/health'),
+  openSettings: () =>
+    fetch('/api/screen-time/open-settings', { method: 'POST' }).then(async res => {
+      if (!res.ok) throw new Error('Não consegui abrir System Settings');
+      return res.json() as Promise<{ opened: boolean }>;
+    }),
   devices: () => request<ScreenTimeDevice[]>('/screen-time/devices'),
   labelDevice: (device_id: string, data: { label: string; kind: string }) =>
     fetch(`/api/screen-time/devices/${encodeURIComponent(device_id)}`, {
@@ -806,18 +840,46 @@ export const screenTimeApi = {
       if (!res.ok) throw new Error('Erro ao guardar etiqueta');
       return res.json();
     }),
-  byApp: (params?: { start_date?: string; end_date?: string; device_id?: string }) => {
+  byApp: (params?: { start_date?: string; end_date?: string; device_id?: string; mode?: 'raw' | 'apple' }) => {
     const qs = new URLSearchParams();
     if (params?.start_date) qs.set('start_date', params.start_date);
     if (params?.end_date) qs.set('end_date', params.end_date);
     if (params?.device_id) qs.set('device_id', params.device_id);
+    if (params?.mode) qs.set('mode', params.mode);
     return request<ScreenTimeAppRow[]>(`/screen-time/by-app?${qs}`);
   },
-  byDevice: (params?: { start_date?: string; end_date?: string }) => {
+  byCategory: (params?: { start_date?: string; end_date?: string; device_id?: string; mode?: 'raw' | 'apple' }) => {
     const qs = new URLSearchParams();
     if (params?.start_date) qs.set('start_date', params.start_date);
     if (params?.end_date) qs.set('end_date', params.end_date);
+    if (params?.device_id) qs.set('device_id', params.device_id);
+    if (params?.mode) qs.set('mode', params.mode);
+    return request<ScreenTimeCategoryRow[]>(`/screen-time/by-category?${qs}`);
+  },
+  byDevice: (params?: { start_date?: string; end_date?: string; mode?: 'raw' | 'apple' }) => {
+    const qs = new URLSearchParams();
+    if (params?.start_date) qs.set('start_date', params.start_date);
+    if (params?.end_date) qs.set('end_date', params.end_date);
+    if (params?.mode) qs.set('mode', params.mode);
     return request<ScreenTimeDeviceRow[]>(`/screen-time/by-device?${qs}`);
+  },
+  timeseriesStacked: (params?: { start_date?: string; end_date?: string; bucket?: 'hour' | 'day'; device_id?: string; mode?: 'raw' | 'apple' }) => {
+    const qs = new URLSearchParams();
+    if (params?.start_date) qs.set('start_date', params.start_date);
+    if (params?.end_date) qs.set('end_date', params.end_date);
+    if (params?.bucket) qs.set('bucket', params.bucket);
+    if (params?.device_id) qs.set('device_id', params.device_id);
+    if (params?.mode) qs.set('mode', params.mode);
+    return request<{ bucket_start: number; categories: Record<string, number> }[]>(`/screen-time/timeseries-stacked?${qs}`);
+  },
+  timeseries: (params?: { start_date?: string; end_date?: string; bucket?: 'hour' | 'day'; device_id?: string; mode?: 'raw' | 'apple' }) => {
+    const qs = new URLSearchParams();
+    if (params?.start_date) qs.set('start_date', params.start_date);
+    if (params?.end_date) qs.set('end_date', params.end_date);
+    if (params?.bucket) qs.set('bucket', params.bucket);
+    if (params?.device_id) qs.set('device_id', params.device_id);
+    if (params?.mode) qs.set('mode', params.mode);
+    return request<{ bucket_start: number; total_seconds: number }[]>(`/screen-time/timeseries?${qs}`);
   },
 };
 

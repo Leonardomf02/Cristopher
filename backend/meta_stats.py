@@ -726,3 +726,123 @@ def get_average_wr() -> float:
         return 50.0
     wrs = [c["wr"] for c in _meta_cache.values() if c["games"] > 50]
     return sum(wrs) / len(wrs) if wrs else 50.0
+
+
+# ── Per-enemy counter scraping ──────────────────────────────────────
+
+_counter_cache: dict[tuple[str, str], tuple[float, list[dict]]] = {}
+COUNTER_CACHE_TTL = 6 * 3600
+
+
+def _slugify_champion(name: str) -> str:
+    """Convert a display name like 'Lee Sin' into op.gg's URL slug 'leesin'."""
+    return re.sub(r"[^a-z0-9]", "", name.lower())
+
+
+async def _fetch_opgg_counters(slug: str, role: str) -> list[dict]:
+    """Scrape op.gg counters page (Next.js flight payload)."""
+    url = f"https://www.op.gg/lol/champions/{slug}/counters/{role}"
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            resp = await client.get(url, headers=_HEADERS)
+        if resp.status_code != 200:
+            return []
+    except Exception as e:
+        logger.warning(f"opgg counters {slug}/{role}: {e}")
+        return []
+
+    # Each counter entry in the flight payload looks like (with double-escaping):
+    #   play\":3911,\"win\":1938,\"win_rate\":49.55,\"champion\":{\"image_url\":\"...\",\"name\":\"Zed\",\"key\":\"zed\"
+    pattern = (
+        r'play\\":(\d+),\\"win\\":\d+,\\"win_rate\\":([0-9.]+),'
+        r'\\"champion\\":\{\\"image_url\\":\\"[^"]*\\",'
+        r'\\"name\\":\\"([^"\\]+)\\",\\"key\\":\\"([a-zA-Z0-9]+)\\"'
+    )
+    out: list[dict] = []
+    seen: set[str] = set()
+    for play, wr, name, key in re.findall(pattern, resp.text):
+        if key in seen:
+            continue
+        seen.add(key)
+        games = int(play)
+        winrate = float(wr)
+        if games < 50 or winrate <= 0 or winrate > 100:
+            continue
+        out.append({
+            "champion_key": name,  # display-friendly
+            "champion_slug": key,
+            "winrate": round(winrate, 2),
+            "games": games,
+            "source": "op.gg",
+        })
+    return out
+
+
+async def _fetch_leagueofgraphs_counters(slug: str, role: str) -> list[dict]:
+    """Scrape leagueofgraphs.com counters page."""
+    log_role = role.lower()
+    url = f"https://www.leagueofgraphs.com/champions/counters/{slug}/{log_role}"
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            resp = await client.get(url, headers=_HEADERS)
+        if resp.status_code != 200:
+            return []
+    except Exception as e:
+        logger.warning(f"leagueofgraphs counters {slug}/{role}: {e}")
+        return []
+
+    # League of Graphs HTML structure (best-effort): each row has a champion link
+    # /champions/stats/<slug> followed by progressbar with data-value (winrate).
+    pattern = (
+        r'/champions/stats/([a-z\-]+)[^>]*>[^<]*<span[^>]*>([^<]+)</span>'
+        r'.{0,400}?progressbar[^>]*data-value=["\']([0-9.]+)'
+    )
+    out: list[dict] = []
+    seen: set[str] = set()
+    for slug2, name, wr in re.findall(pattern, resp.text, re.DOTALL):
+        if slug2 in seen:
+            continue
+        seen.add(slug2)
+        winrate = float(wr)
+        if winrate <= 0 or winrate > 100:
+            continue
+        out.append({
+            "champion_key": name.strip(),
+            "champion_slug": slug2,
+            "winrate": round(winrate, 2),
+            "games": 0,
+            "source": "leagueofgraphs",
+        })
+    return out
+
+
+async def fetch_external_counters(champion_name: str, role: str = "jungle") -> list[dict]:
+    """Return a list of champions that counter `champion_name` in `role`, merged
+    across whatever external sources we can reach. Each entry has:
+        {champion_key, champion_slug, winrate, games, source}
+
+    Best effort — if no source returns data, returns []. Cached for 6h.
+    """
+    slug = _slugify_champion(champion_name)
+    cache_key = (slug, role)
+    now = time.time()
+    cached = _counter_cache.get(cache_key)
+    if cached and now - cached[0] < COUNTER_CACHE_TTL:
+        return cached[1]
+
+    opgg, log = await asyncio.gather(
+        _fetch_opgg_counters(slug, role),
+        _fetch_leagueofgraphs_counters(slug, role),
+        return_exceptions=False,
+    )
+
+    # Merge by champion_slug — prefer entries with more games (i.e. op.gg).
+    merged_map: dict[str, dict] = {}
+    for entry in opgg + log:
+        cs = entry["champion_slug"]
+        cur = merged_map.get(cs)
+        if cur is None or cur["games"] < entry["games"]:
+            merged_map[cs] = entry
+    merged = sorted(merged_map.values(), key=lambda r: (-r["winrate"], -r["games"]))[:20]
+    _counter_cache[cache_key] = (now, merged)
+    return merged

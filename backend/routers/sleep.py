@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func, extract
-from datetime import date
+from datetime import date, datetime, time, timedelta
 from typing import Optional
 
 from database import get_db
@@ -9,6 +9,106 @@ from models import SleepEntry
 from schemas import SleepCreate, SleepUpdate, SleepOut
 
 router = APIRouter(prefix="/api/sleep", tags=["Sleep"])
+
+
+def _estimate_for_night(reader_mod, prev_day: date, next_day: date) -> Optional[dict]:
+    """Estimate sleep for the night between prev_day and next_day, by finding
+    the longest inactivity gap in [prev_day 18:00, next_day 12:00].
+
+    bedtime = last activity end + 45min ; wake = first activity start - 30min.
+    """
+    activity_start = datetime.combine(prev_day, time(12, 0)).timestamp()
+    activity_end = datetime.combine(next_day, time(18, 0)).timestamp()
+    try:
+        sessions = reader_mod.fetch_sessions(activity_start, activity_end, min_seconds=30)
+    except Exception:
+        return None
+    if not sessions:
+        return None
+
+    intervals = sorted([(float(s["start_unix"]), float(s["end_unix"])) for s in sessions])
+    merged: list[tuple[float, float]] = []
+    for st, en in intervals:
+        if merged and st <= merged[-1][1] + 60:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], en))
+        else:
+            merged.append((st, en))
+    if len(merged) < 2:
+        return None
+
+    sleep_win_start = datetime.combine(prev_day, time(18, 0)).timestamp()
+    sleep_win_end = datetime.combine(next_day, time(12, 0)).timestamp()
+
+    best: Optional[tuple[float, float, float]] = None
+    for i in range(len(merged) - 1):
+        gap_start = merged[i][1]
+        gap_end = merged[i + 1][0]
+        gap = gap_end - gap_start
+        if gap < 2 * 3600:
+            continue
+        ovl_start = max(gap_start, sleep_win_start)
+        ovl_end = min(gap_end, sleep_win_end)
+        if ovl_end - ovl_start < 3600:
+            continue
+        if best is None or gap > best[2]:
+            best = (gap_start, gap_end, gap)
+    if best is None:
+        return None
+
+    last_end, first_start, _ = best
+    bedtime_ts = last_end + 45 * 60
+    waketime_ts = first_start - 30 * 60
+    if waketime_ts - bedtime_ts < 2 * 3600:
+        return None
+
+    bedtime_dt = datetime.fromtimestamp(bedtime_ts)
+    waketime_dt = datetime.fromtimestamp(waketime_ts)
+    hours = round((waketime_ts - bedtime_ts) / 3600.0 * 10) / 10
+    return {
+        "bedtime": bedtime_dt.strftime("%H:%M"),
+        "wake_time": waketime_dt.strftime("%H:%M"),
+        "hours": hours,
+        "last_activity": datetime.fromtimestamp(last_end).strftime("%Y-%m-%d %H:%M"),
+        "first_activity": datetime.fromtimestamp(first_start).strftime("%Y-%m-%d %H:%M"),
+        "source": "screen_time",
+    }
+
+
+def _estimate_sleep_from_pc(target_date: date) -> Optional[dict]:
+    """Heuristic sleep estimate from local PC activity (knowledgeC.db).
+
+    Tries both possible nights for the given date and picks the one with usable
+    activity (a clear 2h+ gap surrounded by activity on both sides):
+    - night ENDING on target_date (prev_day = target_date - 1, next_day = target_date)
+    - night STARTING on target_date (prev_day = target_date, next_day = target_date + 1)
+
+    Prefers the night that has already fully ended (clearer signal). Returns
+    None if neither night has a usable gap.
+    """
+    try:
+        import screen_time_reader as reader
+    except ImportError:
+        return None
+    ok, _ = reader.is_available()
+    if not ok:
+        return None
+
+    # Tentar a noite que termina em target_date (last night, do ponto de vista
+    # de quem acordou hoje). É a mais fiável porque já aconteceu inteira.
+    ended = _estimate_for_night(reader, target_date - timedelta(days=1), target_date)
+    if ended:
+        ended["date"] = target_date.isoformat()
+        ended["night_label"] = f"noite de {(target_date - timedelta(days=1)).strftime('%d/%m')} → {target_date.strftime('%d/%m')}"
+        return ended
+
+    # Fallback: a noite que começa hoje (só faz sentido se já é manhã do dia seguinte).
+    starting = _estimate_for_night(reader, target_date, target_date + timedelta(days=1))
+    if starting:
+        starting["date"] = target_date.isoformat()
+        starting["night_label"] = f"noite de {target_date.strftime('%d/%m')} → {(target_date + timedelta(days=1)).strftime('%d/%m')}"
+        return starting
+
+    return None
 
 
 @router.get("/", response_model=list[SleepOut])
@@ -93,3 +193,16 @@ def delete_sleep(entry_id: int, db: Session = Depends(get_db)):
     db.delete(entry)
     db.commit()
     return {"ok": True}
+
+
+@router.get("/estimate")
+def estimate_sleep(target_date: Optional[date] = Query(None, alias="date")):
+    """Estimate sleep hours for the night following `date` based on PC activity."""
+    d = target_date or (date.today() - timedelta(days=1))
+    est = _estimate_sleep_from_pc(d)
+    if not est:
+        raise HTTPException(
+            status_code=404,
+            detail="Sem actividade no PC suficiente para estimar o sono dessa noite.",
+        )
+    return est

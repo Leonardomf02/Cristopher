@@ -443,6 +443,8 @@ class InvestmentMonthlyPlan(Base):
     month = Column(String, nullable=False, unique=True)   # "2026-04"
     budget = Column(Float, nullable=False, default=300)
     rotational_choices = Column(Text, default="{}")        # JSON: {"alloc_id": "GOOG - Alphabet"}
+    executed_at = Column(DateTime, nullable=True)          # null = plano por executar
+    executed_snapshot = Column(Text, nullable=True)        # JSON: [{ticker, name, asset_type, percentage, amount_eur}]
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 

@@ -16,7 +16,7 @@ REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
 PENDING="$REPO_ROOT/ai-notes-pending.md"
 [ ! -s "$PENDING" ] && { echo "✅ sem notas pendentes"; exit 0; }
 
-BACKEND="${CRISTOPHER_BACKEND:-http://localhost:8000}"
+BACKEND="${CRISTOPHER_BACKEND:-http://localhost:8001}"
 if ! curl -sf --max-time 3 "$BACKEND/api/health" >/dev/null 2>&1; then
   echo "❌ backend não responde em $BACKEND — confirma que está a correr"
   exit 1

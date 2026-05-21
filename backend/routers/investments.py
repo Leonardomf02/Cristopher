@@ -1088,6 +1088,23 @@ def delete_allocation(alloc_id: int, db: Session = Depends(get_db)):
 
 # ── Monthly Plans ────────────────────────────────────────────────
 
+def _serialize_monthly_plan(plan: InvestmentMonthlyPlan) -> dict:
+    return {
+        "id": plan.id,
+        "month": plan.month,
+        "budget": plan.budget,
+        "rotational_choices": (
+            json.loads(plan.rotational_choices)
+            if isinstance(plan.rotational_choices, str)
+            else (plan.rotational_choices or {})
+        ),
+        "executed_at": plan.executed_at.isoformat() if plan.executed_at else None,
+        "executed_snapshot": (
+            json.loads(plan.executed_snapshot) if plan.executed_snapshot else None
+        ),
+    }
+
+
 @router.get("/monthly-plan/{month}")
 def get_monthly_plan(month: str, db: Session = Depends(get_db)):
     """Get or create monthly plan for a given month (format: 2026-04)."""
@@ -1097,12 +1114,7 @@ def get_monthly_plan(month: str, db: Session = Depends(get_db)):
         db.add(plan)
         db.commit()
         db.refresh(plan)
-    return {
-        "id": plan.id,
-        "month": plan.month,
-        "budget": plan.budget,
-        "rotational_choices": json.loads(plan.rotational_choices) if isinstance(plan.rotational_choices, str) else plan.rotational_choices,
-    }
+    return _serialize_monthly_plan(plan)
 
 
 @router.put("/monthly-plan/{month}")
@@ -1119,12 +1131,65 @@ def update_monthly_plan(month: str, data: MonthlyPlanUpdate, db: Session = Depen
         plan.rotational_choices = json.dumps(data.rotational_choices)
     db.commit()
     db.refresh(plan)
-    return {
-        "id": plan.id,
-        "month": plan.month,
-        "budget": plan.budget,
-        "rotational_choices": json.loads(plan.rotational_choices) if isinstance(plan.rotational_choices, str) else plan.rotational_choices,
-    }
+    return _serialize_monthly_plan(plan)
+
+
+@router.post("/monthly-plan/{month}/execute")
+def execute_monthly_plan(month: str, db: Session = Depends(get_db)):
+    """Marca o plano do mês como executado e congela a alocação actual num
+    snapshot. A IA da próxima análise vê o histórico para sugerir o próximo mês
+    com base no que foi mesmo feito."""
+    plan = db.query(InvestmentMonthlyPlan).filter(InvestmentMonthlyPlan.month == month).first()
+    if not plan:
+        plan = InvestmentMonthlyPlan(month=month, budget=300, rotational_choices="{}")
+        db.add(plan)
+        db.commit()
+        db.refresh(plan)
+
+    allocations = db.query(InvestmentAllocation).order_by(InvestmentAllocation.sort_order.asc()).all()
+    snapshot = []
+    for a in allocations:
+        pct = float(a.percentage or 0)
+        amount = round(plan.budget * pct / 100.0, 2) if plan.budget else 0.0
+        snapshot.append({
+            "ticker": a.ticker,
+            "name": a.name,
+            "asset_type": a.asset_type,
+            "percentage": pct,
+            "amount_eur": amount,
+        })
+
+    plan.executed_at = datetime.utcnow()
+    plan.executed_snapshot = json.dumps(snapshot, ensure_ascii=False)
+    db.commit()
+    db.refresh(plan)
+    return _serialize_monthly_plan(plan)
+
+
+@router.delete("/monthly-plan/{month}/execute")
+def unexecute_monthly_plan(month: str, db: Session = Depends(get_db)):
+    """Desfaz o marca-como-executado (útil se foi engano)."""
+    plan = db.query(InvestmentMonthlyPlan).filter(InvestmentMonthlyPlan.month == month).first()
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plano mensal não existe")
+    plan.executed_at = None
+    plan.executed_snapshot = None
+    db.commit()
+    db.refresh(plan)
+    return _serialize_monthly_plan(plan)
+
+
+@router.get("/monthly-plan-history")
+def monthly_plan_history(limit: int = 6, db: Session = Depends(get_db)):
+    """Histórico de planos executados (mais recente primeiro). Usado pela IA."""
+    rows = (
+        db.query(InvestmentMonthlyPlan)
+        .filter(InvestmentMonthlyPlan.executed_at.isnot(None))
+        .order_by(InvestmentMonthlyPlan.executed_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [_serialize_monthly_plan(r) for r in rows]
 
 
 # ── Investment Plans CRUD ────────────────────────────────────────

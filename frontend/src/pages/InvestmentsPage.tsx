@@ -848,6 +848,8 @@ interface MonthlyPlan {
   month: string;
   budget: number;
   rotational_choices: Record<string, string>;
+  executed_at?: string | null;
+  executed_snapshot?: { ticker: string; name: string; asset_type: string; percentage: number; amount_eur: number }[] | null;
 }
 
 interface Suggestion {
@@ -1298,8 +1300,11 @@ function SuggestedPlanTable({
   onAdopted: () => void;
   eur: (v: number) => string;
 }) {
-  // Constrói linhas a partir das sugestões "buy" — usa amount_eur para inferir % ou cai
-  // em distribuição uniforme se nada estiver definido.
+  // Constrói linhas a partir das sugestões "buy". Prioridades para distribuir a %:
+  //   1. usar amount_eur quando a IA o fornece (caminho ideal);
+  //   2. caso contrário, fallback ponderado por convicção (high=3, medium=2, low=1)
+  //      x peso por tipo de ativo (etf=60, crypto=25, stock=15). Evita o velho
+  //      defeito de "todos com a mesma percentagem".
   const initialRows = useMemo<SuggestedRow[]>(() => {
     const buys = suggestions.filter(s => (s.action || '').toLowerCase() === 'buy' && s.ticker);
     if (buys.length === 0) return [];
@@ -1312,12 +1317,26 @@ function SuggestedPlanTable({
         percentage: Math.round(((Number(s.amount_eur) || 0) / totalAmt) * 1000) / 10,
       }));
     }
-    const uniform = Math.floor(1000 / buys.length) / 10;
-    return buys.map(s => ({
+    const convictionWeight: Record<string, number> = { high: 3, medium: 2, low: 1 };
+    const typeWeight: Record<string, number> = { etf: 60, crypto: 25, stock: 15 };
+    const typeCounts: Record<string, number> = {};
+    buys.forEach(s => {
+      const t = (s.asset_type || 'stock').toLowerCase();
+      typeCounts[t] = (typeCounts[t] || 0) + 1;
+    });
+    const raw = buys.map(s => {
+      const t = (s.asset_type || 'stock').toLowerCase();
+      const conv = convictionWeight[(s.conviction || 'medium').toLowerCase()] ?? 2;
+      const typeBudget = typeWeight[t] ?? 10;
+      const perAssetTypeBudget = typeBudget / Math.max(1, typeCounts[t]);
+      return perAssetTypeBudget * conv;
+    });
+    const total = raw.reduce((s, v) => s + v, 0) || 1;
+    return buys.map((s, i) => ({
       ticker: String(s.ticker).toUpperCase(),
       name: s.name || s.ticker,
       asset_type: s.asset_type || 'stock',
-      percentage: uniform,
+      percentage: Math.round((raw[i] / total) * 1000) / 10,
     }));
   }, [suggestions]);
 
@@ -1846,7 +1865,7 @@ function PlannerPanel({ positions, transactions, eur }: {
         </div>
 
         {/* Month navigator + budget */}
-        <div className="flex items-center gap-3 mb-4 p-3 bg-[#1a1a1a] border border-[#333] rounded-xl">
+        <div className="flex items-center gap-3 mb-2 p-3 bg-[#1a1a1a] border border-[#333] rounded-xl">
           <div className="flex items-center gap-2">
             <button onClick={() => navigateMonth(-1)} className="p-1 rounded hover:bg-[#333] text-gray-400 hover:text-white transition-colors"><ChevronLeft size={16} /></button>
             <div className="flex items-center gap-1.5 min-w-[140px] justify-center">
@@ -1868,6 +1887,51 @@ function PlannerPanel({ positions, transactions, eur }: {
               {totalAllocPct.toFixed(0)}%
             </span>
           </div>
+        </div>
+
+        {/* Locker: marca o plano como executado para este mês */}
+        <div className={`flex items-center gap-3 mb-4 px-3 py-2 rounded-xl border ${
+          monthlyPlan?.executed_at
+            ? 'bg-emerald-900/15 border-emerald-700/40'
+            : 'bg-[#1a1a1a] border-[#333]'
+        }`}>
+          {monthlyPlan?.executed_at ? (
+            <>
+              <span className="text-xs text-emerald-300">
+                ✓ Plano marcado como executado em {new Date(monthlyPlan.executed_at).toLocaleString('pt-PT', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+              </span>
+              <span className="text-[10px] text-emerald-500/70">a IA usa este histórico nas próximas análises</span>
+              <button
+                onClick={async () => {
+                  if (!confirm('Desmarcar este plano como executado?')) return;
+                  try {
+                    const mp = await investmentsApi.unexecuteMonthlyPlan(selectedMonth);
+                    setMonthlyPlan(mp);
+                  } catch (e: any) { alert(`Erro: ${e.message}`); }
+                }}
+                className="ml-auto text-[10px] text-gray-400 hover:text-white underline"
+              >desmarcar</button>
+            </>
+          ) : (
+            <>
+              <span className="text-xs text-gray-400">
+                Quando fizeres as transações deste mês, marca o plano como executado.
+              </span>
+              <span className="text-[10px] text-gray-600">a IA usa este histórico nas próximas análises</span>
+              <button
+                onClick={async () => {
+                  if (allocations.length === 0) { alert('Sem ativos no plano.'); return; }
+                  if (!confirm('Marcar o plano de ' + monthLabel + ' como executado? Vai congelar um snapshot da alocação actual.')) return;
+                  try {
+                    const mp = await investmentsApi.executeMonthlyPlan(selectedMonth);
+                    setMonthlyPlan(mp);
+                  } catch (e: any) { alert(`Erro: ${e.message}`); }
+                }}
+                disabled={allocations.length === 0}
+                className="ml-auto text-xs px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-medium"
+              >Marcar como executado</button>
+            </>
+          )}
         </div>
 
         {/* Add allocation form */}
@@ -2204,7 +2268,7 @@ function PlannerPanel({ positions, transactions, eur }: {
           </button>
         </div>
         <p className="text-[11px] text-gray-500 mb-3">
-          Mesma IA dos Sinais IA, mas restrita aos {allocations.length} ativos do teu plano. Guardada automaticamente.
+          É o <em>mesmo motor</em> dos Sinais IA (notícias + sentimento + fundamentals + macro), mas focado só nos {allocations.length} ativos do plano e a sugerir percentagens/montantes para este mês. Sinais IA olha para o mercado todo; Análise do Plano só para o que tens.
         </p>
 
         {excludedTickers.length > 0 && (

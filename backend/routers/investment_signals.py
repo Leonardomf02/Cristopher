@@ -261,11 +261,34 @@ def _portfolio_snapshot(db: Session) -> dict:
             "percentage": float(a.percentage or 0),
         })
 
+    history = (
+        db.query(InvestmentMonthlyPlan)
+        .filter(InvestmentMonthlyPlan.executed_at.isnot(None))
+        .order_by(InvestmentMonthlyPlan.executed_at.desc())
+        .limit(3)
+        .all()
+    )
+    history_lines: list[str] = []
+    for h in history:
+        try:
+            snap = json.loads(h.executed_snapshot) if h.executed_snapshot else []
+        except (json.JSONDecodeError, TypeError):
+            snap = []
+        if not snap:
+            continue
+        parts = ", ".join(
+            f"{x.get('ticker')} {float(x.get('percentage') or 0):.0f}% ({float(x.get('amount_eur') or 0):.0f}€)"
+            for x in snap if x.get("ticker")
+        )
+        history_lines.append(f"  - {h.month} (budget {h.budget:.0f}€): {parts}")
+    history_text = "\n".join(history_lines) if history_lines else "  (sem histórico de execução)"
+
     return {
         "total_value": total,
         "deposits": deposits,
         "positions_text": "\n".join(pos_lines) if pos_lines else "  (sem posições)",
         "plan_text": "\n".join(plan_lines) if plan_lines else "  (sem plano definido)",
+        "history_text": history_text,
         "monthly_budget": budget,
         "candidate_tickers": candidate_tickers,
         "plan_assets": plan_assets,
@@ -523,6 +546,9 @@ PORTFOLIO ATUAL ({portfolio['total_value']:.2f}€ total, {portfolio['deposits']
 
 PLANO DE ALOCAÇÃO ALVO:
 {portfolio['plan_text']}
+
+ÚLTIMOS PLANOS EXECUTADOS (snapshot do que foi mesmo investido em meses anteriores — usa para perceber drift, repetição e ajustes):
+{portfolio.get('history_text', '  (sem histórico de execução)')}
 
 Budget mensal: {portfolio['monthly_budget']:.0f}€
 

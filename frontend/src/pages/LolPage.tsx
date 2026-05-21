@@ -761,6 +761,8 @@ export default function LolPage() {
       {/* ══════════════ MAIN TAB ══════════════ */}
       {activeTab === 'main' && (<>
 
+      <CounterPickPanel ddVersion={ddVersion} />
+
       {/* Stats Overview */}
       {stats && (() => {
         // When showing all games, use Riot API data for consistency with rank banner
@@ -2815,3 +2817,192 @@ function AIPredictionPanel({ stats, history, calibration, onResolve }: {
     </div>
   );
 }
+
+function CounterPickPanel({ ddVersion }: { ddVersion: string }) {
+  const [enemy, setEnemy] = useState('');
+  const [role, setRole] = useState<'jungle' | 'top' | 'mid' | 'adc' | 'support'>('jungle');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [data, setData] = useState<{ personal: any[]; external: any[] } | null>(null);
+  const [champions, setChampions] = useState<{ ddragon_key: string; name: string }[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    lolApi.championsList().then(list => setChampions(list || [])).catch(() => {});
+  }, []);
+
+  const filtered = useMemo(() => {
+    const q = enemy.trim().toLowerCase();
+    if (!q) return [];
+    return champions
+      .filter(c => c.name.toLowerCase().includes(q) || c.ddragon_key.toLowerCase().includes(q))
+      .slice(0, 8);
+  }, [enemy, champions]);
+
+  async function search(name?: string) {
+    const q = (name || enemy).trim();
+    if (!q) return;
+    setEnemy(q);
+    setShowSuggestions(false);
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await lolApi.counterPick(q, role);
+      setData({ personal: res.personal || [], external: res.external || [] });
+    } catch (e: any) {
+      setError(e?.message || 'Erro');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function pickChampion(c: { ddragon_key: string; name: string }) {
+    search(c.name);
+  }
+
+  return (
+    <div className="bg-[#161616] rounded-2xl border border-[#222] p-4 mb-6">
+      <div className="flex items-center gap-2 mb-3">
+        <Search size={16} className="text-yellow-400" />
+        <h3 className="text-sm font-bold">Counter pick</h3>
+        <span className="text-xs text-gray-500 ml-1">— sugere quem joga bem contra um champion</span>
+      </div>
+      <div className="flex flex-col sm:flex-row gap-2">
+        <div className="relative flex-1">
+          <input
+            ref={inputRef}
+            type="text"
+            value={enemy}
+            onChange={e => { setEnemy(e.target.value); setShowSuggestions(true); }}
+            onFocus={() => setShowSuggestions(true)}
+            onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
+            onKeyDown={e => {
+              if (e.key === 'Enter') { search(); }
+              else if (e.key === 'Escape') { setShowSuggestions(false); }
+            }}
+            placeholder="Champion inimigo (ex: Yasuo)"
+            className="w-full bg-[#1a1a1a] border border-[#222] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-yellow-500/50"
+          />
+          {showSuggestions && filtered.length > 0 && (
+            <ul className="absolute z-20 left-0 right-0 mt-1 bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg shadow-xl max-h-64 overflow-y-auto">
+              {filtered.map(c => (
+                <li
+                  key={c.ddragon_key}
+                  onMouseDown={(e) => { e.preventDefault(); pickChampion(c); }}
+                  className="flex items-center gap-2 px-3 py-1.5 hover:bg-white/5 cursor-pointer"
+                >
+                  <img
+                    src={`https://ddragon.leagueoflegends.com/cdn/${ddVersion}/img/champion/${c.ddragon_key}.png`}
+                    alt={c.name}
+                    className="w-6 h-6 rounded"
+                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                  />
+                  <span className="text-sm">{c.name}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        <select
+          value={role}
+          onChange={e => setRole(e.target.value as any)}
+          className="bg-[#1a1a1a] border border-[#222] rounded-lg px-3 py-2 text-sm focus:outline-none"
+        >
+          <option value="jungle">Jungle</option>
+          <option value="top">Top</option>
+          <option value="mid">Mid</option>
+          <option value="adc">ADC</option>
+          <option value="support">Support</option>
+        </select>
+        <button
+          onClick={() => search()}
+          disabled={!enemy.trim() || loading}
+          className="px-4 py-2 bg-yellow-600/20 hover:bg-yellow-600/30 disabled:opacity-40 border border-yellow-500/30 text-yellow-300 rounded-lg text-sm font-medium"
+        >
+          {loading ? 'A procurar…' : 'Procurar'}
+        </button>
+      </div>
+
+      {error && <p className="text-xs text-red-400 mt-2">{error}</p>}
+
+      {data && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+          <CounterTable
+            title="Os meus jogos"
+            subtitle="histórico pessoal contra este champion"
+            rows={data.personal.map(p => ({
+              ddragon_key: p.champion,
+              label: p.champion,
+              winrate: p.winrate,
+              games: p.games,
+              extra: `${p.wins}V/${p.losses}D`,
+            }))}
+            ddVersion={ddVersion}
+            emptyMessage="Sem partidas contra este champion ainda."
+          />
+          <CounterTable
+            title="Fontes externas"
+            subtitle="op.gg + leagueofgraphs (winrate de quem joga contra)"
+            rows={data.external.map(p => {
+              const fromList = champions.find(c => c.name.toLowerCase() === (p.champion_key || '').toLowerCase());
+              const ddKey = fromList?.ddragon_key
+                || (p.champion_slug ? p.champion_slug.charAt(0).toUpperCase() + p.champion_slug.slice(1) : p.champion_key);
+              return {
+                ddragon_key: ddKey,
+                label: p.champion_key,
+                winrate: p.winrate,
+                games: p.games || 0,
+                extra: p.source || '',
+              };
+            })}
+            ddVersion={ddVersion}
+            emptyMessage="Não consegui buscar dados externos agora."
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CounterTable({ title, subtitle, rows, ddVersion, emptyMessage }: {
+  title: string;
+  subtitle: string;
+  rows: { ddragon_key: string; label: string; winrate: number; games: number; extra: string }[];
+  ddVersion: string;
+  emptyMessage: string;
+}) {
+  return (
+    <div className="bg-[#111] rounded-xl border border-[#1f1f1f] overflow-hidden">
+      <div className="px-3 py-2 border-b border-[#1f1f1f]">
+        <p className="text-xs font-bold text-white">{title}</p>
+        <p className="text-[10px] text-gray-500">{subtitle}</p>
+      </div>
+      {rows.length === 0 ? (
+        <p className="p-4 text-xs text-gray-600 text-center">{emptyMessage}</p>
+      ) : (
+        <ul className="divide-y divide-[#1a1a1a]">
+          {rows.slice(0, 12).map((r, idx) => (
+            <li key={`${r.ddragon_key}-${idx}`} className="flex items-center gap-3 px-3 py-2">
+              <span className="w-5 text-[10px] text-gray-600 text-right">{idx + 1}</span>
+              <img
+                src={`https://ddragon.leagueoflegends.com/cdn/${ddVersion}/img/champion/${r.ddragon_key}.png`}
+                alt={r.label}
+                className="w-7 h-7 rounded"
+                onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+              />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm truncate">{r.label}</p>
+                <p className="text-[10px] text-gray-500">{r.extra}{r.games > 0 ? ` · ${r.games} jogos` : ''}</p>
+              </div>
+              <span className={`text-sm font-bold ${r.winrate >= 52 ? 'text-green-400' : r.winrate < 48 ? 'text-red-400' : 'text-gray-300'}`}>
+                {r.winrate.toFixed(0)}%
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+

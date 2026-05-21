@@ -11,13 +11,13 @@
     }
   },
 
-  "forwardPorts": [8000, 5173],
+  "forwardPorts": [8001, 3001],
   "portsAttributes": {
-    "5173": {
+    "3001": {
       "label": "Cristopher (frontend)",
       "onAutoForward": "openBrowser"
     },
-    "8000": {
+    "8001": {
       "label": "Cristopher (backend API)",
       "onAutoForward": "silent"
     }

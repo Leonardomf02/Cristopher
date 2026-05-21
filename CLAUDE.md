@@ -33,21 +33,23 @@ scripts/launchd/       LaunchAgents para autostart no Mac (install.sh, uninstall
 
 Está autostart via LaunchAgent. Para ver estado: `./scripts/launchd/status.sh`. Para reinstalar: `./scripts/launchd/install.sh`.
 
+Atalho: `./start.sh` arranca backend + frontend (mata o que estiver nas portas) e abre o browser.
+
 Manualmente:
 ```bash
-cd backend && source venv/bin/activate && uvicorn main:app --reload --port 8000
+cd backend && source venv/bin/activate && uvicorn main:app --reload --port 8001
 cd frontend && npm run dev
 ```
-- Backend: http://localhost:8000 (docs em /docs)
-- Frontend: http://localhost:5173
+- Backend: http://localhost:8001 (docs em /docs)
+- Frontend: http://localhost:3001
 
 ## Como correr em Codespaces (programar no iPad em viagem)
 
 O `.devcontainer/devcontainer.json` instala dependências automaticamente. Após o codespace arrancar:
 1. Abre 2 terminais
-2. Terminal 1: `cd backend && source venv/bin/activate && uvicorn main:app --reload --host 0.0.0.0 --port 8000`
+2. Terminal 1: `cd backend && source venv/bin/activate && uvicorn main:app --reload --host 0.0.0.0 --port 8001`
 3. Terminal 2: `cd frontend && npm run dev`
-4. O VS Code mostra notificação "Open in Browser" para porta 5173 — carrega para abrir a app
+4. O VS Code mostra notificação "Open in Browser" para porta 3001 — carrega para abrir a app
 
 **Features que NÃO funcionam em Codespaces** (precisam do macOS local):
 - App tracker (`/api/app-usage`)

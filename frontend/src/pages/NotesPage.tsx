@@ -2,8 +2,8 @@ import { useState, useEffect, useRef } from 'react';
 import { format } from 'date-fns';
 import { pt } from 'date-fns/locale';
 import {
-  Plus, X, Trash2, Search, FolderPlus, Pin, PinOff, ChevronLeft,
-  Folder, FileText, MoreHorizontal, Edit3,
+  Plus, X, Trash2, Search, FolderPlus, Pin, PinOff, ChevronLeft, ChevronRight,
+  Folder, FileText,
 } from 'lucide-react';
 import { notesApi } from '../api';
 import { NoteFolder, Note } from '../types';
@@ -11,20 +11,48 @@ import { NoteFolder, Note } from '../types';
 const FOLDER_COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#06B6D4', '#F97316'];
 const NOTE_COLORS = ['', '#1e3a5f', '#1a3d2e', '#3d3520', '#3d1f1f', '#2d1f3d', '#3d1f35'];
 
+const LAST_NOTE_KEY = 'notesLastSelectedId';
+const SIDEBAR_COLLAPSED_KEY = 'notesSidebarCollapsed';
+
 export default function NotesPage() {
   const [folders, setFolders] = useState<NoteFolder[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
-  const [selectedFolder, setSelectedFolder] = useState<number | null>(null); // null = all notes
+  const [selectedFolder, setSelectedFolder] = useState<number | null>(null);
   const [selectedNote, setSelectedNote] = useState<Note | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [showNewFolder, setShowNewFolder] = useState(false);
   const [newFolderForm, setNewFolderForm] = useState({ name: '', color: '#3B82F6' });
   const [editingTitle, setEditingTitle] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1';
+  });
+  const [autoSelected, setAutoSelected] = useState(false);
   const contentRef = useRef<HTMLTextAreaElement>(null);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => { loadFolders(); loadNotes(); }, []);
   useEffect(() => { loadNotes(); }, [selectedFolder, searchQuery]);
+
+  useEffect(() => {
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, sidebarCollapsed ? '1' : '0');
+  }, [sidebarCollapsed]);
+
+  // Auto-open last note when the list first becomes available.
+  useEffect(() => {
+    if (autoSelected || selectedNote) return;
+    if (notes.length === 0) return;
+    const lastId = Number(localStorage.getItem(LAST_NOTE_KEY) || '0');
+    const found = lastId ? notes.find(n => n.id === lastId) : null;
+    const pick = found || notes[0];
+    if (pick) {
+      setSelectedNote(pick);
+      setAutoSelected(true);
+    }
+  }, [notes, autoSelected, selectedNote]);
+
+  useEffect(() => {
+    if (selectedNote) localStorage.setItem(LAST_NOTE_KEY, String(selectedNote.id));
+  }, [selectedNote?.id]);
 
   async function loadFolders() {
     const data = await notesApi.listFolders();
@@ -83,8 +111,6 @@ export default function NotesPage() {
     if (!selectedNote) return;
     setSelectedNote(prev => prev ? { ...prev, [field]: value } : null);
     setNotes(prev => prev.map(n => n.id === selectedNote.id ? { ...n, [field]: value } : n));
-
-    // Auto-save with debounce
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     saveTimeoutRef.current = setTimeout(async () => {
       await notesApi.update(selectedNote.id, { [field]: value });
@@ -99,123 +125,132 @@ export default function NotesPage() {
 
   const pinnedNotes = notes.filter(n => n.pinned);
   const unpinnedNotes = notes.filter(n => !n.pinned);
-
   const allNotesCount = folders.reduce((sum, f) => sum + f.note_count, 0);
+  const currentFolderName = selectedFolder === null
+    ? 'Todas as notas'
+    : folders.find(f => f.id === selectedFolder)?.name || 'Notas';
 
-  // Em mobile mostramos editor OU listas, conforme houver nota seleccionada.
+  // Em mobile mostramos editor OU sidebar, conforme houver nota seleccionada.
   const mobileShowEditor = !!selectedNote;
 
   return (
     <div className="flex flex-col lg:flex-row gap-0 lg:h-[calc(100vh-100px)]">
-      {/* Folders sidebar */}
-      <div className={`${mobileShowEditor ? 'hidden lg:flex' : 'flex'} w-full lg:w-56 lg:shrink-0 lg:border-r lg:border-[#222] lg:pr-4 flex-col max-h-60 lg:max-h-none border-b border-[#222] lg:border-b-0 pb-3 lg:pb-0 mb-3 lg:mb-0`}>
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-bold">Notas</h2>
-          <button onClick={() => setShowNewFolder(true)}
-            className="text-gray-400 hover:text-white p-1">
-            <FolderPlus size={18} />
-          </button>
-        </div>
-
-        {/* Search */}
-        <div className="relative mb-4">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
-          <input
-            type="text"
-            placeholder="Pesquisar notas..."
-            value={searchQuery}
-            onChange={e => setSearchQuery(e.target.value)}
-            className="w-full bg-[#222] border border-[#333] rounded-xl pl-9 pr-3 py-2 text-xs focus:outline-none focus:border-blue-500"
-          />
-        </div>
-
-        {/* All notes */}
-        <button
-          onClick={() => setSelectedFolder(null)}
-          className={`flex items-center gap-2 px-3 py-2 rounded-xl mb-1 text-sm transition-all ${
-            selectedFolder === null ? 'bg-white/10 text-white' : 'text-gray-400 hover:bg-white/5'
-          }`}
-        >
-          <FileText size={16} />
-          <span className="flex-1 text-left">Todas as notas</span>
-          <span className="text-xs text-gray-500">{allNotesCount}</span>
-        </button>
-
-        {/* Folder list */}
-        <div className="flex-1 overflow-y-auto space-y-1">
-          {folders.map(folder => (
-            <div key={folder.id}
-              onClick={() => setSelectedFolder(folder.id)}
-              className={`flex items-center gap-2 px-3 py-2 rounded-xl cursor-pointer group transition-all ${
-                selectedFolder === folder.id ? 'bg-white/10 text-white' : 'text-gray-400 hover:bg-white/5'
-              }`}
-            >
-              <Folder size={16} style={{ color: folder.color }} />
-              <span className="flex-1 text-sm truncate">{folder.name}</span>
-              <span className="text-xs text-gray-500">{folder.note_count}</span>
-              <button onClick={e => { e.stopPropagation(); deleteFolder(folder.id); }}
-                className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-400">
-                <Trash2 size={12} />
+      {/* Unified sidebar: search + folders + notes list */}
+      {!sidebarCollapsed && (
+        <div className={`${mobileShowEditor ? 'hidden lg:flex' : 'flex'} w-full lg:w-72 lg:shrink-0 lg:border-r lg:border-[#222] flex-col max-h-[60vh] lg:max-h-none border-b border-[#222] lg:border-b-0 pb-3 lg:pb-0 mb-3 lg:mb-0`}>
+          <div className="px-4 py-3 border-b border-[#222] flex items-center justify-between">
+            <div className="flex items-center gap-2 min-w-0">
+              <h2 className="text-lg font-bold truncate">Notas</h2>
+              <span className="text-xs text-gray-500">·</span>
+              <span className="text-xs text-gray-400 truncate">{currentFolderName}</span>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              <button onClick={() => setShowNewFolder(true)} title="Nova pasta"
+                className="text-gray-400 hover:text-white p-1">
+                <FolderPlus size={16} />
+              </button>
+              <button onClick={createNote} title="Nova nota"
+                className="text-blue-400 hover:text-blue-300 p-1">
+                <Plus size={18} />
+              </button>
+              <button onClick={() => setSidebarCollapsed(true)} title="Recolher"
+                className="hidden lg:inline-flex text-gray-400 hover:text-white p-1">
+                <ChevronLeft size={16} />
               </button>
             </div>
-          ))}
-        </div>
-      </div>
+          </div>
 
-      {/* Notes list */}
-      <div className={`${mobileShowEditor ? 'hidden lg:flex' : 'flex'} w-full lg:w-72 lg:shrink-0 lg:border-r lg:border-[#222] flex-col max-h-[60vh] lg:max-h-none border-b border-[#222] lg:border-b-0 pb-3 lg:pb-0 mb-3 lg:mb-0`}>
-        <div className="px-4 py-3 border-b border-[#222] flex items-center justify-between">
-          <h3 className="text-sm font-bold text-gray-400">
-            {selectedFolder === null
-              ? 'Todas as notas'
-              : folders.find(f => f.id === selectedFolder)?.name || 'Notas'}
-          </h3>
-          <button onClick={createNote}
-            className="text-blue-400 hover:text-blue-300 p-1">
-            <Plus size={18} />
+          <div className="px-4 pt-3">
+            <div className="relative">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+              <input
+                type="text"
+                placeholder="Pesquisar notas..."
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                className="w-full bg-[#222] border border-[#333] rounded-xl pl-9 pr-3 py-2 text-xs focus:outline-none focus:border-blue-500"
+              />
+            </div>
+          </div>
+
+          <div className="px-2 pt-3 pb-2 flex flex-wrap gap-1">
+            <button
+              onClick={() => setSelectedFolder(null)}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs transition-all ${
+                selectedFolder === null ? 'bg-white/10 text-white' : 'text-gray-400 hover:bg-white/5'
+              }`}
+            >
+              <FileText size={12} />
+              Todas
+              <span className="text-[10px] text-gray-500">({allNotesCount})</span>
+            </button>
+            {folders.map(folder => (
+              <div key={folder.id} className="group flex items-center">
+                <button
+                  onClick={() => setSelectedFolder(folder.id)}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs transition-all ${
+                    selectedFolder === folder.id ? 'bg-white/10 text-white' : 'text-gray-400 hover:bg-white/5'
+                  }`}
+                >
+                  <Folder size={12} style={{ color: folder.color }} />
+                  <span className="truncate max-w-[100px]">{folder.name}</span>
+                  <span className="text-[10px] text-gray-500">({folder.note_count})</span>
+                </button>
+                <button onClick={() => deleteFolder(folder.id)}
+                  className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-400 ml-0.5">
+                  <Trash2 size={11} />
+                </button>
+              </div>
+            ))}
+          </div>
+
+          <div className="flex-1 overflow-y-auto border-t border-[#222]">
+            {pinnedNotes.length > 0 && (
+              <>
+                <div className="px-4 py-2 text-[10px] font-bold text-gray-600 uppercase tracking-wider">
+                  Fixadas
+                </div>
+                {pinnedNotes.map(note => (
+                  <NoteListItem key={note.id} note={note} isSelected={selectedNote?.id === note.id}
+                    onSelect={() => selectNote(note)} onDelete={() => deleteNote(note.id)}
+                    onTogglePin={() => togglePin(note)} />
+                ))}
+              </>
+            )}
+
+            {unpinnedNotes.length > 0 && pinnedNotes.length > 0 && (
+              <div className="px-4 py-2 text-[10px] font-bold text-gray-600 uppercase tracking-wider">
+                Notas
+              </div>
+            )}
+            {unpinnedNotes.map(note => (
+              <NoteListItem key={note.id} note={note} isSelected={selectedNote?.id === note.id}
+                onSelect={() => selectNote(note)} onDelete={() => deleteNote(note.id)}
+                onTogglePin={() => togglePin(note)} />
+            ))}
+
+            {notes.length === 0 && (
+              <div className="p-8 text-center text-gray-600 text-sm">
+                {searchQuery ? 'Nenhuma nota encontrada' : 'Sem notas — cria uma!'}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {sidebarCollapsed && (
+        <div className="hidden lg:flex flex-col items-center py-3 px-1 border-r border-[#222]">
+          <button onClick={() => setSidebarCollapsed(false)} title="Mostrar notas"
+            className="text-gray-400 hover:text-white p-1.5 rounded hover:bg-white/5">
+            <ChevronRight size={16} />
           </button>
         </div>
-
-        <div className="flex-1 overflow-y-auto">
-          {/* Pinned */}
-          {pinnedNotes.length > 0 && (
-            <>
-              <div className="px-4 py-2 text-[10px] font-bold text-gray-600 uppercase tracking-wider">
-                Fixadas
-              </div>
-              {pinnedNotes.map(note => (
-                <NoteListItem key={note.id} note={note} isSelected={selectedNote?.id === note.id}
-                  onSelect={() => selectNote(note)} onDelete={() => deleteNote(note.id)}
-                  onTogglePin={() => togglePin(note)} />
-              ))}
-            </>
-          )}
-
-          {/* Regular */}
-          {unpinnedNotes.length > 0 && pinnedNotes.length > 0 && (
-            <div className="px-4 py-2 text-[10px] font-bold text-gray-600 uppercase tracking-wider">
-              Notas
-            </div>
-          )}
-          {unpinnedNotes.map(note => (
-            <NoteListItem key={note.id} note={note} isSelected={selectedNote?.id === note.id}
-              onSelect={() => selectNote(note)} onDelete={() => deleteNote(note.id)}
-              onTogglePin={() => togglePin(note)} />
-          ))}
-
-          {notes.length === 0 && (
-            <div className="p-8 text-center text-gray-600 text-sm">
-              {searchQuery ? 'Nenhuma nota encontrada' : 'Sem notas — cria uma!'}
-            </div>
-          )}
-        </div>
-      </div>
+      )}
 
       {/* Note editor */}
       <div className={`${mobileShowEditor ? 'flex' : 'hidden lg:flex'} flex-1 flex-col min-w-0`}>
         {selectedNote ? (
           <>
-            {/* Editor toolbar */}
             <div className="px-3 sm:px-6 py-3 border-b border-[#222] flex items-center gap-2 sm:gap-3 flex-wrap">
               <button onClick={() => setSelectedNote(null)}
                 className="lg:hidden p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-white/10 mr-1" aria-label="Voltar">
@@ -229,7 +264,6 @@ export default function NotesPage() {
                 {selectedNote.pinned ? <Pin size={16} /> : <PinOff size={16} />}
               </button>
 
-              {/* Note color */}
               <div className="flex gap-1.5 ml-2">
                 {NOTE_COLORS.map((color, i) => (
                   <button key={i}
@@ -244,7 +278,6 @@ export default function NotesPage() {
                 ))}
               </div>
 
-              {/* Folder selector */}
               <select
                 value={selectedNote.folder_id || ''}
                 onChange={async e => {
@@ -272,7 +305,6 @@ export default function NotesPage() {
               </button>
             </div>
 
-            {/* Title + Content */}
             <div className="flex-1 overflow-y-auto px-6 py-4"
               style={{ backgroundColor: selectedNote.color || 'transparent' }}
             >
@@ -305,7 +337,6 @@ export default function NotesPage() {
         )}
       </div>
 
-      {/* New Folder Modal */}
       {showNewFolder && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50"
           onClick={() => setShowNewFolder(false)}>
@@ -389,6 +420,14 @@ function NoteListItem({ note, isSelected, onSelect, onDelete, onTogglePin }: {
           <div className="w-2 h-2 rounded-full shrink-0 mt-1.5"
             style={{ backgroundColor: note.color }} />
         )}
+        <button onClick={(e) => { e.stopPropagation(); onTogglePin(); }}
+          className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-yellow-400 p-0.5">
+          {note.pinned ? <PinOff size={11} /> : <Pin size={11} />}
+        </button>
+        <button onClick={(e) => { e.stopPropagation(); onDelete(); }}
+          className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-400 p-0.5">
+          <Trash2 size={11} />
+        </button>
       </div>
     </div>
   );

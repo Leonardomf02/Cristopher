@@ -63,8 +63,11 @@ FS_SCAN_CODE_EXTS = {
     ".md", ".sql", ".sh", ".zsh", ".bash", ".dockerfile",
 }
 
-# Strong markers (real "project" boundary). Prefer these.
-STRONG_MARKERS = {".git", ".gitignore", ".hg", ".svn"}
+# Strong markers (real "project" boundary). Only the version control directory
+# itself — .gitignore is pervasive inside monorepos and would split subfolders.
+# CLAUDE.md também é forte: o utilizador coloca-o no root de cada projecto
+# (incluindo cadeiras da Uni que não têm .git próprio).
+STRONG_MARKERS = {".git", ".hg", ".svn", "CLAUDE.md"}
 # Weak markers (build target — could be a sub-component of a larger project).
 WEAK_MARKERS = {"package.json", "pom.xml", "Cargo.toml", "go.mod",
                 "pyproject.toml", "build.gradle", "build.gradle.kts",

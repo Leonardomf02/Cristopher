@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { format, subDays } from 'date-fns';
 import { pt } from 'date-fns/locale';
-import { Plus, X, Trash2, Moon, Sun, Star, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Plus, X, Trash2, Moon, Sun, Star, ChevronLeft, ChevronRight, Wand2, Loader2 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { sleepApi } from '../api';
 import { SleepEntry, SleepStats } from '../types';
@@ -24,6 +24,9 @@ export default function SleepPage() {
     quality: 3,
     notes: '',
   });
+  const [estimating, setEstimating] = useState(false);
+  const [estimateError, setEstimateError] = useState<string | null>(null);
+  const [estimateInfo, setEstimateInfo] = useState<string | null>(null);
 
   useEffect(() => { loadData(); }, [statsDays]);
 
@@ -41,7 +44,25 @@ export default function SleepPage() {
   function openNew() {
     setEditingEntry(null);
     setForm({ date: format(new Date(), 'yyyy-MM-dd'), bedtime: '23:00', wake_time: '07:00', hours: 8, quality: 3, notes: '' });
+    setEstimateError(null);
+    setEstimateInfo(null);
     setShowModal(true);
+  }
+
+  async function estimateFromPC() {
+    setEstimating(true);
+    setEstimateError(null);
+    setEstimateInfo(null);
+    try {
+      const est = await sleepApi.estimate(form.date);
+      setForm(f => ({ ...f, bedtime: est.bedtime, wake_time: est.wake_time, hours: est.hours }));
+      const label = (est as any).night_label || '';
+      setEstimateInfo(`${label ? label + ' · ' : ''}última actividade ${est.last_activity.slice(-5)} → primeira ${est.first_activity.slice(-5)}`);
+    } catch (e: any) {
+      setEstimateError(e?.message || 'Sem actividade suficiente');
+    } finally {
+      setEstimating(false);
+    }
   }
 
   function openEdit(entry: SleepEntry) {
@@ -54,6 +75,8 @@ export default function SleepPage() {
       quality: entry.quality || 3,
       notes: entry.notes || '',
     });
+    setEstimateError(null);
+    setEstimateInfo(null);
     setShowModal(true);
   }
 
@@ -257,10 +280,26 @@ export default function SleepPage() {
 
             <div className="space-y-4">
               <div>
-                <label className="text-xs text-gray-500 block mb-1">Data</label>
+                <label className="text-xs text-gray-500 block mb-1">Data em que acordei</label>
                 <input type="date" value={form.date} onChange={e => setForm(f => ({ ...f, date: e.target.value }))}
                   className="w-full bg-[#222] border border-[#333] rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-purple-500" />
               </div>
+
+              <button
+                type="button"
+                onClick={estimateFromPC}
+                disabled={estimating}
+                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-purple-500/10 hover:bg-purple-500/20 disabled:opacity-50 border border-purple-500/30 text-purple-300 rounded-xl text-sm font-medium"
+              >
+                {estimating ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
+                Estimar pelo uso do PC
+              </button>
+              {estimateInfo && (
+                <p className="text-xs text-purple-300/80">{estimateInfo}</p>
+              )}
+              {estimateError && (
+                <p className="text-xs text-red-400">{estimateError}</p>
+              )}
 
               <div className="flex gap-3">
                 <div className="flex-1">

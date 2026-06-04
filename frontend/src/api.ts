@@ -291,6 +291,7 @@ export const investmentsApi = {
   trades: () => request<any[]>('/investments/trades'),
   transactions: () => request<any[]>('/investments/transactions'),
   summary: () => request<any>('/investments/summary'),
+  taxInsight: () => request<{ gross_return_eur: number; tax_estimate_eur: number; after_tax_eur: number; positions: any[]; nudges: string[]; note: string }>('/investments/tax-insight'),
   importPDF: (file: File, month?: string) => {
     const form = new FormData();
     form.append('file', file);

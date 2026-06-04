@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import csv
 import io
 import os
@@ -42,6 +42,41 @@ def _after_tax_return(total_return: float, rate: float = CG_TAX_RATE) -> float:
 
 def _coerce_snapshot_source(s: str) -> str:
     return s if s in VALID_SNAPSHOT_SOURCES else "extra"
+
+
+# ── Imposto sobre mais-valias PT (estimado) ──────────────────────
+# Cripto: <365d = 28%, ≥365d = ISENTO. Valores mobiliários (ETF/ações): 28% com
+# exclusão por tempo de detenção (>2a 25,2% · >5a 22,4% · >8a 19,6%). O tempo de
+# detenção é estimado pela 1ª aparição do ativo nos extratos (limite inferior →
+# conservador). Não substitui aconselhamento fiscal.
+CRYPTO_TICKERS = {"BTC", "ETH", "SOL", "ADA", "XRP", "DOGE", "DOT", "AVAX", "MATIC", "LTC", "BNB", "LINK"}
+
+
+def _tax_class(instrument: str, source: str) -> str:
+    if (source or "").lower() == "finst" or (instrument or "").upper() in CRYPTO_TICKERS:
+        return "crypto"
+    return "security"
+
+
+def _effective_cg_rate(tax_class: str, holding_days: int) -> float:
+    if tax_class == "crypto":
+        return 0.0 if holding_days >= 365 else CG_TAX_RATE
+    if holding_days >= 8 * 365:
+        return 0.196
+    if holding_days >= 5 * 365:
+        return 0.224
+    if holding_days >= 2 * 365:
+        return 0.252
+    return CG_TAX_RATE
+
+
+def _holding_days_from_month(first_month: str, today: date) -> int:
+    """Dias desde o 1º do mês da primeira aparição do ativo nos extratos."""
+    try:
+        y, m = first_month.split("-")[:2]
+        return max(0, (today - date(int(y), int(m), 1)).days)
+    except (ValueError, AttributeError):
+        return 0
 
 
 # ── Endpoints ────────────────────────────────────────────────────
@@ -105,6 +140,67 @@ def get_summary(db: Session = Depends(get_db)):
         "positions_count": len(positions),
         "latest_statement": latest.statement_date.isoformat() if latest else None,
         "account_value": latest.account_value if latest else total_value,
+    }
+
+
+@router.get("/tax-insight")
+def tax_insight(db: Session = Depends(get_db)):
+    """Imposto de mais-valias PT estimado por posição + avisos acionáveis.
+    O imposto é das poucas alavancas que um retail controla mesmo (ver SPIVA: o
+    alpha quase não é atingível). Detenção estimada pela 1ª aparição nos extratos."""
+    today = date.today()
+    all_positions = db.query(InvestmentPosition).all()
+
+    # 1ª aparição (proxy de compra) e snapshot mais recente, por (instrumento, fonte)
+    first_month: dict[tuple, str] = {}
+    latest: dict[tuple, InvestmentPosition] = {}
+    for p in all_positions:
+        key = (p.instrument, p.source or "")
+        sd = p.statement_date or ""
+        if key not in first_month or sd < first_month[key]:
+            first_month[key] = sd
+        cur = latest.get(key)
+        if cur is None or (p.statement_date or "") > (cur.statement_date or ""):
+            latest[key] = p
+
+    rows, nudges = [], []
+    gross_total = tax_total = 0.0
+    for key, p in latest.items():
+        gain = p.return_eur or 0.0
+        cls = _tax_class(p.instrument, p.source)
+        held = _holding_days_from_month(first_month.get(key, ""), today)
+        rate = _effective_cg_rate(cls, held)
+        tax = round(max(0.0, gain) * rate, 2)
+        gross_total += gain
+        tax_total += tax
+
+        days_to_exempt = max(0, 365 - held) if cls == "crypto" else None
+        row = {
+            "instrument": p.instrument, "source": p.source, "tax_class": cls,
+            "gain_eur": round(gain, 2), "holding_days": held,
+            "effective_rate_pct": round(rate * 100, 1), "tax_estimate_eur": tax,
+            "days_to_exemption": days_to_exempt,
+        }
+        rows.append(row)
+
+        # Avisos que poupam dinheiro de verdade (cripto: regra dos 365 dias).
+        if cls == "crypto" and 0 < days_to_exempt:
+            exempt_on = (today + timedelta(days=days_to_exempt)).isoformat()
+            if gain > 0:
+                nudges.append(f"{p.instrument}: vender agora paga 28% (~{round(gain * CG_TAX_RATE)}€). A partir de {exempt_on} (~{days_to_exempt} dias) os ganhos ficam ISENTOS — vale a pena segurar.")
+            else:
+                nudges.append(f"{p.instrument}: faz 1 ano em {exempt_on} (~{days_to_exempt} dias). A partir daí os ganhos ficam isentos de imposto — bom motivo para segurar até lá.")
+
+    rows.sort(key=lambda r: r["tax_estimate_eur"], reverse=True)
+    after_tax = round(gross_total - tax_total, 2)
+    return {
+        "as_of": today.isoformat(),
+        "gross_return_eur": round(gross_total, 2),
+        "tax_estimate_eur": round(tax_total, 2),
+        "after_tax_eur": after_tax,
+        "positions": rows,
+        "nudges": nudges,
+        "note": "Estimativa conservadora (detenção a partir da 1ª aparição nos extratos; perdas podem compensar ganhos). Não é aconselhamento fiscal.",
     }
 
 

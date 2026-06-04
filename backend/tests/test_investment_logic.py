@@ -8,7 +8,12 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from routers.investments import _after_tax_return, _coerce_snapshot_source, CG_TAX_RATE
+from datetime import date
+
+from routers.investments import (
+    _after_tax_return, _coerce_snapshot_source, CG_TAX_RATE,
+    _tax_class, _effective_cg_rate, _holding_days_from_month,
+)
 from routers.investment_signals import _pulse_level
 
 
@@ -52,6 +57,34 @@ def test_pulse_hint_nonempty():
         level, hint = _pulse_level(dd)
         assert isinstance(hint, str) and len(hint) > 10
         assert level in ("normal", "dip", "deep")
+
+
+def test_tax_class():
+    assert _tax_class("BTC", "finst") == "crypto"
+    assert _tax_class("ETH", "trading212") == "crypto"   # ticker conhecido
+    assert _tax_class("VUAA", "trading212") == "security"
+    assert _tax_class("NVDA", "trading212") == "security"
+
+
+def test_crypto_one_year_exemption():
+    # cripto < 1 ano paga 28%; ≥ 1 ano fica isenta
+    assert _effective_cg_rate("crypto", 364) == 0.28
+    assert _effective_cg_rate("crypto", 365) == 0.0
+    assert _effective_cg_rate("crypto", 800) == 0.0
+
+
+def test_security_holding_exclusions():
+    assert _effective_cg_rate("security", 100) == 0.28        # < 2 anos
+    assert _effective_cg_rate("security", 2 * 365) == 0.252   # 2-5 anos
+    assert _effective_cg_rate("security", 5 * 365) == 0.224   # 5-8 anos
+    assert _effective_cg_rate("security", 8 * 365) == 0.196   # 8+ anos
+
+
+def test_holding_days_from_month():
+    today = date(2026, 6, 4)
+    assert _holding_days_from_month("2026-04", today) == (today - date(2026, 4, 1)).days
+    assert _holding_days_from_month("2026-06", today) == 3
+    assert _holding_days_from_month("lixo", today) == 0   # nunca rebenta
 
 
 if __name__ == "__main__":

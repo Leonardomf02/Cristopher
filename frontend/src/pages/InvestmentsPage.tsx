@@ -67,6 +67,7 @@ export default function InvestmentsPage() {
   const [trades, setTrades] = useState<Trade[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
+  const [taxInsight, setTaxInsight] = useState<{ gross_return_eur: number; tax_estimate_eur: number; after_tax_eur: number; positions: any[]; nudges: string[]; note: string } | null>(null);
   const [tab, setTab] = useState<Tab>('overview');
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<any>(null);
@@ -206,6 +207,7 @@ export default function InvestmentsPage() {
     setTrades(trd);
     setTransactions(txn);
     setSummary(sum);
+    investmentsApi.taxInsight().then(setTaxInsight).catch(() => {});
   }
 
   async function handleImport(file: File, type: 'pdf' | 'finst-csv') {
@@ -429,10 +431,12 @@ export default function InvestmentsPage() {
               return `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`;
             })()}
             sub2={(() => {
+              if (sourceFilter === 'all' && taxInsight) {
+                return `líquido de imposto: ${eur(taxInsight.after_tax_eur)} (imp. est. ~${eur(taxInsight.tax_estimate_eur)})`;
+              }
               const totalRet = filteredPositions.reduce((s, p) => s + (p.return_eur ?? 0), 0);
               if (totalRet <= 0) return 'sem mais-valia tributável';
-              const net = totalRet * 0.72;
-              return `líquido 28%: ${eur(net)} (imposto ~${eur(totalRet * 0.28)} se vendesses hoje)`;
+              return `líquido ~28%: ${eur(totalRet * 0.72)} (imp. ~${eur(totalRet * 0.28)})`;
             })()}
             color={filteredPositions.reduce((s, p) => s + (p.return_eur ?? 0), 0) >= 0 ? 'green' : 'red'}
           />
@@ -442,6 +446,57 @@ export default function InvestmentsPage() {
             sub={summary.total_withdrawals > 0 ? `Levantamentos: ${eur(summary.total_withdrawals)}` : undefined}
           />
           <SummaryCard label="Posições" value={String(filteredPositions.length)} />
+        </div>
+      )}
+
+      {/* Imposto inteligente (mais-valias PT) — a alavanca que controlas mesmo */}
+      {taxInsight && sourceFilter === 'all' && (taxInsight.nudges.length > 0 || taxInsight.tax_estimate_eur > 0) && (
+        <div className="bg-[#161616] border border-[#222] rounded-2xl p-5">
+          <div className="flex items-center gap-2 mb-3">
+            <Coins size={16} className="text-emerald-400" />
+            <h2 className="text-sm font-semibold text-white">Imposto estimado (mais-valias PT)</h2>
+            <span className="text-[11px] text-gray-500 ml-auto">
+              bruto {eur(taxInsight.gross_return_eur)} · imp. ~{eur(taxInsight.tax_estimate_eur)} · líquido {eur(taxInsight.after_tax_eur)}
+            </span>
+          </div>
+          {taxInsight.nudges.length > 0 && (
+            <div className="space-y-1.5 mb-3">
+              {taxInsight.nudges.map((n, i) => (
+                <div key={i} className="flex items-start gap-2 text-xs text-emerald-200 bg-emerald-900/12 border border-emerald-800/30 rounded-lg px-2.5 py-1.5">
+                  <Lightbulb size={13} className="mt-0.5 shrink-0 text-emerald-400" />
+                  <span>{n}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-gray-500 border-b border-[#222]">
+                  <th className="text-left font-normal py-1">Ativo</th>
+                  <th className="text-right font-normal">Ganho</th>
+                  <th className="text-right font-normal">Detido</th>
+                  <th className="text-right font-normal">Taxa</th>
+                  <th className="text-right font-normal">Imp. est.</th>
+                </tr>
+              </thead>
+              <tbody>
+                {taxInsight.positions.filter((p: any) => Math.abs(p.gain_eur) > 0.01).map((p: any, i: number) => (
+                  <tr key={i} className="border-b border-[#1a1a1a]">
+                    <td className="py-1 text-white">
+                      {p.instrument}
+                      {p.tax_class === 'crypto' && <span className="ml-1.5 text-[9px] px-1 py-0.5 rounded bg-amber-900/40 text-amber-300">cripto</span>}
+                    </td>
+                    <td className={`text-right font-mono ${p.gain_eur >= 0 ? 'text-green-400' : 'text-red-400'}`}>{eur(p.gain_eur)}</td>
+                    <td className="text-right text-gray-400">{Math.round(p.holding_days / 30)}m{p.days_to_exemption ? ` · isento em ${Math.round(p.days_to_exemption / 30)}m` : ''}</td>
+                    <td className="text-right text-gray-300">{p.effective_rate_pct}%</td>
+                    <td className="text-right font-mono text-gray-300">{eur(p.tax_estimate_eur)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-[10px] text-gray-600 mt-2">{taxInsight.note}</p>
         </div>
       )}
 

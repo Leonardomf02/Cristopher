@@ -14,7 +14,7 @@ from routers.investments import (
     _after_tax_return, _coerce_snapshot_source, CG_TAX_RATE,
     _tax_class, _effective_cg_rate, _holding_days_from_month,
 )
-from routers.investment_signals import _pulse_level
+from routers.investment_signals import _pulse_level, _entry_cost_pct, _net_after_cost_tax
 
 
 def test_after_tax_taxes_only_gains():
@@ -85,6 +85,21 @@ def test_holding_days_from_month():
     assert _holding_days_from_month("2026-04", today) == (today - date(2026, 4, 1)).days
     assert _holding_days_from_month("2026-06", today) == 3
     assert _holding_days_from_month("lixo", today) == 0   # nunca rebenta
+
+
+def test_entry_cost_ordering():
+    # cripto custa mais que ação, que custa mais (ou igual) que ETF
+    assert _entry_cost_pct("crypto") > _entry_cost_pct("stock") > _entry_cost_pct("etf")
+    assert _entry_cost_pct("etf") == 0.15
+
+
+def test_net_after_cost_tax():
+    # ganho de 10% numa ETF (custo 0.15%): (10-0.15)*0.72 ≈ 7.09
+    assert abs(_net_after_cost_tax(10.0, "etf") - (9.85 * 0.72)) < 1e-6
+    # cripto +10% (custo 1%): (10-1)*0.72 = 6.48
+    assert abs(_net_after_cost_tax(10.0, "crypto") - (9.0 * 0.72)) < 1e-6
+    # perda não paga imposto, só leva o custo
+    assert _net_after_cost_tax(-5.0, "stock") == round(-5.0 - 0.30, 3)
 
 
 if __name__ == "__main__":

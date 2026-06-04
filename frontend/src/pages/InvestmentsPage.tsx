@@ -4404,6 +4404,25 @@ function BacktestCard({ data }: { data: any }) {
         <BarChart3 size={14} className="text-purple-400" /> Backtest vs {benchLabel}
         <span className="text-xs text-gray-500 font-normal">N={data.sample_size}</span>
       </h3>
+
+      {/* Veredicto HONESTO: líquido de custos + imposto. É o número que diz a verdade. */}
+      {data.net_scorecard && (
+        <div className={`mb-3 px-3 py-2.5 rounded-lg border ${
+          data.net_scorecard.avg_net_alpha_pct > 0.5
+            ? 'bg-green-900/20 border-green-800/40 text-green-200'
+            : data.net_scorecard.avg_net_alpha_pct < -0.5
+              ? 'bg-red-900/20 border-red-800/40 text-red-200'
+              : 'bg-amber-900/20 border-amber-800/40 text-amber-200'
+        }`}>
+          <div className="flex items-center gap-2 text-[11px] font-semibold mb-1">
+            <Target size={12} /> Veredicto líquido de custos + imposto 28%
+            <span className="ml-auto font-mono">α {data.net_scorecard.avg_net_alpha_pct > 0 ? '+' : ''}{data.net_scorecard.avg_net_alpha_pct}%</span>
+          </div>
+          <p className="text-xs leading-snug">{data.net_scorecard.verdict}</p>
+          <p className="text-[10px] opacity-60 mt-1">{data.net_scorecard.cost_model}</p>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3">
         <Metric
           label={`bate ${benchLabel}`}

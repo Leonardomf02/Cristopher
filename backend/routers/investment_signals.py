@@ -1767,6 +1767,25 @@ Identifica fraquezas em cada uma. Devolve o JSON pedido."""
     return _serialize(s)
 
 
+def _entry_cost_pct(asset_type: str) -> float:
+    """Custo de transação estimado (round-trip), em %. Honestidade do backtest: o
+    alpha de papel ignora estes custos e o imposto. Cripto (spread Finst) > ações
+    USD (FX ~0,15%×2 T212) > ETF. Ver evidência: custos apagam a maioria dos alphas."""
+    at = (asset_type or "").lower()
+    if at == "crypto":
+        return 1.0
+    if at == "stock":
+        return 0.30
+    return 0.15  # etf
+
+
+def _net_after_cost_tax(gross_pct: float, asset_type: str, tax_rate: float = 0.28) -> float:
+    """Retorno líquido de custos de transação e imposto sobre a mais-valia (curto
+    prazo). Aplica custo primeiro, imposto só sobre ganho positivo."""
+    after_cost = gross_pct - _entry_cost_pct(asset_type)
+    return round(after_cost * (1 - tax_rate) if after_cost > 0 else after_cost, 3)
+
+
 def _pulse_level(dd_pct: float) -> tuple[str, str]:
     """Mapeia o drawdown do índice (negativo = % abaixo do topo) para (nível, conselho).
     Pura/testável. A evidência: manter DCA em correções profundas compensa; esperar a
@@ -2433,12 +2452,44 @@ def backtest_vs_spy(db: Session = Depends(get_db), benchmark: str = "spy"):
             "beat_benchmark_pct": round(sum(1 for e in new_ideas if e["beat_benchmark"]) / nn * 100, 1),
         }
 
+    # Scorecard HONESTO: líquido de custos de transação + imposto 28%. O alpha de
+    # papel acima ignora ambos; este é o número que diz a verdade — vale a pena
+    # seguir a IA ou mais valia DCA ao índice? (índice tributado igual, sem FX).
+    net_alpha_sum = 0.0
+    net_beat = 0
+    for e in enriched:
+        gross = e["pct_since_generation"] or 0
+        net_sug = _net_after_cost_tax(gross, e.get("asset_type", "stock"))
+        bench_g = e["benchmark_return_pct"]
+        net_bench = round(bench_g * 0.72 if bench_g > 0 else bench_g, 3)  # índice EUR: sem FX
+        e["net_return_pct"] = net_sug
+        e["net_benchmark_pct"] = net_bench
+        e["net_alpha_pct"] = round(net_sug - net_bench, 2)
+        net_alpha_sum += e["net_alpha_pct"]
+        if net_sug > net_bench:
+            net_beat += 1
+    net_avg_alpha = round(net_alpha_sum / n, 2)
+    net_beat_pct = round(net_beat / n * 100, 1)
+    if net_avg_alpha > 0.5:
+        verdict = f"Líquido de custos e imposto, as sugestões bateram o índice em média (+{net_avg_alpha}%, n={n}). Vale a pena seguir a IA."
+    elif net_avg_alpha < -0.5:
+        verdict = f"Líquido de custos e imposto, as sugestões NÃO bateram comprar só o índice (alpha {net_avg_alpha}%, n={n}). O mais provável certo é DCA ao índice e evitar trades extra."
+    else:
+        verdict = f"Empate técnico com o índice líquido de custos/imposto (alpha {net_avg_alpha}%, n={n}). Sem vantagem clara — DCA simples ao índice é a aposta segura."
+    net_scorecard = {
+        "avg_net_alpha_pct": net_avg_alpha,
+        "beat_index_net_pct": net_beat_pct,
+        "verdict": verdict,
+        "cost_model": "cripto 1.0% · ação 0.30% (FX) · ETF 0.15% · imposto 28% sobre ganhos",
+    }
+
     return {
         "sample_size": n,
         "benchmark": benchmark,
         "benchmark_label": bench_label,
         "hit_rate_vs_benchmark_pct": hit_pct,
         "avg_alpha_pct": avg_alpha,
+        "net_scorecard": net_scorecard,
         "by_conviction": by_conviction,
         "satellite": satellite,
         "rows": enriched[-30:],

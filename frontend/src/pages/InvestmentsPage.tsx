@@ -1671,6 +1671,7 @@ function PlannerPanel({ positions, transactions, eur }: {
   const [snapBusy, setSnapBusy] = useState(false);
   const snapSearchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [marketPulse, setMarketPulse] = useState<{ available: boolean; drawdown_pct?: number; level?: string; hint?: string } | null>(null);
+  const [oppCandidates, setOppCandidates] = useState<{ ticker: string; name: string; asset_type: string; score?: number; conviction?: string; sector?: string }[]>([]);
 
   // Análise IA do plano (chama o mesmo motor dos Sinais IA, mas restrito ao plano)
   const [planAnalysis, setPlanAnalysis] = useState<any>(null);
@@ -1705,6 +1706,16 @@ function PlannerPanel({ positions, transactions, eur }: {
   useEffect(() => { loadPlans(); loadAllocations(); }, [loadPlans, loadAllocations]);
   useEffect(() => { loadMonthlyPlan(selectedMonth); }, [selectedMonth, loadMonthlyPlan]);
   useEffect(() => { investmentsApi.marketPulse().then(setMarketPulse).catch(() => {}); }, []);
+  useEffect(() => {
+    investmentsApi.signalsLatest().then((sig: any) => {
+      const watch = (sig?.suggestions || [])
+        .filter((s: any) => s.action === 'watch' && typeof s.score === 'number')
+        .sort((a: any, b: any) => (b.score || 0) - (a.score || 0))
+        .slice(0, 6)
+        .map((s: any) => ({ ticker: s.ticker, name: s.name || s.ticker, asset_type: s.asset_type || 'stock', score: s.score, conviction: s.conviction, sector: s.sector }));
+      setOppCandidates(watch);
+    }).catch(() => {});
+  }, []);
 
   // Carregar análise persistida (utilizador não tem de re-gerar)
   useEffect(() => {
@@ -2155,6 +2166,37 @@ function PlannerPanel({ positions, transactions, eur }: {
                 className="text-xs px-2.5 py-1 rounded-lg bg-[#252525] hover:bg-[#303030] text-gray-200 disabled:opacity-40">↻ Preencher do plano</button>
               <button onClick={handleFillFromAI} disabled={snapBusy}
                 className="text-xs px-2.5 py-1 rounded-lg bg-emerald-700/30 hover:bg-emerald-700/50 text-emerald-200 disabled:opacity-40">↓ Usar sugestão da IA</button>
+            </div>
+          </div>
+        )}
+
+        {/* Oportunidades a considerar — top da watchlist do motor. Surge candidatos
+            sem forçar compra: tu decides e adicionas (com o nudge de arrefecimento). */}
+        {oppCandidates.length > 0 && (
+          <div className="mb-4 p-3 bg-[#1a1a1a] border border-[#2a2a3a] rounded-xl">
+            <div className="flex items-center gap-1.5 mb-2">
+              <Sparkles size={13} className="text-indigo-400" />
+              <span className="text-xs font-medium text-indigo-300">Oportunidades a considerar</span>
+              <span className="text-[10px] text-gray-600">— melhores candidatos do motor; tu decides</span>
+            </div>
+            <div className="space-y-1.5">
+              {oppCandidates.map((o, i) => (
+                <div key={i} className="flex items-center gap-2 text-sm">
+                  <span className="text-white truncate max-w-[40%]">{o.name}</span>
+                  <span className="text-[10px] text-gray-500 font-mono">{o.ticker}</span>
+                  {o.sector && <span className="text-[10px] text-gray-600 truncate hidden sm:inline">{o.sector}</span>}
+                  <span className="ml-auto text-[11px] text-gray-400">score {(o.score || 0).toFixed(0)}</span>
+                  <button
+                    onClick={() => {
+                      setSnapSelectedAsset({ name: o.name, ticker: o.ticker, asset_type: o.asset_type });
+                      setSnapSearchQuery(o.name);
+                      setSnapSearchResults([]);
+                      setSnapAddOpen(true);
+                    }}
+                    className="text-[11px] px-2 py-0.5 rounded-lg bg-indigo-700/30 hover:bg-indigo-700/50 text-indigo-200"
+                  >+ adicionar</button>
+                </div>
+              ))}
             </div>
           </div>
         )}

@@ -27,6 +27,23 @@ router = APIRouter(prefix="/api/investments", tags=["Investments"])
 logger = logging.getLogger(__name__)
 
 
+# ── Helpers puros (testáveis, sem DB/rede) ───────────────────────
+
+CG_TAX_RATE = 0.28  # mais-valias mobiliárias PT
+VALID_SNAPSHOT_SOURCES = ("plano", "extra", "ia")
+
+
+def _after_tax_return(total_return: float, rate: float = CG_TAX_RATE) -> float:
+    """Retorno líquido do imposto. Em PT, perdas compensam ganhos na categoria, por
+    isso o imposto só incide quando o ganho agregado é positivo."""
+    tax = rate * total_return if total_return > 0 else 0.0
+    return round(total_return - tax, 2)
+
+
+def _coerce_snapshot_source(s: str) -> str:
+    return s if s in VALID_SNAPSHOT_SOURCES else "extra"
+
+
 # ── Endpoints ────────────────────────────────────────────────────
 
 @router.get("/positions", response_model=list[InvestmentPositionOut])
@@ -69,13 +86,10 @@ def get_summary(db: Session = Depends(get_db)):
     total_deposits = sum(t.amount for t in transactions if t.type == "Depósito")
     total_withdrawals = sum(t.amount for t in transactions if t.type == "Levantamento")
 
-    # Líquido do imposto PT sobre mais-valias (28%). Hipotético: "se vendesses
-    # hoje". Em PT, perdas compensam ganhos na mesma categoria, por isso o imposto
-    # incide no ganho líquido agregado e só quando é positivo. Torna visível o
+    # Líquido do imposto PT (28%) — hipotético "se vendesses hoje". Torna visível o
     # custo de vender (desincentiva o churn — ver evidência de overtrading).
-    CG_TAX_RATE = 0.28
-    tax_if_sold = round(CG_TAX_RATE * total_return, 2) if total_return > 0 else 0.0
-    total_return_after_tax = round(total_return - tax_if_sold, 2)
+    total_return_after_tax = _after_tax_return(total_return)
+    tax_if_sold = round(total_return - total_return_after_tax, 2)
 
     return {
         "total_value": round(total_value, 2),
@@ -1284,7 +1298,7 @@ def save_monthly_snapshot(month: str, data: MonthlySnapshotSave, db: Session = D
             "asset_type": e.asset_type,
             "amount_eur": round(float(e.amount_eur or 0), 2),
             "percentage": e.percentage,
-            "source": e.source if e.source in ("plano", "extra", "ia") else "extra",
+            "source": _coerce_snapshot_source(e.source),
         }
         for e in data.entries
     ]

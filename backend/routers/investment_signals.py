@@ -1767,11 +1767,21 @@ Identifica fraquezas em cada uma. Devolve o JSON pedido."""
     return _serialize(s)
 
 
+def _pulse_level(dd_pct: float) -> tuple[str, str]:
+    """Mapeia o drawdown do índice (negativo = % abaixo do topo) para (nível, conselho).
+    Pura/testável. A evidência: manter DCA em correções profundas compensa; esperar a
+    queda perde >60% das vezes."""
+    if dd_pct <= -10:
+        return "deep", "O mercado está bem abaixo do topo. Manter o DCA em correções profundas compensou historicamente (ex.: 2008-09) — boa altura para meter o budget, não para esperar mais."
+    if dd_pct <= -5:
+        return "dip", "Pequena correção em curso. Investir já costuma bater esperar a queda — mete o budget do costume."
+    return "normal", "Mercado perto do topo. Não esperes pela queda (esperar perde >60% das vezes) — mantém o teu DCA."
+
+
 @router.get("/market-pulse")
 def market_pulse():
-    """Drawdown do índice amplo (VUAA) para o nudge de DCA. A evidência é clara:
-    manter o DCA em correções sustentadas compensa; esperar a queda perde >60% das
-    vezes. Cacheado 4h — é um sinal de ambiente, não precisa de ser ao minuto."""
+    """Drawdown do índice amplo (VUAA) para o nudge de DCA. Cacheado 4h — é um
+    sinal de ambiente, não precisa de ser ao minuto."""
     CACHE_KEY = "invest:market_pulse"
     cached = cache_get(CACHE_KEY)
     if cached is not None:
@@ -1786,16 +1796,7 @@ def market_pulse():
     if dd_pct is None:
         result = {"available": False}
     else:
-        # dd_pct negativo = % abaixo do topo de 52 semanas.
-        if dd_pct <= -10:
-            level = "deep"
-            hint = "O mercado está bem abaixo do topo. Manter o DCA em correções profundas compensou historicamente (ex.: 2008-09) — boa altura para meter o budget, não para esperar mais."
-        elif dd_pct <= -5:
-            level = "dip"
-            hint = "Pequena correção em curso. Investir já costuma bater esperar a queda — mete o budget do costume."
-        else:
-            level = "normal"
-            hint = "Mercado perto do topo. Não esperes pela queda (esperar perde >60% das vezes) — mantém o teu DCA."
+        level, hint = _pulse_level(dd_pct)
         result = {"available": True, "drawdown_pct": dd_pct, "level": level, "hint": hint}
 
     cache_set(CACHE_KEY, result, 4 * 3600)

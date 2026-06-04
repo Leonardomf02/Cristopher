@@ -1772,10 +1772,10 @@ def _pulse_level(dd_pct: float) -> tuple[str, str]:
     Pura/testável. A evidência: manter DCA em correções profundas compensa; esperar a
     queda perde >60% das vezes."""
     if dd_pct <= -10:
-        return "deep", "O mercado está bem abaixo do topo. Manter o DCA em correções profundas compensou historicamente (ex.: 2008-09) — boa altura para meter o budget, não para esperar mais."
+        return "deep", "Manter o DCA em correções profundas compensou historicamente (ex.: 2008-09) — boa altura para meter o budget, não para esperar mais."
     if dd_pct <= -5:
         return "dip", "Pequena correção em curso. Investir já costuma bater esperar a queda — mete o budget do costume."
-    return "normal", "Mercado perto do topo. Não esperes pela queda (esperar perde >60% das vezes) — mantém o teu DCA."
+    return "normal", "Não esperes pela queda (esperar perde >60% das vezes) — mantém o teu DCA."
 
 
 @router.get("/market-pulse")

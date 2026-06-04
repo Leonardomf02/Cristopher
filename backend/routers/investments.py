@@ -3,8 +3,10 @@ from sqlalchemy.orm import Session
 from datetime import datetime, date
 import csv
 import io
+import os
 import re
 import json
+import shutil
 import subprocess
 import tempfile
 import logging
@@ -18,7 +20,7 @@ from schemas import (
     InvestmentTransactionOut, InvestmentSummaryOut,
     InvestmentPlanCreate, InvestmentPlanUpdate, InvestmentPlanOut,
     InvestmentAllocationCreate, InvestmentAllocationUpdate, InvestmentAllocationOut,
-    MonthlyPlanUpdate, MonthlyPlanOut,
+    MonthlyPlanUpdate, MonthlyPlanOut, MonthlySnapshotSave,
 )
 
 router = APIRouter(prefix="/api/investments", tags=["Investments"])
@@ -67,11 +69,23 @@ def get_summary(db: Session = Depends(get_db)):
     total_deposits = sum(t.amount for t in transactions if t.type == "Depósito")
     total_withdrawals = sum(t.amount for t in transactions if t.type == "Levantamento")
 
+    # Líquido do imposto PT sobre mais-valias (28%). Hipotético: "se vendesses
+    # hoje". Em PT, perdas compensam ganhos na mesma categoria, por isso o imposto
+    # incide no ganho líquido agregado e só quando é positivo. Torna visível o
+    # custo de vender (desincentiva o churn — ver evidência de overtrading).
+    CG_TAX_RATE = 0.28
+    tax_if_sold = round(CG_TAX_RATE * total_return, 2) if total_return > 0 else 0.0
+    total_return_after_tax = round(total_return - tax_if_sold, 2)
+
     return {
         "total_value": round(total_value, 2),
         "total_invested": round(total_invested, 2),
         "total_return": round(total_return, 2),
         "total_return_pct": round((total_return / total_invested * 100) if total_invested else 0, 2),
+        "tax_rate_pct": round(CG_TAX_RATE * 100),
+        "tax_if_sold": tax_if_sold,
+        "total_return_after_tax": total_return_after_tax,
+        "total_return_after_tax_pct": round((total_return_after_tax / total_invested * 100) if total_invested else 0, 2),
         "total_deposits": round(total_deposits, 2),
         "total_withdrawals": round(total_withdrawals, 2),
         "positions_count": len(positions),
@@ -226,46 +240,13 @@ def _parse_qty_number(s: str) -> float:
     return float(s[:sep].replace(",", "").replace(".", "") + "." + s[sep + 1:])
 
 
-@router.post("/import/finst-screenshot")
-async def import_finst_screenshot(
-    file: UploadFile = File(...),
-    month: str = Form(...),
-    db: Session = Depends(get_db),
-):
-    """Parse a Finst wallet screenshot via OCR and store positions as a monthly snapshot.
-
-    `month` must be in YYYY-MM format (e.g. "2026-04")."""
-    import pytesseract
-    from PIL import Image
-
-    if not re.fullmatch(r"\d{4}-\d{2}", month or ""):
-        raise HTTPException(status_code=400, detail="Mês inválido (esperado YYYY-MM)")
-
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="Ficheiro inválido")
-
-    content = await file.read()
-    if len(content) > 20 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="Ficheiro demasiado grande (max 20MB)")
-
-    try:
-        img = Image.open(io.BytesIO(content))
-    except Exception:
-        raise HTTPException(status_code=400, detail="Não foi possível abrir a imagem")
-
-    # OCR
-    try:
-        text = pytesseract.image_to_string(img, lang="eng")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro OCR: {e}")
-
-    logger.info(f"Finst screenshot OCR text:\n{text}")
-    # Persist OCR text for offline debugging — overwrites on each import.
-    try:
-        with open("/tmp/cristopher-finst-ocr.txt", "w") as _f:
-            _f.write(text)
-    except Exception:
-        pass
+def _parse_finst_ocr(text: str) -> list[dict]:
+    """Extract crypto positions from Finst OCR text. Pure & testable.
+    Handles list and transposed/multi-column layouts."""
+    # OCR frequently splits a decimal with a stray space ("1.698, 53€" instead of
+    # "1.698,53€"), which then fails the euro pattern and loses that price. Glue
+    # any comma-decimal broken by whitespace back together before parsing.
+    text = re.sub(r"(\d),\s+(\d)", r"\1,\2", text)
 
     lines = text.split("\n")
     # Euro amount pattern. The € glyph is fragile under OCR (often dropped or
@@ -300,15 +281,10 @@ async def import_finst_screenshot(
     # since OCR often loses the name beside the colored icon.
     triggers: list[tuple[int, str]] = []
     triggered_symbols: set[str] = set()
-    for i, line in enumerate(lines):
-        line_lower = line.lower()
-        for name_variant, symbol in CRYPTO_NAMES_OCR.items():
-            if name_variant in line_lower and symbol not in triggered_symbols:
-                triggers.append((i, symbol))
-                triggered_symbols.add(symbol)
-                break
-    # Fallback: lines that carry a quantity+symbol but whose symbol wasn't already
-    # picked up by a name match.
+    # Anchor on the quantity+symbol line FIRST ("0,00270406 BTC"): it sits right
+    # next to the value, so the nearby-window search finds the qty. OCR often
+    # renders the name many lines away from the numbers (vertical/stacked layout),
+    # which would otherwise put the anchor out of reach.
     for i, line in enumerate(lines):
         for qm in qty_pattern.finditer(line):
             raw = qm.group(2).upper()
@@ -316,6 +292,14 @@ async def import_finst_screenshot(
             if sym and sym not in triggered_symbols:
                 triggers.append((i, sym))
                 triggered_symbols.add(sym)
+    # Fallback: the crypto name, for symbols whose qty line OCR mangled.
+    # No break: a compact layout can list several cryptos on one line.
+    for i, line in enumerate(lines):
+        line_lower = line.lower()
+        for name_variant, symbol in CRYPTO_NAMES_OCR.items():
+            if name_variant in line_lower and symbol not in triggered_symbols:
+                triggers.append((i, symbol))
+                triggered_symbols.add(symbol)
 
     # Pre-collect every euro amount in the OCR with its line index. Used for
     # the qty×price≈value cross-check: tabular OCR can split a row across many
@@ -353,6 +337,7 @@ async def import_finst_screenshot(
 
         value_eur: float | None = None
         current_price: float | None = None
+        price_line: int | None = None
 
         # Best signal: find a (value, price) pair where value ≈ qty × price.
         # The Finst table puts value first then BEP/current price, so this
@@ -381,6 +366,7 @@ async def import_finst_screenshot(
                         best_score = score
                         value_eur = a
                         current_price = b
+                        price_line = b_line
 
         # Fallback: pick the nearest line (preferring trigger line) with ≥2 euros
         # and take the first two as (value, price). Wider scan than before so
@@ -410,6 +396,23 @@ async def import_finst_screenshot(
         # Parse euro amounts
         # Finst table: Value | Price,BEP | Daily P/L | Unrealized P/L | Position P/L | Total P/L
         if value_eur is not None and current_price is not None:
+            # BEP (break-even / avg buy price) sits in the same "Price, BEP" cell,
+            # adjacent to the current price. The qty-line BEP grabbed earlier is
+            # unreliable in vertical/transposed layouts, so prefer the euro nearest
+            # the price line with a similar magnitude (and not the value itself).
+            if bep_price is None or not (current_price * 0.2 <= bep_price <= current_price * 5):
+                bep_price = None
+                if price_line is not None:
+                    best_dist = 4  # only trust a BEP within a few lines of the price
+                    for eline, e in all_eurs:
+                        if e == current_price or e == value_eur:
+                            continue
+                        if not (current_price * 0.3 <= e <= current_price * 3):
+                            continue
+                        dist = abs(eline - price_line)
+                        if dist < best_dist:
+                            best_dist = dist
+                            bep_price = e
             entry = {
                 "instrument": found_symbol,
                 "current_price": current_price,
@@ -420,6 +423,59 @@ async def import_finst_screenshot(
 
             seen_symbols.add(found_symbol)
             parsed.append(entry)
+    return parsed
+
+
+@router.post("/import/finst-screenshot")
+async def import_finst_screenshot(
+    file: UploadFile = File(...),
+    month: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    """Parse a Finst wallet screenshot via OCR and store positions as a monthly snapshot.
+
+    `month` must be in YYYY-MM format (e.g. "2026-04")."""
+    import pytesseract
+    from PIL import Image
+
+    if not re.fullmatch(r"\d{4}-\d{2}", month or ""):
+        raise HTTPException(status_code=400, detail="Mês inválido (esperado YYYY-MM)")
+
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Ficheiro inválido")
+
+    content = await file.read()
+    if len(content) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Ficheiro demasiado grande (max 20MB)")
+
+    try:
+        img = Image.open(io.BytesIO(content))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Não foi possível abrir a imagem")
+
+    # OCR. Point pytesseract at the resolved binary — under launchd the bare
+    # `tesseract` isn't on PATH (lives in /opt/homebrew/bin on Apple Silicon).
+    tess = _find_binary("tesseract")
+    if not tess:
+        raise HTTPException(
+            status_code=500,
+            detail="tesseract não encontrado no servidor. Instala-o (brew install tesseract) e reinicia o backend.",
+        )
+    pytesseract.pytesseract.tesseract_cmd = tess
+    try:
+        text = pytesseract.image_to_string(img, lang="eng")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro OCR: {e}")
+
+    logger.info(f"Finst screenshot OCR text:\n{text}")
+    # Persist OCR text for offline debugging — overwrites on each import.
+    try:
+        with open("/tmp/cristopher-finst-ocr.txt", "w") as _f:
+            _f.write(text)
+    except Exception:
+        pass
+
+    parsed = _parse_finst_ocr(text)
 
     if not parsed:
         raise HTTPException(
@@ -533,13 +589,36 @@ async def import_finst_screenshot(
 
 # ── Trading 212 PDF Import ──────────────────────────────────────
 
+def _find_binary(name: str) -> str | None:
+    """Locate a CLI binary robustly.
+
+    Under launchd the inherited PATH is restricted and excludes /opt/homebrew/bin
+    (where Homebrew installs on Apple Silicon), so a bare command name raises
+    FileNotFoundError. Fall back to the common install locations.
+    """
+    found = shutil.which(name)
+    if found:
+        return found
+    for prefix in ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"):
+        p = os.path.join(prefix, name)
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
+    return None
+
+
 def _extract_text(pdf_bytes: bytes) -> str:
     """Extract text from PDF using pdftotext."""
+    binary = _find_binary("pdftotext")
+    if not binary:
+        raise HTTPException(
+            status_code=500,
+            detail="pdftotext não encontrado no servidor. Instala o poppler (brew install poppler) e reinicia o backend.",
+        )
     with tempfile.NamedTemporaryFile(suffix=".pdf") as tmp:
         tmp.write(pdf_bytes)
         tmp.flush()
         result = subprocess.run(
-            ["pdftotext", "-layout", tmp.name, "-"],
+            [binary, "-layout", tmp.name, "-"],
             capture_output=True, text=True
         )
         if result.returncode != 0:
@@ -708,10 +787,20 @@ def _parse_transactions(text: str) -> list[dict]:
 
 
 @router.post("/import/pdf")
-async def import_trading212_pdf(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    """Import a Trading 212 monthly statement PDF."""
+async def import_trading212_pdf(
+    file: UploadFile = File(...),
+    month: str = Form(None),
+    db: Session = Depends(get_db),
+):
+    """Import a Trading 212 monthly statement PDF.
+
+    `month` (YYYY-MM, optional) overrides the period detected from the PDF — useful
+    when the statement's auto-detected period is wrong. Empty = detect from the PDF.
+    """
     if not file.filename or not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Faz upload de um ficheiro PDF")
+    if month and not re.fullmatch(r"\d{4}-\d{2}", month):
+        raise HTTPException(status_code=400, detail="Mês inválido (esperado YYYY-MM)")
 
     content = await file.read()
     if len(content) > 10 * 1024 * 1024:
@@ -725,6 +814,15 @@ async def import_trading212_pdf(file: UploadFile = File(...), db: Session = Depe
     trades = _parse_trades(text)
     positions = _parse_positions(text)
     transactions = _parse_transactions(text)
+
+    # Manual override of the statement period (positions are keyed by this month).
+    if month:
+        overview["period_month"] = month
+        try:
+            y, mo = month.split("-")
+            overview["statement_date"] = date(int(y), int(mo), 1)
+        except ValueError:
+            pass
 
     # Store summary
     existing_summary = (
@@ -1157,10 +1255,41 @@ def execute_monthly_plan(month: str, db: Session = Depends(get_db)):
             "asset_type": a.asset_type,
             "percentage": pct,
             "amount_eur": amount,
+            "source": "plano",
         })
 
     plan.executed_at = datetime.utcnow()
     plan.executed_snapshot = json.dumps(snapshot, ensure_ascii=False)
+    db.commit()
+    db.refresh(plan)
+    return _serialize_monthly_plan(plan)
+
+
+@router.put("/monthly-plan/{month}/snapshot")
+def save_monthly_snapshot(month: str, data: MonthlySnapshotSave, db: Session = Depends(get_db)):
+    """Grava a lista do que foi mesmo investido neste mês (pode misturar entradas
+    'plano' e 'extra', ou ser um cesto totalmente à parte da alocação recorrente).
+    Marca o mês como executado. Não toca na alocação recorrente."""
+    plan = db.query(InvestmentMonthlyPlan).filter(InvestmentMonthlyPlan.month == month).first()
+    if not plan:
+        plan = InvestmentMonthlyPlan(month=month, budget=300, rotational_choices="{}")
+        db.add(plan)
+        db.commit()
+        db.refresh(plan)
+
+    snapshot = [
+        {
+            "ticker": e.ticker,
+            "name": e.name,
+            "asset_type": e.asset_type,
+            "amount_eur": round(float(e.amount_eur or 0), 2),
+            "percentage": e.percentage,
+            "source": e.source if e.source in ("plano", "extra", "ia") else "extra",
+        }
+        for e in data.entries
+    ]
+    plan.executed_snapshot = json.dumps(snapshot, ensure_ascii=False) if snapshot else None
+    plan.executed_at = datetime.utcnow() if snapshot else None
     db.commit()
     db.refresh(plan)
     return _serialize_monthly_plan(plan)

@@ -584,6 +584,7 @@ export interface SleepEntry {
   hours: number;
   quality: number | null;
   notes: string;
+  source?: string;
 }
 
 export interface SleepStats {

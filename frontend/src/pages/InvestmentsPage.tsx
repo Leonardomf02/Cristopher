@@ -48,6 +48,10 @@ interface Summary {
   total_invested: number;
   total_return: number;
   total_return_pct: number;
+  tax_rate_pct?: number;
+  tax_if_sold?: number;
+  total_return_after_tax?: number;
+  total_return_after_tax_pct?: number;
   total_deposits: number;
   total_withdrawals: number;
   positions_count: number;
@@ -78,6 +82,9 @@ export default function InvestmentsPage() {
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
   });
+  const [t212DropdownOpen, setT212DropdownOpen] = useState(false);
+  const t212DropdownRef = useRef<HTMLDivElement>(null);
+  const [t212ImportMonth, setT212ImportMonth] = useState<string>('');  // vazio = detetar do PDF
 
   useEffect(() => { loadData(); }, []);
 
@@ -86,6 +93,9 @@ export default function InvestmentsPage() {
     function handleClick(e: MouseEvent) {
       if (cryptoDropdownRef.current && !cryptoDropdownRef.current.contains(e.target as Node)) {
         setCryptoDropdownOpen(false);
+      }
+      if (t212DropdownRef.current && !t212DropdownRef.current.contains(e.target as Node)) {
+        setT212DropdownOpen(false);
       }
     }
     document.addEventListener('mousedown', handleClick);
@@ -203,7 +213,7 @@ export default function InvestmentsPage() {
     setImportResult(null);
     try {
       const result = type === 'pdf'
-        ? await investmentsApi.importPDF(file)
+        ? await investmentsApi.importPDF(file, t212ImportMonth || undefined)
         : await investmentsApi.importFinstCSV(file);
       setImportResult(result);
       await loadData();
@@ -328,16 +338,40 @@ export default function InvestmentsPage() {
             )}
           </div>
 
-          {/* Trading 212 button */}
-          <input type="file" ref={t212Ref} accept=".pdf" className="hidden" onChange={e => e.target.files?.[0] && handleImport(e.target.files[0], 'pdf')} />
-          <button
-            onClick={() => t212Ref.current?.click()}
-            disabled={importing}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition-colors disabled:opacity-50 font-medium"
-          >
-            <FileText size={16} />
-            {importing ? 'A importar...' : 'Trading 212'}
-          </button>
+          {/* Trading 212 dropdown button */}
+          <div className="relative" ref={t212DropdownRef}>
+            <input type="file" ref={t212Ref} accept=".pdf" className="hidden" onChange={e => { e.target.files?.[0] && handleImport(e.target.files[0], 'pdf'); setT212DropdownOpen(false); }} />
+            <button
+              onClick={() => setT212DropdownOpen(o => !o)}
+              disabled={importing}
+              className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition-colors disabled:opacity-50 font-medium"
+            >
+              <FileText size={16} />
+              {importing ? 'A importar...' : 'Trading 212'}
+              <ChevronDown size={14} className={`transition-transform ${t212DropdownOpen ? 'rotate-180' : ''}`} />
+            </button>
+            {t212DropdownOpen && (
+              <div className="absolute right-0 mt-2 w-64 bg-[#1a1a1a] border border-[#333] rounded-xl shadow-xl z-50 overflow-hidden">
+                <div className="px-4 pt-3 pb-2 border-b border-[#222]">
+                  <label className="text-[11px] text-gray-500 block mb-1">Mês do extrato (opcional)</label>
+                  <input
+                    type="month"
+                    value={t212ImportMonth}
+                    onChange={e => setT212ImportMonth(e.target.value)}
+                    className="w-full bg-[#0f0f0f] border border-[#333] rounded-lg px-2 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-500"
+                  />
+                  <p className="text-[10px] text-gray-600 mt-1">Vazio = detetar do PDF</p>
+                </div>
+                <button
+                  onClick={() => { t212Ref.current?.click(); }}
+                  className="w-full flex items-center gap-3 px-4 py-3 text-sm text-gray-300 hover:bg-white/5 transition-colors"
+                >
+                  <FileText size={16} className="text-blue-400" />
+                  Importar PDF{t212ImportMonth ? ` (${t212ImportMonth})` : ''}
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -393,6 +427,12 @@ export default function InvestmentsPage() {
               const totalRet = filteredPositions.reduce((s, p) => s + (p.return_eur ?? 0), 0);
               const pct = totalInv > 0 ? (totalRet / totalInv) * 100 : 0;
               return `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`;
+            })()}
+            sub2={(() => {
+              const totalRet = filteredPositions.reduce((s, p) => s + (p.return_eur ?? 0), 0);
+              if (totalRet <= 0) return 'sem mais-valia tributável';
+              const net = totalRet * 0.72;
+              return `líquido 28%: ${eur(net)} (imposto ~${eur(totalRet * 0.28)} se vendesses hoje)`;
             })()}
             color={filteredPositions.reduce((s, p) => s + (p.return_eur ?? 0), 0) >= 0 ? 'green' : 'red'}
           />
@@ -511,7 +551,7 @@ export default function InvestmentsPage() {
 
 // ── Summary Card ────────────────────────────────────────────────────
 
-function SummaryCard({ label, value, sub, color }: { label: string; value: string; sub?: string; color?: 'green' | 'red' }) {
+function SummaryCard({ label, value, sub, sub2, color }: { label: string; value: string; sub?: string; sub2?: string; color?: 'green' | 'red' }) {
   return (
     <div className="bg-[#161616] border border-[#222] rounded-2xl p-5">
       <p className="text-xs text-gray-500 mb-1">{label}</p>
@@ -521,6 +561,7 @@ function SummaryCard({ label, value, sub, color }: { label: string; value: strin
           {sub}
         </p>
       )}
+      {sub2 && <p className="text-[11px] mt-0.5 text-gray-500">{sub2}</p>}
     </div>
   );
 }
@@ -849,7 +890,7 @@ interface MonthlyPlan {
   budget: number;
   rotational_choices: Record<string, string>;
   executed_at?: string | null;
-  executed_snapshot?: { ticker: string; name: string; asset_type: string; percentage: number; amount_eur: number }[] | null;
+  executed_snapshot?: { ticker: string; name: string; asset_type: string; percentage?: number | null; amount_eur: number; source?: string }[] | null;
 }
 
 interface Suggestion {
@@ -1620,6 +1661,17 @@ function PlannerPanel({ positions, transactions, eur }: {
   const [monthlyPlan, setMonthlyPlan] = useState<MonthlyPlan | null>(null);
   const [rotationalChoices, setRotationalChoices] = useState<Record<string, string>>({});
 
+  // Add ad-hoc a "Investido este mês" (separado da alocação recorrente)
+  const [snapAddOpen, setSnapAddOpen] = useState(false);
+  const [snapSearchQuery, setSnapSearchQuery] = useState('');
+  const [snapSearchResults, setSnapSearchResults] = useState<any[]>([]);
+  const [snapSearchLoading, setSnapSearchLoading] = useState(false);
+  const [snapSelectedAsset, setSnapSelectedAsset] = useState<{ name: string; ticker: string; asset_type: string } | null>(null);
+  const [snapAmount, setSnapAmount] = useState('');
+  const [snapBusy, setSnapBusy] = useState(false);
+  const snapSearchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [marketPulse, setMarketPulse] = useState<{ available: boolean; drawdown_pct?: number; level?: string; hint?: string } | null>(null);
+
   // Análise IA do plano (chama o mesmo motor dos Sinais IA, mas restrito ao plano)
   const [planAnalysis, setPlanAnalysis] = useState<any>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
@@ -1652,6 +1704,7 @@ function PlannerPanel({ positions, transactions, eur }: {
 
   useEffect(() => { loadPlans(); loadAllocations(); }, [loadPlans, loadAllocations]);
   useEffect(() => { loadMonthlyPlan(selectedMonth); }, [selectedMonth, loadMonthlyPlan]);
+  useEffect(() => { investmentsApi.marketPulse().then(setMarketPulse).catch(() => {}); }, []);
 
   // Carregar análise persistida (utilizador não tem de re-gerar)
   useEffect(() => {
@@ -1793,6 +1846,93 @@ function PlannerPanel({ positions, transactions, eur }: {
     } catch {}
   };
 
+  const handleSnapSearchChange = (value: string) => {
+    setSnapSearchQuery(value);
+    setSnapSelectedAsset(null);
+    if (snapSearchTimeoutRef.current) clearTimeout(snapSearchTimeoutRef.current);
+    if (value.trim().length < 2) { setSnapSearchResults([]); return; }
+    setSnapSearchLoading(true);
+    snapSearchTimeoutRef.current = setTimeout(async () => {
+      try { setSnapSearchResults(await investmentsApi.searchAsset(value)); }
+      catch { setSnapSearchResults([]); }
+      finally { setSnapSearchLoading(false); }
+    }, 350);
+  };
+
+  const selectSnapAsset = (asset: any) => {
+    setSnapSelectedAsset({ name: asset.name, ticker: asset.ticker, asset_type: asset.asset_type });
+    setSnapSearchQuery(asset.name);
+    setSnapSearchResults([]);
+  };
+
+  // Recalcula a % de cada linha a partir do total investido e grava no backend.
+  const persistSnapshot = async (entries: NonNullable<MonthlyPlan['executed_snapshot']>) => {
+    const total = entries.reduce((s, e) => s + (e.amount_eur || 0), 0);
+    const withPct = entries.map(e => ({
+      ticker: e.ticker, name: e.name, asset_type: e.asset_type,
+      amount_eur: e.amount_eur || 0,
+      percentage: total > 0 ? Math.round((e.amount_eur || 0) / total * 1000) / 10 : 0,
+      source: e.source || 'extra',
+    }));
+    setSnapBusy(true);
+    try { setMonthlyPlan(await investmentsApi.saveMonthlySnapshot(selectedMonth, withPct)); }
+    catch (e: any) { alert(`Erro: ${e.message}`); }
+    finally { setSnapBusy(false); }
+  };
+
+  const handleAddSnapEntry = async () => {
+    if (!snapSelectedAsset || !snapAmount) return;
+    // Nudge de arrefecimento: extras fora do plano são tipicamente trades por
+    // impulso, que a evidência associa a pior retorno (overtrading) + imposto 28%.
+    if (!confirm(
+      `Adicionar ${snapSelectedAsset.ticker} (${parseFloat(snapAmount).toFixed(0)}€) como investimento extra, fora do teu plano?\n\n` +
+      `Lembrete: investir já > esperar a queda, e trades extra por impulso reduzem o retorno em média (e cada venda paga 28%).\n` +
+      `Se é parte do teu DCA do mês, ok. Se é um palpite de "vai recuperar", pensa duas vezes.`
+    )) return;
+    const current = monthlyPlan?.executed_snapshot || [];
+    await persistSnapshot([...current, {
+      ticker: snapSelectedAsset.ticker, name: snapSelectedAsset.name,
+      asset_type: snapSelectedAsset.asset_type, amount_eur: parseFloat(snapAmount) || 0, source: 'extra',
+    }]);
+    setSnapSelectedAsset(null); setSnapSearchQuery(''); setSnapSearchResults([]); setSnapAmount(''); setSnapAddOpen(false);
+  };
+
+  const handleRemoveSnapEntry = async (idx: number) => {
+    const current = monthlyPlan?.executed_snapshot || [];
+    await persistSnapshot(current.filter((_, i) => i !== idx));
+  };
+
+  // Deploy sem fricção: mete as compras já decididas+dimensionadas pela IA como
+  // linhas 'ia', mantendo os 'extra' manuais. Investir já > esperar a queda.
+  const handleFillFromAI = async () => {
+    setSnapBusy(true);
+    try {
+      const sig = await investmentsApi.signalsLatest();
+      const buys = (sig?.suggestions || []).filter((s: any) => s.action === 'buy' && (s.amount_eur || 0) > 0);
+      if (buys.length === 0) { alert('A última sugestão da IA não tem compras. Gera um sinal novo primeiro.'); setSnapBusy(false); return; }
+      const total = buys.reduce((s: number, b: any) => s + (b.amount_eur || 0), 0);
+      if (!confirm(`Meter a sugestão da IA (${buys.length} compras, ${total.toFixed(0)}€) como o investido deste mês?\n\nInvestir já bate esperar a queda na maioria dos casos.`)) { setSnapBusy(false); return; }
+      const extras = (monthlyPlan?.executed_snapshot || []).filter(e => (e.source || 'extra') === 'extra');
+      const iaEntries = buys.map((b: any) => ({
+        ticker: b.ticker, name: b.name || b.ticker, asset_type: b.asset_type || 'stock',
+        amount_eur: Math.round((b.amount_eur || 0) * 100) / 100, source: 'ia' as const,
+      }));
+      await persistSnapshot([...iaEntries, ...extras]);
+    } catch (e: any) { alert(`Erro: ${e.message}`); }
+    finally { setSnapBusy(false); }
+  };
+
+  // Mete a alocação recorrente × budget como linhas 'plano', mantendo os 'extra' já lá.
+  const handleFillFromPlan = async () => {
+    if (allocations.length === 0) { alert('Sem ativos no plano recorrente.'); return; }
+    const extras = (monthlyPlan?.executed_snapshot || []).filter(e => (e.source || 'extra') === 'extra');
+    const planEntries = allocations.map(a => ({
+      ticker: a.ticker, name: a.name, asset_type: a.asset_type,
+      amount_eur: Math.round((monthlyBudget * (a.percentage || 0) / 100) * 100) / 100, source: 'plano' as const,
+    }));
+    await persistSnapshot([...planEntries, ...extras]);
+  };
+
   const handleDeleteAllocation = async (id: number) => {
     try { await investmentsApi.deleteAllocation(id); loadAllocations(); } catch {}
   };
@@ -1889,6 +2029,23 @@ function PlannerPanel({ positions, transactions, eur }: {
           </div>
         </div>
 
+        {/* Market pulse: nudge de DCA conforme o drawdown do mercado */}
+        {marketPulse?.available && marketPulse.hint && (
+          <div className={`flex items-start gap-2 mb-4 px-3 py-2 rounded-xl border text-xs ${
+            marketPulse.level === 'deep' ? 'bg-emerald-900/15 border-emerald-700/40 text-emerald-200'
+              : marketPulse.level === 'dip' ? 'bg-blue-900/15 border-blue-700/40 text-blue-200'
+              : 'bg-[#1a1a1a] border-[#333] text-gray-400'
+          }`}>
+            <TrendingDown size={14} className="mt-0.5 shrink-0" />
+            <span>
+              {typeof marketPulse.drawdown_pct === 'number' && (
+                <span className="font-semibold">Mercado {marketPulse.drawdown_pct >= 0 ? 'no topo' : `${marketPulse.drawdown_pct.toFixed(1)}% abaixo do topo`}. </span>
+              )}
+              {marketPulse.hint}
+            </span>
+          </div>
+        )}
+
         {/* Locker: marca o plano como executado para este mês */}
         <div className={`flex items-center gap-3 mb-4 px-3 py-2 rounded-xl border ${
           monthlyPlan?.executed_at
@@ -1933,6 +2090,74 @@ function PlannerPanel({ positions, transactions, eur }: {
             </>
           )}
         </div>
+
+        {/* Investido este mês — lista editável, à parte da alocação recorrente */}
+        {monthlyPlan && (
+          <div className="mb-4 p-3 bg-[#1a1a1a] border border-emerald-700/30 rounded-xl">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-medium text-emerald-300">Investido em {monthLabel}</span>
+              <span className="text-[10px] text-gray-500">{(monthlyPlan.executed_snapshot || []).reduce((s, a) => s + (a.amount_eur || 0), 0).toFixed(0)}€</span>
+            </div>
+
+            {(monthlyPlan.executed_snapshot || []).length > 0 ? (
+              <div className="space-y-1.5 mb-2">
+                {monthlyPlan.executed_snapshot!.map((a, i) => (
+                  <div key={i} className="flex items-center gap-2 text-sm">
+                    <span className="text-white flex-1 truncate">{a.name}</span>
+                    <span className={`text-[9px] px-1.5 py-0.5 rounded ${(a.source || 'extra') === 'plano' ? 'bg-blue-900/40 text-blue-300' : (a.source === 'ia') ? 'bg-emerald-900/40 text-emerald-300' : 'bg-purple-900/40 text-purple-300'}`}>
+                      {(a.source || 'extra') === 'plano' ? 'plano' : a.source === 'ia' ? 'IA' : 'extra'}
+                    </span>
+                    <span className="text-[10px] text-gray-500 font-mono w-14 truncate text-right">{a.ticker}</span>
+                    <span className="text-gray-400 text-xs w-10 text-right">{(a.percentage || 0).toFixed(0)}%</span>
+                    <span className="text-white font-mono text-xs w-14 text-right">{(a.amount_eur || 0).toFixed(0)}€</span>
+                    <button onClick={() => handleRemoveSnapEntry(i)} disabled={snapBusy} className="text-gray-600 hover:text-red-400 disabled:opacity-40"><X size={13} /></button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-[11px] text-gray-500 mb-2">Ainda nada registado este mês. Adiciona investimentos ou preenche a partir do plano.</p>
+            )}
+
+            {snapAddOpen && (
+              <div className="mb-2 p-2 bg-[#151515] border border-[#333] rounded-lg space-y-2">
+                <div className="relative">
+                  <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500" />
+                  <input value={snapSearchQuery} onChange={e => handleSnapSearchChange(e.target.value)} placeholder="ex: LLY, NVIDIA, Gold..."
+                    className="w-full bg-[#222] border border-[#333] rounded-lg pl-8 pr-3 py-1.5 text-sm text-white placeholder-gray-600 focus:border-emerald-500 focus:outline-none" autoFocus />
+                  {snapSearchLoading && <Loader size={13} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-emerald-400 animate-spin" />}
+                  {snapSearchResults.length > 0 && !snapSelectedAsset && (
+                    <div className="absolute z-10 w-full mt-1 bg-[#1c1c1c] border border-[#333] rounded-xl overflow-hidden shadow-xl max-h-48 overflow-y-auto">
+                      {snapSearchResults.map((r, i) => (
+                        <button key={i} onClick={() => selectSnapAsset(r)} className="w-full flex items-center gap-2 px-3 py-2 hover:bg-[#252525] text-left">
+                          <span className="text-sm text-white truncate flex-1">{r.name}</span>
+                          <span className="text-[10px] text-gray-500 font-mono">{r.ticker}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <input type="number" value={snapAmount} onChange={e => setSnapAmount(e.target.value)} placeholder="€ investido"
+                    className="flex-1 bg-[#222] border border-[#333] rounded-lg px-3 py-1.5 text-sm text-white font-mono focus:border-emerald-500 focus:outline-none" />
+                  <button onClick={handleAddSnapEntry} disabled={!snapSelectedAsset || !snapAmount || snapBusy}
+                    className="text-xs px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-medium">Adicionar</button>
+                  <button onClick={() => { setSnapAddOpen(false); setSnapSelectedAsset(null); setSnapSearchQuery(''); setSnapSearchResults([]); setSnapAmount(''); }}
+                    className="text-gray-500 hover:text-white"><X size={15} /></button>
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-center gap-2">
+              <button onClick={() => setSnapAddOpen(v => !v)} className="text-xs px-2.5 py-1 rounded-lg bg-[#252525] hover:bg-[#303030] text-gray-200 flex items-center gap-1">
+                <Plus size={13} /> Adicionar investimento
+              </button>
+              <button onClick={handleFillFromPlan} disabled={snapBusy || allocations.length === 0}
+                className="text-xs px-2.5 py-1 rounded-lg bg-[#252525] hover:bg-[#303030] text-gray-200 disabled:opacity-40">↻ Preencher do plano</button>
+              <button onClick={handleFillFromAI} disabled={snapBusy}
+                className="text-xs px-2.5 py-1 rounded-lg bg-emerald-700/30 hover:bg-emerald-700/50 text-emerald-200 disabled:opacity-40">↓ Usar sugestão da IA</button>
+            </div>
+          </div>
+        )}
 
         {/* Add allocation form */}
         {showAddAlloc && (
@@ -2616,9 +2841,18 @@ interface SignalSuggestion {
   amount_eur?: number | null;
   thesis: string;
   sector?: string | null;  // Semicondutores, Tech Mega-cap, Energia, ...
-  confidence_pct?: number | null;            // 0-99, percentagem real
+  confidence_pct?: number | null;            // 0-99, confiança final (model × histórico)
+  confidence_pct_model?: number | null;      // confiança teórica antes do blend empírico
   confidence_breakdown?: Record<string, number> | null;
+  empirical_n?: number | null;               // nº de outcomes históricos no bucket
+  empirical_rate?: number | null;            // hit-rate histórico do bucket (%)
   signal_families?: string[];                // técnico, fundamental, sentimento, macro, on-chain, insider
+  // Motor determinístico
+  engine?: boolean;                          // true → decidido pelo signal_engine
+  score?: number;                            // score 0-100 do motor
+  signal_breakdown?: Record<string, number>; // sub-score por família [-1,1]
+  llm_proposed?: boolean;                     // ideia proposta pelo LLM, re-pontuada pelo motor
+  llm_narration_failed?: boolean;             // LLM falhou → tese determinística
   gates_triggered?: { gate: string; reason: string }[];
   original_action?: string;
   original_amount_eur?: number | null;       // antes de elevar ao mínimo
@@ -2665,6 +2899,8 @@ interface Signal {
   prompt_version?: string | null;
   total_buy_eur?: number;
   monthly_budget?: number;
+  engine_version?: string;
+  llm_narration_failed?: boolean;
 }
 
 interface Alert {
@@ -3267,9 +3503,14 @@ function SignalCard({ signal, expanded, onToggle, onDelete, onRefresh, onCritiqu
                                 : sug.confidence_pct >= 50 ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
                                 : 'bg-red-500/20 text-red-300 border-red-500/40'
                               }`}
-                              title={sug.confidence_breakdown
-                                ? Object.entries(sug.confidence_breakdown).map(([k, v]) => `${k}: ${v}%`).join(' · ')
-                                : `Convicção: ${sug.conviction}`}
+                              title={[
+                                sug.confidence_breakdown
+                                  ? Object.entries(sug.confidence_breakdown).map(([k, v]) => `${k}: ${v}%`).join(' · ')
+                                  : `Convicção: ${sug.conviction}`,
+                                sug.empirical_n
+                                  ? `histórico: ${sug.empirical_rate}% hit-rate (n=${sug.empirical_n})${sug.confidence_pct_model != null ? `, modelo ${sug.confidence_pct_model}%` : ''}`
+                                  : '',
+                              ].filter(Boolean).join('\n')}
                             >
                               {Math.round(sug.confidence_pct)}%
                             </span>
@@ -3360,6 +3601,25 @@ function SignalCard({ signal, expanded, onToggle, onDelete, onRefresh, onCritiqu
                           ))}
                           {sug.signal_families.length < 2 && (
                             <span className="text-amber-400 ml-1">⚠ mono-dimensional</span>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Breakdown do motor: porque é que este score (sub-score por família, -1..+1) */}
+                      {sug.engine && sug.signal_breakdown && Object.keys(sug.signal_breakdown).length > 0 && (
+                        <div className="mb-2 flex flex-wrap items-center gap-1 text-[10px]" title="Sub-score por família de sinais (motor determinístico)">
+                          <span className="text-gray-500 uppercase tracking-wide">
+                            motor{typeof sug.score === 'number' ? ` ${sug.score}` : ''}:
+                          </span>
+                          {Object.entries(sug.signal_breakdown).map(([fam, v]) => (
+                            <span key={fam} className={`px-1.5 py-0.5 rounded border font-mono ${
+                              v > 0 ? 'bg-green-900/20 text-green-300 border-green-800/40'
+                              : v < 0 ? 'bg-red-900/20 text-red-300 border-red-800/40'
+                              : 'bg-gray-800/40 text-gray-400 border-gray-700/40'
+                            }`}>{fam} {v > 0 ? '+' : ''}{v.toFixed(2)}</span>
+                          ))}
+                          {sug.llm_proposed && (
+                            <span className="px-1.5 py-0.5 rounded border bg-blue-900/20 text-blue-300 border-blue-800/40" title="Ideia proposta pelo LLM e re-pontuada pelo motor">💡 ideia LLM</span>
                           )}
                         </div>
                       )}
@@ -4036,18 +4296,21 @@ function BacktestCard({ data }: { data: any }) {
       </div>
     );
   }
-  const hitTone = data.hit_rate_vs_spy_pct >= 55 ? 'green' : data.hit_rate_vs_spy_pct >= 45 ? 'amber' : 'red';
+  const hitRate = data.hit_rate_vs_benchmark_pct;
+  const benchLabel = data.benchmark_label || 'SPY';
+  const hitTone = hitRate >= 55 ? 'green' : hitRate >= 45 ? 'amber' : 'red';
   const alphaTone = data.avg_alpha_pct > 0 ? 'green' : data.avg_alpha_pct < 0 ? 'red' : 'gray';
+  const sat = data.satellite;
   return (
     <div className="bg-[#161616] border border-[#333] rounded-xl p-4">
       <h3 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">
-        <BarChart3 size={14} className="text-purple-400" /> Backtest vs SPY
+        <BarChart3 size={14} className="text-purple-400" /> Backtest vs {benchLabel}
         <span className="text-xs text-gray-500 font-normal">N={data.sample_size}</span>
       </h3>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3">
         <Metric
-          label="bate SPY"
-          value={`${data.hit_rate_vs_spy_pct}%`}
+          label={`bate ${benchLabel}`}
+          value={`${hitRate}%`}
           tone={hitTone}
           hint=">50% = supera benchmark"
         />
@@ -4055,9 +4318,28 @@ function BacktestCard({ data }: { data: any }) {
           label="alpha médio"
           value={`${data.avg_alpha_pct > 0 ? '+' : ''}${data.avg_alpha_pct}%`}
           tone={alphaTone}
-          hint="vs SPY same period"
+          hint={`vs ${benchLabel} mesmo período`}
         />
       </div>
+
+      {/* Veredicto do satélite ativo: as ideias fora do plano valem a pena? */}
+      {sat && sat.n >= 5 && (
+        <div className={`mb-3 px-3 py-2 rounded-lg border text-xs ${
+          sat.avg_alpha_pct > 0
+            ? 'bg-green-900/20 border-green-800/40 text-green-200'
+            : 'bg-amber-900/20 border-amber-800/40 text-amber-200'
+        }`}>
+          <div className="font-medium mb-0.5">
+            Ideias fora do plano (satélite): α {sat.avg_alpha_pct > 0 ? '+' : ''}{sat.avg_alpha_pct}% · bate {benchLabel} {sat.beat_benchmark_pct}% <span className="opacity-60">(n={sat.n})</span>
+          </div>
+          <div className="opacity-80">
+            {sat.avg_alpha_pct > 0
+              ? 'O stock-picking fora do plano está a acrescentar valor vs o índice.'
+              : `Não estão a bater o ${benchLabel} líquido — considera focar só no DCA ao plano.`}
+          </div>
+        </div>
+      )}
+
       <div className="space-y-1.5 text-xs">
         <div className="text-gray-500 uppercase tracking-wide text-[10px]">por convicção</div>
         {(['high', 'medium', 'low'] as const).map(c => {
@@ -4066,7 +4348,7 @@ function BacktestCard({ data }: { data: any }) {
           return (
             <div key={c} className="flex items-center justify-between text-gray-300">
               <span className="capitalize">{c} <span className="text-gray-600">({v.n})</span></span>
-              <span className="font-mono text-gray-300">bate SPY <span className="text-white">{v.beat_spy_pct}%</span></span>
+              <span className="font-mono text-gray-300">bate {benchLabel} <span className="text-white">{v.beat_benchmark_pct}%</span></span>
               <span className={`font-mono ${v.avg_alpha_pct > 0 ? 'text-green-400' : 'text-red-400'}`}>
                 α {v.avg_alpha_pct > 0 ? '+' : ''}{v.avg_alpha_pct}%
               </span>

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import platform
 import subprocess
+from collections import defaultdict
 from datetime import datetime, date, timedelta, timezone
 from typing import Optional
 
@@ -14,8 +15,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
-from database import get_db
-from models import ScreenTimeDeviceLabel
+from database import get_db, SessionLocal
+from models import ScreenTimeDeviceLabel, ScreenTimeDailyApp
 import screen_time_reader as reader
 from app_icons import get_icon_png_path
 
@@ -55,6 +56,46 @@ def _attach_label(item: dict, labels: dict[str, dict]) -> dict:
     item["label"] = info.get("label", "")
     item["kind"] = info.get("kind", "unknown")
     return item
+
+
+def snapshot_screen_time(days_back: int = 45) -> int:
+    """Lê o knowledgeC e persiste agregados diários por app (modo 'apple') na
+    tabela screen_time_daily_apps. Só sobrescreve um dia quando o knowledgeC
+    ainda tem dados desse dia — dias que já saíram do knowledgeC mantêm o último
+    snapshot guardado. Devolve o número de dias actualizados.
+
+    É assim que ganhamos histórico de longo prazo: a Apple só guarda ~4 semanas."""
+    ok, _ = reader.is_available()
+    if not ok:
+        return 0
+    days_written = 0
+    db = SessionLocal()
+    try:
+        today = date.today()
+        for offset in range(days_back + 1):
+            d = today - timedelta(days=offset)
+            start_unix, end_unix = _day_to_unix_range(d)
+            try:
+                rows = reader.summary_by_app(start_unix, end_unix, mode="apple")
+            except Exception:
+                continue
+            rows = [r for r in rows if (r.get("total_seconds") or 0) > 0]
+            if not rows:
+                continue  # sem dados no knowledgeC → preserva snapshot anterior
+            db.query(ScreenTimeDailyApp).filter(ScreenTimeDailyApp.date == d).delete()
+            for r in rows:
+                db.add(ScreenTimeDailyApp(
+                    date=d,
+                    device_id=r.get("device_id", "__local__"),
+                    bundle_id=r.get("bundle_id", "(unknown)"),
+                    category=r.get("category", "") or "",
+                    seconds=int(round(r.get("total_seconds") or 0)),
+                ))
+            days_written += 1
+        db.commit()
+    finally:
+        db.close()
+    return days_written
 
 
 @router.get("/health")
@@ -247,3 +288,124 @@ def sessions(
     except reader.ScreenTimeUnavailable as ex:
         raise HTTPException(503, str(ex))
     return items[:limit]
+
+
+@router.post("/snapshot")
+def trigger_snapshot(days_back: int = Query(45, ge=1, le=730)):
+    """Força um snapshot dos agregados diários (arranque chama isto periodicamente)."""
+    return {"days_written": snapshot_screen_time(days_back)}
+
+
+@router.get("/insights")
+def insights(
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+    bucket: str = Query("day"),
+    db: Session = Depends(get_db),
+):
+    """Estatísticas a partir dos snapshots diários guardados (histórico longo).
+
+    Período em [start_date, end_date] (omitir start = desde o 1º dia guardado).
+    bucket='day' → série por dia; bucket='month' → série por mês (períodos longos).
+    """
+    all_rows = db.query(ScreenTimeDailyApp).all()
+    all_dates = {r.date for r in all_rows}
+    tracked_days = len(all_dates)
+    total_all = sum(r.seconds for r in all_rows)
+
+    today = date.today()
+    end = date.fromisoformat(end_date) if end_date else today
+    if start_date:
+        start = date.fromisoformat(start_date)
+    elif all_dates:
+        start = min(all_dates)
+    else:
+        start = end
+    if start > end:
+        start = end
+
+    span = (end - start).days + 1
+    prev_end = start - timedelta(days=1)
+    prev_start = prev_end - timedelta(days=span - 1)
+
+    period = [r for r in all_rows if start <= r.date <= end]
+    prev = [r for r in all_rows if prev_start <= r.date <= prev_end]
+
+    by_day: dict[date, int] = defaultdict(int)
+    for r in period:
+        by_day[r.date] += r.seconds
+
+    if bucket == "month":
+        by_month: dict[str, int] = defaultdict(int)
+        for d_, sec in by_day.items():
+            by_month[d_.strftime("%Y-%m")] += sec
+        timeseries = []
+        y, m = start.year, start.month
+        while (y, m) <= (end.year, end.month):
+            key = f"{y:04d}-{m:02d}"
+            timeseries.append({"date": key, "seconds": by_month.get(key, 0)})
+            m += 1
+            if m > 12:
+                m, y = 1, y + 1
+    else:
+        timeseries = [
+            {"date": (start + timedelta(days=i)).isoformat(), "seconds": by_day.get(start + timedelta(days=i), 0)}
+            for i in range(span)
+        ]
+    total_period = sum(by_day.values())
+    tracked_in_period = len(by_day)
+    daily_avg = round(total_period / tracked_in_period) if tracked_in_period else 0
+    total_prev = sum(r.seconds for r in prev)
+    delta_pct = round((total_period - total_prev) / total_prev * 100) if total_prev else None
+
+    busiest = max(by_day.items(), key=lambda kv: kv[1], default=None)
+    quietest = min(by_day.items(), key=lambda kv: kv[1], default=None)
+
+    by_app: dict[str, dict] = defaultdict(lambda: {"seconds": 0, "category": ""})
+    for r in period:
+        e = by_app[r.bundle_id]
+        e["seconds"] += r.seconds
+        if r.category:
+            e["category"] = r.category
+    top_apps = sorted(
+        ({"bundle_id": k, "seconds": v["seconds"], "category": v["category"]} for k, v in by_app.items()),
+        key=lambda x: x["seconds"], reverse=True,
+    )[:12]
+
+    by_cat: dict[str, int] = defaultdict(int)
+    for r in period:
+        by_cat[r.category or "Other"] += r.seconds
+    by_category = sorted(
+        ({"category": k, "seconds": v} for k, v in by_cat.items()),
+        key=lambda x: x["seconds"], reverse=True,
+    )
+
+    wd_total: dict[int, int] = defaultdict(int)
+    wd_days: dict[int, set] = defaultdict(set)
+    for d_, sec in by_day.items():
+        wd_total[d_.weekday()] += sec
+        wd_days[d_.weekday()].add(d_)
+    by_weekday = [
+        {"weekday": wd, "avg_seconds": round(wd_total[wd] / len(wd_days[wd])) if wd_days[wd] else 0}
+        for wd in range(7)
+    ]
+
+    return {
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "bucket": bucket,
+        "tracked_days": tracked_days,
+        "first_date": min(all_dates).isoformat() if all_dates else None,
+        "last_date": max(all_dates).isoformat() if all_dates else None,
+        "total_all_seconds": total_all,
+        "total_period_seconds": total_period,
+        "daily_avg_seconds": daily_avg,
+        "total_prev_seconds": total_prev,
+        "delta_pct": delta_pct,
+        "busiest_day": {"date": busiest[0].isoformat(), "seconds": busiest[1]} if busiest else None,
+        "quietest_day": {"date": quietest[0].isoformat(), "seconds": quietest[1]} if quietest else None,
+        "timeseries": timeseries,
+        "top_apps": top_apps,
+        "by_category": by_category,
+        "by_weekday": by_weekday,
+    }

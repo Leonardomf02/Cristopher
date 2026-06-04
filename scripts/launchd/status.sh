@@ -17,3 +17,7 @@ for f in backend frontend; do
     tail -n 5 "$LOG_DIR/$f.err.log"
   fi
 done
+if [[ -f "$LOG_DIR/daily_signals.log" ]]; then
+  echo "── daily_signals.log ──"
+  tail -n 8 "$LOG_DIR/daily_signals.log"
+fi

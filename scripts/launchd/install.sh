@@ -9,8 +9,11 @@ LAUNCH_DIR="$HOME/Library/LaunchAgents"
 LOG_DIR="$PROJECT_DIR/scripts/launchd/logs"
 BACKEND_LABEL="com.cristopher.backend"
 FRONTEND_LABEL="com.cristopher.frontend"
+DAILY_LABEL="com.cristopher.dailysignals"
 BACKEND_PLIST="$LAUNCH_DIR/$BACKEND_LABEL.plist"
 FRONTEND_PLIST="$LAUNCH_DIR/$FRONTEND_LABEL.plist"
+DAILY_PLIST="$LAUNCH_DIR/$DAILY_LABEL.plist"
+DAILY_SCRIPT="$PROJECT_DIR/scripts/launchd/daily_signals.sh"
 
 VENV_PY="$PROJECT_DIR/backend/venv/bin/python3"
 NPM_BIN="$(command -v npm || true)"
@@ -123,7 +126,7 @@ $BACKEND_PROGRAM_XML
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>$PROJECT_DIR/backend/venv/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <string>$PROJECT_DIR/backend/venv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>
@@ -171,15 +174,45 @@ cat > "$FRONTEND_PLIST" <<EOF
 </plist>
 EOF
 
+# Job diário dos Sinais IA: refresca outcomes + gera o sinal do dia às 08:30.
+chmod +x "$DAILY_SCRIPT" 2>/dev/null || true
+cat > "$DAILY_PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$DAILY_LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>$DAILY_SCRIPT</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>8</integer>
+    <key>Minute</key><integer>30</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>$LOG_DIR/daily_signals.log</string>
+  <key>StandardErrorPath</key>
+  <string>$LOG_DIR/daily_signals.err.log</string>
+</dict>
+</plist>
+EOF
+
 # Recarregar (unload + load) para reflectir mudanças
 launchctl unload "$BACKEND_PLIST" 2>/dev/null || true
 launchctl unload "$FRONTEND_PLIST" 2>/dev/null || true
+launchctl unload "$DAILY_PLIST" 2>/dev/null || true
 launchctl load -w "$BACKEND_PLIST"
 launchctl load -w "$FRONTEND_PLIST"
+launchctl load -w "$DAILY_PLIST"
 
 echo "✅ Instalado:"
 echo "   $BACKEND_LABEL  →  http://localhost:8001"
 echo "   $FRONTEND_LABEL →  http://localhost:3001"
+echo "   $DAILY_LABEL → sinais IA diários às 08:30"
 echo ""
 echo "Logs em: $LOG_DIR"
 echo "Para parar: ./scripts/launchd/uninstall.sh"

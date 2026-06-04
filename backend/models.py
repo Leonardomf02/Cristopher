@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, Date, DateTime, Text, Enum as SAEnum
+from sqlalchemy import Column, Integer, String, Float, Boolean, Date, DateTime, Text, Enum as SAEnum, UniqueConstraint
 from sqlalchemy.sql import func
 from database import Base
 import enum
@@ -275,6 +275,7 @@ class SleepEntry(Base):
     hours = Column(Float, nullable=False)            # total hours slept
     quality = Column(Integer, nullable=True)         # 1-5 subjective rating
     notes = Column(Text, default="")
+    source = Column(String, default="manual")        # manual | auto (estimado do PC)
     created_at = Column(DateTime, server_default=func.now())
 
 
@@ -357,7 +358,7 @@ class Note(Base):
     content = Column(Text, default="")
     folder_id = Column(Integer, nullable=True, index=True)
     pinned = Column(Boolean, default=False)
-    color = Column(String, default="#F59E0B")
+    color = Column(String, default="")
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -496,10 +497,10 @@ class MoodEntry(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     date = Column(Date, nullable=False, unique=True, index=True)
-    mood = Column(Integer, nullable=False)             # 1=😢, 2=😕, 3=😐, 4=😊, 5=🤩
+    mood = Column(Integer, nullable=False)             # day rating 0-10
+    quality = Column(String, default="")               # bad | meh | good | great
     note = Column(Text, default="")
-    # Multiple feeling tags stored as comma-separated: "sono,stress,cansado"
-    tags = Column(String, default="")
+    tags = Column(String, default="")                  # legacy (feeling tags), unused
     created_at = Column(DateTime, server_default=func.now())
 
 
@@ -630,6 +631,72 @@ class CodeProjectNote(Base):
     created_at = Column(DateTime, server_default=func.now())
 
 
+class WakaProjectDay(Base):
+    """Cached WakaTime coding time per day, broken down by kind (project / language /
+    editor / os). Built up daily from the WakaTime API so we keep unlimited history
+    beyond the free 14-day window."""
+    __tablename__ = "waka_project_days"
+
+    id = Column(Integer, primary_key=True, index=True)
+    day = Column(Date, nullable=False, index=True)
+    kind = Column(String, nullable=False, default="project", index=True)
+    project = Column(String, nullable=False, default="")  # the name within `kind`
+    seconds = Column(Integer, nullable=False, default=0)
+
+
+class WakaDayMetrics(Base):
+    """Cached WakaTime per-day totals + AI-coding metrics (from grand_total)."""
+    __tablename__ = "waka_day_metrics"
+
+    id = Column(Integer, primary_key=True, index=True)
+    day = Column(Date, nullable=False, unique=True, index=True)
+    total_seconds = Column(Integer, nullable=False, default=0)
+    ai_seconds = Column(Integer, nullable=False, default=0)  # time in the "AI Coding" category
+    ai_additions = Column(Integer, nullable=False, default=0)
+    ai_deletions = Column(Integer, nullable=False, default=0)
+    human_additions = Column(Integer, nullable=False, default=0)
+    human_deletions = Column(Integer, nullable=False, default=0)
+    ai_agent_line_changes = Column(Integer, nullable=False, default=0)
+    ai_input_tokens = Column(Integer, nullable=False, default=0)
+    ai_output_tokens = Column(Integer, nullable=False, default=0)
+    ai_sessions = Column(Integer, nullable=False, default=0)
+    ai_prompt_events = Column(Integer, nullable=False, default=0)
+    ai_cost = Column(Float, nullable=False, default=0.0)
+
+
+class WakaProjectDayMetrics(Base):
+    """Cached WakaTime per-day, per-project totals + AI-coding metrics.
+
+    Mirrors WakaDayMetrics but split by project, so the detailed Projects section
+    can show time / AI changes / prompts / sessions / tokens / spend per project."""
+    __tablename__ = "waka_project_day_metrics"
+
+    id = Column(Integer, primary_key=True, index=True)
+    day = Column(Date, nullable=False, index=True)
+    project = Column(String, nullable=False, default="", index=True)
+    seconds = Column(Integer, nullable=False, default=0)
+    ai_additions = Column(Integer, nullable=False, default=0)
+    ai_deletions = Column(Integer, nullable=False, default=0)
+    human_additions = Column(Integer, nullable=False, default=0)
+    human_deletions = Column(Integer, nullable=False, default=0)
+    ai_lines = Column(Integer, nullable=False, default=0)  # ai_agent_line_changes total
+    ai_input_tokens = Column(Integer, nullable=False, default=0)
+    ai_output_tokens = Column(Integer, nullable=False, default=0)
+    ai_prompt_events = Column(Integer, nullable=False, default=0)
+    ai_prompt_length_sum = Column(Integer, nullable=False, default=0)
+    ai_sessions = Column(Integer, nullable=False, default=0)
+    ai_cost = Column(Float, nullable=False, default=0.0)
+
+
+class CodeProjectFavorite(Base):
+    """A project_path the user pinned — shows first in the 'all projects' list."""
+    __tablename__ = "code_project_favorites"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_path = Column(String, nullable=False, unique=True, index=True)
+    created_at = Column(DateTime, server_default=func.now())
+
+
 class CodeFileSnapshot(Base):
     """Periodic baseline snapshot of a code file. Used to compute reliable diffs for
     AI notes when neither VS Code Local History nor git can provide one (e.g. files
@@ -656,3 +723,21 @@ class ScreenTimeDeviceLabel(Base):
     label = Column(String, nullable=False, default="")
     kind = Column(String, nullable=False, default="unknown")  # mac, iphone, ipad, watch, unknown
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class ScreenTimeDailyApp(Base):
+    """Snapshot diário do uso por app (lido do knowledgeC). A Apple só guarda
+    ~4 semanas no knowledgeC; isto persiste agregados por dia para histórico de
+    longo prazo e estatísticas. Valores em modo 'apple' (gap-merge + ceil)."""
+    __tablename__ = "screen_time_daily_apps"
+
+    id = Column(Integer, primary_key=True, index=True)
+    date = Column(Date, nullable=False, index=True)
+    device_id = Column(String, nullable=False, default="__local__")
+    bundle_id = Column(String, nullable=False)
+    category = Column(String, default="")
+    seconds = Column(Integer, default=0)
+
+    __table_args__ = (
+        UniqueConstraint("date", "device_id", "bundle_id", name="uq_stda_day_dev_bundle"),
+    )

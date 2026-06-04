@@ -2,6 +2,11 @@ from pydantic import BaseModel
 from datetime import date, datetime
 from typing import Optional, List
 
+# Alias para usar em anotações opcionais: um campo chamado `date` com default
+# sombreia o tipo `date` na sua própria anotação (resolve para NoneType). Usar
+# `Date` evita essa colisão de nomes.
+Date = date
+
 
 # ── Day Types ────────────────────────────────────────────────────
 
@@ -34,13 +39,13 @@ class EventCreate(BaseModel):
     category: str = "general"
     color: str = "#3B82F6"
     recurrence: str = "none"
-    recurrence_end: Optional[date] = None
+    recurrence_end: Optional[Date] = None
 
 
 class EventUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
-    date: Optional[date] = None
+    date: Optional[Date] = None
     start_time: Optional[str] = None
     end_time: Optional[str] = None
     event_type: Optional[str] = None
@@ -48,7 +53,7 @@ class EventUpdate(BaseModel):
     color: Optional[str] = None
     completed: Optional[bool] = None
     recurrence: Optional[str] = None
-    recurrence_end: Optional[date] = None
+    recurrence_end: Optional[Date] = None
 
 
 class EventOut(BaseModel):
@@ -63,7 +68,7 @@ class EventOut(BaseModel):
     color: str
     completed: bool
     recurrence: str = "none"
-    recurrence_end: Optional[date] = None
+    recurrence_end: Optional[Date] = None
     is_recurring_instance: bool = False
     parent_id: Optional[int] = None
 
@@ -89,7 +94,7 @@ class ExpenseUpdate(BaseModel):
     description: Optional[str] = None
     amount: Optional[float] = None
     category: Optional[str] = None
-    date: Optional[date] = None
+    date: Optional[Date] = None
     trip_id: Optional[int] = None
     notes: Optional[str] = None
     original_amount: Optional[float] = None
@@ -133,7 +138,7 @@ class LolGameCreate(BaseModel):
 
 
 class LolGameUpdate(BaseModel):
-    date: Optional[date] = None
+    date: Optional[Date] = None
     won: Optional[bool] = None
     champion_played: Optional[str] = None
     champion_against: Optional[str] = None
@@ -177,8 +182,8 @@ class TripCreate(BaseModel):
 class TripUpdate(BaseModel):
     destination: Optional[str] = None
     country: Optional[str] = None
-    start_date: Optional[date] = None
-    end_date: Optional[date] = None
+    start_date: Optional[Date] = None
+    end_date: Optional[Date] = None
     notes: Optional[str] = None
     flights_cost: Optional[float] = None
     accommodation_cost: Optional[float] = None
@@ -257,7 +262,7 @@ class TripRatingCreate(BaseModel):
     name: str
     rating: float
     notes: str = ""
-    date: Optional[date] = None
+    date: Optional[Date] = None
 
 
 class TripRatingUpdate(BaseModel):
@@ -265,7 +270,7 @@ class TripRatingUpdate(BaseModel):
     name: Optional[str] = None
     rating: Optional[float] = None
     notes: Optional[str] = None
-    date: Optional[date] = None
+    date: Optional[Date] = None
 
 
 class TripRatingOut(BaseModel):
@@ -275,7 +280,7 @@ class TripRatingOut(BaseModel):
     name: str
     rating: float
     notes: str
-    date: Optional[date] = None
+    date: Optional[Date] = None
 
     model_config = {"from_attributes": True}
 
@@ -342,7 +347,7 @@ class ListItemCreate(BaseModel):
     text: str
     position: int = 0
     notes: str = ""
-    due_date: Optional[date] = None
+    due_date: Optional[Date] = None
     due_time: Optional[str] = None
     priority: int = 0
 
@@ -352,7 +357,7 @@ class ListItemUpdate(BaseModel):
     checked: Optional[bool] = None
     position: Optional[int] = None
     notes: Optional[str] = None
-    due_date: Optional[date] = None
+    due_date: Optional[Date] = None
     due_time: Optional[str] = None
     priority: Optional[int] = None
 
@@ -364,7 +369,7 @@ class ListItemOut(BaseModel):
     checked: bool
     position: int
     notes: str = ""
-    due_date: Optional[date] = None
+    due_date: Optional[Date] = None
     due_time: Optional[str] = None
     priority: int = 0
 
@@ -380,10 +385,11 @@ class SleepCreate(BaseModel):
     hours: float
     quality: Optional[int] = None
     notes: str = ""
+    source: str = "manual"
 
 
 class SleepUpdate(BaseModel):
-    date: Optional[date] = None
+    date: Optional[Date] = None
     bedtime: Optional[str] = None
     wake_time: Optional[str] = None
     hours: Optional[float] = None
@@ -399,6 +405,7 @@ class SleepOut(BaseModel):
     hours: float
     quality: Optional[int]
     notes: str
+    source: str = "manual"
 
     model_config = {"from_attributes": True}
 
@@ -492,7 +499,7 @@ class NoteCreate(BaseModel):
     content: str = ""
     folder_id: Optional[int] = None
     pinned: bool = False
-    color: str = "#F59E0B"
+    color: str = ""
 
 
 class NoteUpdate(BaseModel):
@@ -613,6 +620,19 @@ class InvestmentAllocationOut(BaseModel):
 class MonthlyPlanUpdate(BaseModel):
     budget: Optional[float] = None
     rotational_choices: Optional[dict] = None
+
+
+class MonthlySnapshotEntry(BaseModel):
+    ticker: str
+    name: str
+    asset_type: str = "stock"
+    amount_eur: float = 0
+    percentage: Optional[float] = None
+    source: str = "extra"  # "plano" (vem da alocação recorrente) | "extra" (ad-hoc do mês)
+
+
+class MonthlySnapshotSave(BaseModel):
+    entries: list[MonthlySnapshotEntry]
 
 
 class MonthlyPlanOut(BaseModel):
@@ -740,15 +760,17 @@ class HabitCompletionOut(BaseModel):
 
 class MoodCreate(BaseModel):
     date: date
-    mood: int              # 1-5
+    mood: int              # day rating 0-10
+    quality: str = ""      # bad | meh | good | great
     note: str = ""
-    tags: str = ""         # comma-separated: "sono,stress,cansado"
+    tags: str = ""         # legacy, unused
 
 
 class MoodOut(BaseModel):
     id: int
     date: date
     mood: int
+    quality: str = ""
     note: str
     tags: str = ""
     created_at: datetime
@@ -802,7 +824,7 @@ class SubscriptionCreate(BaseModel):
     amount: float
     currency: str = "EUR"
     billing_cycle: str = "monthly"
-    next_renewal: Optional[date] = None
+    next_renewal: Optional[Date] = None
     category: str = "subscriptions"
     notes: str = ""
 
@@ -812,7 +834,7 @@ class SubscriptionUpdate(BaseModel):
     amount: Optional[float] = None
     currency: Optional[str] = None
     billing_cycle: Optional[str] = None
-    next_renewal: Optional[date] = None
+    next_renewal: Optional[Date] = None
     category: Optional[str] = None
     active: Optional[bool] = None
     notes: Optional[str] = None
@@ -824,7 +846,7 @@ class SubscriptionOut(BaseModel):
     amount: float
     currency: str
     billing_cycle: str
-    next_renewal: Optional[date]
+    next_renewal: Optional[Date]
     category: str
     active: bool
     notes: str

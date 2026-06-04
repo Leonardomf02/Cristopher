@@ -17,7 +17,7 @@ from riot_api import (
     get_rank_info, get_live_game, get_live_game_detailed, get_mastery_data,
     get_match_timeline, parse_timeline,
     get_summoner_level, get_master_position, get_replay_links,
-    build_matchup_stats, get_leagueofgraphs_ranking,
+    build_matchup_stats, get_leagueofgraphs_ranking, get_opgg_profile,
 )
 from lcu_api import get_champ_select_session, get_gameflow_phase, is_client_running
 from champion_data import (
@@ -983,6 +983,16 @@ async def get_rank():
         raise HTTPException(status_code=502, detail=e.message)
 
 
+_TIER_BASE = {"IRON": 0, "BRONZE": 400, "SILVER": 800, "GOLD": 1200,
+              "PLATINUM": 1600, "EMERALD": 2000, "DIAMOND": 2400,
+              "MASTER": 2800, "GRANDMASTER": 3200, "CHALLENGER": 3600}
+
+
+def _effective_lp(tier: str | None, lp: int | None) -> int:
+    """Cross-tier comparable LP (Master 0LP > Diamond I 100LP)."""
+    return _TIER_BASE.get(tier or "", 0) + (lp or 0)
+
+
 def _save_rank_snapshot(rank: dict):
     """Save a rank snapshot and run season-reset detection."""
     try:
@@ -995,12 +1005,16 @@ def _save_rank_snapshot(rank: dict):
 
         existing = db.query(LolRankSnapshot).filter(LolRankSnapshot.date == today).first()
         if existing:
-            existing.tier = rank.get("tier")
-            existing.rank = rank.get("rank")
-            existing.lp = rank.get("lp")
+            # Always refresh live counters...
             existing.wins = rank.get("wins")
             existing.losses = rank.get("losses")
             existing.season_id = season_id
+            # ...but keep the day's PEAK rank, never overwrite it downward.
+            # Otherwise a loss after a high would erase the intra-day peak.
+            if _effective_lp(rank.get("tier"), rank.get("lp")) >= _effective_lp(existing.tier, existing.lp):
+                existing.tier = rank.get("tier")
+                existing.rank = rank.get("rank")
+                existing.lp = rank.get("lp")
         else:
             snap = LolRankSnapshot(
                 date=today,
@@ -1306,7 +1320,8 @@ async def get_summoner():
 
 @router.get("/riot/position")
 async def get_ranking_position():
-    """Get the player's real ranking from League of Graphs."""
+    """Get the player's current ladder rank. Tries, in order: League of Graphs,
+    op.gg (has the % of top), then the Riot Master+ ladder as a last resort."""
     cached = _cache_get("position", ttl=1800)
     if cached is not None:
         return cached
@@ -1315,9 +1330,40 @@ async def get_ranking_position():
             _riot_config["game_name"],
             _riot_config["tag_line"],
         )
+        # League of Graphs blocks scraping (403). Try op.gg next — it gives the
+        # ladder rank with the top percentile, which the Riot API doesn't expose.
         if result is None:
-            result = {"position": None, "message": "Não foi possível obter ranking do League of Graphs"}
-        else:
+            opgg = await get_opgg_profile(
+                _riot_config["game_name"], _riot_config["tag_line"]
+            )
+            if opgg and opgg.get("euw_rank"):
+                result = {
+                    "euw_rank": opgg["euw_rank"],
+                    "global_rank": None,
+                    "top_percent": opgg.get("top_percent"),
+                    "source": "op.gg",
+                }
+        # Last resort: the Riot Master+ ladder (no percentile, position only).
+        if result is None:
+            api_key = _riot_config.get("api_key", "")
+            mp = await get_master_position(
+                _riot_config["game_name"],
+                _riot_config["tag_line"],
+                api_key,
+            ) if api_key else None
+            if mp and mp.get("position"):
+                result = {
+                    "euw_rank": mp["position"],
+                    "global_rank": None,
+                    "top_percent": None,
+                    "total_master_plus": mp.get("total_master_plus"),
+                    "approximate": mp.get("approximate", False),
+                    "source": "riot_master_ladder",
+                }
+            else:
+                result = {"position": None, "message": "Não foi possível obter ranking"}
+
+        if result.get("euw_rank") or result.get("global_rank"):
             # Save EU rank to today's snapshot
             _save_position_to_snapshot(result)
         _cache_set("position", result)
@@ -1345,16 +1391,11 @@ def _save_position_to_snapshot(position: dict):
 # ── Riot API — Peak LP & Ranking ─────────────────────────────────
 
 @router.get("/riot/peak")
-def get_peak_stats(db: Session = Depends(get_db)):
-    """Get peak LP and best EU ranking from historical snapshots."""
+async def get_peak_stats(db: Session = Depends(get_db)):
+    """Get peak LP and best EU ranking. Combines our own snapshots with op.gg's
+    season peak ("Top Tier") — op.gg tracks LP continuously, so it recovers peaks
+    we never captured ourselves."""
     snapshots = db.query(LolRankSnapshot).all()
-    if not snapshots:
-        return {"has_data": False}
-
-    # Compute effective LP for tier comparison (Master 0LP = 0, GM 0LP = higher, etc.)
-    tier_base = {"IRON": 0, "BRONZE": 400, "SILVER": 800, "GOLD": 1200,
-                 "PLATINUM": 1600, "EMERALD": 2000, "DIAMOND": 2400,
-                 "MASTER": 2800, "GRANDMASTER": 3200, "CHALLENGER": 3600}
 
     peak_lp_snap = None
     peak_effective = -1
@@ -1363,7 +1404,7 @@ def get_peak_stats(db: Session = Depends(get_db)):
 
     for s in snapshots:
         if s.lp is not None and s.tier:
-            effective = tier_base.get(s.tier, 0) + (s.lp or 0)
+            effective = _effective_lp(s.tier, s.lp)
             if effective > peak_effective:
                 peak_effective = effective
                 peak_lp_snap = s
@@ -1371,7 +1412,7 @@ def get_peak_stats(db: Session = Depends(get_db)):
             best_euw_val = s.euw_rank
             best_euw_snap = s
 
-    result: dict = {"has_data": True}
+    result: dict = {"has_data": bool(snapshots)}
     if peak_lp_snap:
         result["peak_lp"] = peak_lp_snap.lp
         result["peak_tier"] = peak_lp_snap.tier
@@ -1382,6 +1423,28 @@ def get_peak_stats(db: Session = Depends(get_db)):
         result["best_global_rank"] = best_euw_snap.global_rank
         result["best_top_percent"] = best_euw_snap.top_percent
         result["best_rank_date"] = str(best_euw_snap.date)
+
+    # Pull op.gg's data and merge: for each figure, keep whichever source is
+    # better (higher peak LP, lower = better ladder rank).
+    try:
+        opgg = await get_opgg_profile(_riot_config["game_name"], _riot_config["tag_line"])
+    except Exception:
+        opgg = None
+    if opgg:
+        if opgg.get("peak_tier") and _effective_lp(opgg["peak_tier"], opgg["peak_lp"]) > max(peak_effective, 0):
+            result["has_data"] = True
+            result["peak_lp"] = opgg["peak_lp"]
+            result["peak_tier"] = opgg["peak_tier"]
+            result["peak_rank"] = None
+            result["peak_source"] = "op.gg"
+            result.pop("peak_date", None)
+        if opgg.get("euw_rank") and opgg["euw_rank"] < best_euw_val:
+            result["has_data"] = True
+            result["best_euw_rank"] = opgg["euw_rank"]
+            result["best_top_percent"] = opgg.get("top_percent")
+            result["best_global_rank"] = None
+            result["best_rank_source"] = "op.gg"
+            result.pop("best_rank_date", None)
 
     return result
 

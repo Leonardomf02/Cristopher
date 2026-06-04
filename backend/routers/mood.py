@@ -28,11 +28,12 @@ def list_moods(
 
 @router.post("/", response_model=MoodOut)
 def create_or_update_mood(data: MoodCreate, db: Session = Depends(get_db)):
-    if data.mood < 1 or data.mood > 5:
-        raise HTTPException(400, "Mood must be between 1 and 5")
+    if data.mood < 0 or data.mood > 10:
+        raise HTTPException(400, "Rating must be between 0 and 10")
     existing = db.query(MoodEntry).filter(MoodEntry.date == data.date).first()
     if existing:
         existing.mood = data.mood
+        existing.quality = data.quality
         existing.note = data.note
         existing.tags = data.tags
         db.commit()

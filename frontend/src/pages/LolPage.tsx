@@ -36,6 +36,8 @@ export default function LolPage() {
   // Champ Select state
   const [csStatus, setCsStatus] = useState<ChampSelectStatus | null>(null);
   const [csSession, setCsSession] = useState<ChampSelectSession | null>(null);
+  const [showCounterWindow, setShowCounterWindow] = useState(false);
+  const wasInChampSelect = useRef(false);
   const csPolling = useRef<ReturnType<typeof setInterval> | null>(null);
   const livePolling = useRef<ReturnType<typeof setInterval> | null>(null);
   const wasInGame = useRef(false);
@@ -168,6 +170,14 @@ export default function LolPage() {
     csPolling.current = setInterval(pollChampSelect, 3000);
     return () => { if (csPolling.current) clearInterval(csPolling.current); };
   }, [pollChampSelect]);
+
+  // Auto-open the Counter Pick window when champ select starts; close it when it ends.
+  useEffect(() => {
+    const inCs = !!csStatus?.in_champ_select;
+    if (inCs && !wasInChampSelect.current) setShowCounterWindow(true);
+    if (!inCs && wasInChampSelect.current) setShowCounterWindow(false);
+    wasInChampSelect.current = inCs;
+  }, [csStatus?.in_champ_select]);
 
   // Poll live game status every 30s, detailed data every 60s when in game
   useEffect(() => {
@@ -425,6 +435,12 @@ export default function LolPage() {
             </span>
             {csStatus.phase && csStatus.phase !== 'None' && !csSession?.active && (
               <span className="text-xs text-gray-500">{csStatus.phase}</span>
+            )}
+            {csStatus.in_champ_select && !showCounterWindow && (
+              <button onClick={() => setShowCounterWindow(true)}
+                className="ml-auto flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium bg-purple-600/20 hover:bg-purple-600/30 border border-purple-500/30 text-purple-300">
+                <Search size={12} /> Counter Pick
+              </button>
             )}
           </div>
 
@@ -761,7 +777,16 @@ export default function LolPage() {
       {/* ══════════════ MAIN TAB ══════════════ */}
       {activeTab === 'main' && (<>
 
-      <CounterPickPanel ddVersion={ddVersion} />
+      <ProfileHeader
+        gameName={riotGameName}
+        tagLine={riotTagLine}
+        summoner={summoner}
+        rankInfo={rankInfo}
+        rankPosition={rankPosition}
+        peakStats={peakStats}
+        seasons={seasons}
+        ddVersion={ddVersion}
+      />
 
       {/* Stats Overview */}
       {stats && (() => {
@@ -1817,6 +1842,26 @@ export default function LolPage() {
           </div>
         </div>
       )}
+
+      {/* Counter Pick window — opens automatically on champ select */}
+      {showCounterWindow && (
+        <div className="fixed inset-0 bg-black/70 flex items-start justify-center z-50 p-4 overflow-y-auto"
+          onClick={() => setShowCounterWindow(false)}>
+          <div className="bg-[#1a1a1a] rounded-2xl border border-purple-500/40 w-[680px] max-w-[92vw] mt-10 shadow-2xl"
+            onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-[#222]">
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-purple-500 animate-pulse" />
+                <h3 className="text-sm font-bold">Champ Select — Counter Pick</h3>
+              </div>
+              <button onClick={() => setShowCounterWindow(false)} className="text-gray-500 hover:text-white"><X size={20} /></button>
+            </div>
+            <div className="p-4">
+              <CounterPickPanel ddVersion={ddVersion} session={csSession} />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1877,6 +1922,150 @@ const TAG_COLORS: Record<string, { bg: string; text: string }> = {
   cyan: { bg: 'bg-cyan-500/15', text: 'text-cyan-400' },
   gray: { bg: 'bg-gray-500/15', text: 'text-gray-400' },
 };
+
+const TIER_BASE: Record<string, number> = {
+  IRON: 0, BRONZE: 400, SILVER: 800, GOLD: 1200, PLATINUM: 1600,
+  EMERALD: 2000, DIAMOND: 2400, MASTER: 2800, GRANDMASTER: 3200, CHALLENGER: 3600,
+};
+const effLp = (tier?: string, lp?: number) => (TIER_BASE[tier || ''] || 0) + (lp || 0);
+
+const TIER_EMBLEM = (tier?: string) =>
+  tier
+    ? `https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-static-assets/global/default/images/ranked-mini-crests/${tier.toLowerCase()}.png`
+    : '';
+
+function ProfileHeader({
+  gameName, tagLine, summoner, rankInfo, rankPosition, peakStats, seasons, ddVersion,
+}: {
+  gameName: string;
+  tagLine: string;
+  summoner: SummonerInfo | null;
+  rankInfo: RankInfo | null;
+  rankPosition: any;
+  peakStats: any;
+  seasons: any[];
+  ddVersion: string;
+}) {
+  const tier = rankInfo?.tier;
+  const tierColor = tier ? (TIER_COLORS[tier] || 'text-gray-400') : 'text-gray-500';
+  const noDiv = tier && ['MASTER', 'GRANDMASTER', 'CHALLENGER'].includes(tier);
+  const tierLabel = tier
+    ? `${tier.charAt(0)}${tier.slice(1).toLowerCase()}${!noDiv && rankInfo?.rank ? ` ${rankInfo.rank}` : ''}`
+    : 'Unranked';
+  const wins = rankInfo?.wins ?? 0;
+  const losses = rankInfo?.losses ?? 0;
+  const wr = rankInfo?.winrate ?? 0;
+
+  // Season history: peak tier per season, most recent first
+  const history = (seasons || []).filter(s => s.peak_tier || s.final_tier).slice(0, 6);
+
+  return (
+    <div className="bg-[#161616] rounded-2xl border border-[#222] p-5 mb-6">
+      <div className="flex flex-col lg:flex-row lg:items-stretch gap-5">
+        {/* Identity */}
+        <div className="flex items-center gap-4 min-w-0">
+          <div className="relative shrink-0">
+            {summoner ? (
+              <img
+                src={`https://ddragon.leagueoflegends.com/cdn/${ddVersion}/img/profileicon/${summoner.profile_icon_id}.png`}
+                alt=""
+                className="w-20 h-20 rounded-2xl border-2 border-[#333] bg-[#0d0d0d]"
+              />
+            ) : (
+              <div className="w-20 h-20 rounded-2xl border-2 border-[#333] bg-[#0d0d0d]" />
+            )}
+            {summoner?.summoner_level ? (
+              <span className="absolute -bottom-2 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded-full bg-[#0d0d0d] border border-[#333] text-[10px] font-semibold text-gray-300">
+                {summoner.summoner_level}
+              </span>
+            ) : null}
+          </div>
+          <div className="min-w-0">
+            <h2 className="text-xl sm:text-2xl font-bold truncate">
+              {gameName}<span className="text-gray-500">#{tagLine}</span>
+            </h2>
+            <p className="text-sm text-gray-400 mt-0.5">EUW</p>
+            {rankPosition?.euw_rank && (
+              <p className="text-xs text-gray-500 mt-1">
+                Ladder Rank <span className="text-yellow-400 font-medium">#{rankPosition.euw_rank.toLocaleString()}</span>
+                {rankPosition.top_percent != null ? (
+                  <span className="text-green-400 ml-1">({rankPosition.top_percent}% of top)</span>
+                ) : rankPosition.total_master_plus ? (
+                  <span className="text-gray-600 ml-1">de {rankPosition.total_master_plus.toLocaleString()} em Master+{rankPosition.approximate ? ' (aprox.)' : ''}</span>
+                ) : null}
+              </p>
+            )}
+          </div>
+        </div>
+
+        {/* Ranked Solo/Duo */}
+        <div className="lg:ml-auto flex items-center gap-4 bg-[#111] rounded-xl px-5 py-4 min-w-0">
+          {tier ? (
+            <img src={TIER_EMBLEM(tier)} alt="" className="w-14 h-14 shrink-0"
+              onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+          ) : null}
+          <div className="min-w-0">
+            <p className="text-[10px] uppercase tracking-wide text-gray-500">Ranked Solo/Duo</p>
+            <p className={`text-lg font-bold ${tierColor}`}>{tierLabel}</p>
+            {tier && (
+              <p className="text-sm text-gray-300">
+                {rankInfo?.lp ?? 0} LP
+                <span className="text-gray-600 mx-2">·</span>
+                <span className="text-green-400">{wins}W</span> <span className="text-red-400">{losses}L</span>
+                <span className={`ml-2 ${wr >= 50 ? 'text-green-400' : 'text-red-400'}`}>{wr}%</span>
+              </p>
+            )}
+            {(() => {
+              if (!peakStats?.has_data) return null;
+              // Only surface peak figures that actually beat the current rank —
+              // otherwise "Peak" just echoes today's rank and looks broken.
+              const peakBeatsNow = peakStats.peak_tier
+                && effLp(peakStats.peak_tier, peakStats.peak_lp) > effLp(tier, rankInfo?.lp);
+              const bestRankBeatsNow = peakStats.best_euw_rank
+                && (!rankPosition?.euw_rank || peakStats.best_euw_rank < rankPosition.euw_rank);
+              if (!peakBeatsNow && !bestRankBeatsNow) return null;
+              return (
+                <p className="text-[11px] text-gray-500 mt-1">
+                  Peak:
+                  {peakBeatsNow && (
+                    <span className={`ml-1 capitalize ${TIER_COLORS[peakStats.peak_tier] || 'text-gray-400'}`}>
+                      {peakStats.peak_tier.toLowerCase()}{peakStats.peak_lp != null ? ` ${peakStats.peak_lp} LP` : ''}
+                    </span>
+                  )}
+                  {bestRankBeatsNow && (
+                    <span className="ml-2 text-yellow-400">#{peakStats.best_euw_rank.toLocaleString()}</span>
+                  )}
+                </p>
+              );
+            })()}
+          </div>
+        </div>
+      </div>
+
+      {/* Season history */}
+      {history.length > 0 && (
+        <div className="mt-5 pt-4 border-t border-[#222]">
+          <p className="text-[10px] uppercase tracking-wide text-gray-500 mb-2">Top Tier por Season</p>
+          <div className="flex flex-wrap gap-2">
+            {history.map(s => {
+              const st = s.peak_tier || s.final_tier;
+              const sl = s.peak_lp ?? s.final_lp;
+              return (
+                <div key={s.id} className="flex items-center gap-2 bg-[#111] rounded-lg px-3 py-1.5">
+                  <span className="text-xs text-gray-400">{s.label}</span>
+                  <img src={TIER_EMBLEM(st)} alt="" className="w-5 h-5"
+                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+                  <span className={`text-xs font-medium ${TIER_COLORS[st] || 'text-gray-400'} capitalize`}>{st?.toLowerCase()}</span>
+                  {sl != null && <span className="text-[10px] text-yellow-400">{sl} LP</span>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function LivePlayerRow({ player, ddVersion }: { player: LivePlayer; ddVersion: string }) {
   const r = player.rank;
@@ -2818,19 +3007,54 @@ function AIPredictionPanel({ stats, history, calibration, onResolve }: {
   );
 }
 
-function CounterPickPanel({ ddVersion }: { ddVersion: string }) {
+type CounterRole = 'jungle' | 'top' | 'mid' | 'adc' | 'support';
+
+// Posição do LCU (assignedPosition) → role do dropdown.
+const LCU_POS_TO_ROLE: Record<string, CounterRole> = {
+  top: 'top', jungle: 'jungle', middle: 'mid', mid: 'mid',
+  bottom: 'adc', adc: 'adc', utility: 'support', support: 'support',
+};
+
+// Adversário direto da tua lane em champ select (mesma posição que o local player).
+function deriveLaneEnemy(session: any): { enemy: string; role: CounterRole } | null {
+  if (!session?.active) return null;
+  const me = (session.my_team || []).find((p: any) => p.is_local_player);
+  const myPos = (me?.position || '').toLowerCase();
+  const role = LCU_POS_TO_ROLE[myPos];
+  if (!role) return null;
+  const opp = (session.their_team || []).find(
+    (p: any) => (p.position || '').toLowerCase() === myPos && p.champion_name
+  );
+  if (!opp?.champion_name) return null;
+  return { enemy: opp.champion_name, role };
+}
+
+function CounterPickPanel({ ddVersion, session }: { ddVersion: string; session?: any }) {
   const [enemy, setEnemy] = useState('');
-  const [role, setRole] = useState<'jungle' | 'top' | 'mid' | 'adc' | 'support'>('jungle');
+  const [role, setRole] = useState<CounterRole>('jungle');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<{ personal: any[]; external: any[] } | null>(null);
   const [champions, setChampions] = useState<{ ddragon_key: string; name: string }[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
+  const [autoFilled, setAutoFilled] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const lastAutoEnemy = useRef<string>('');
 
   useEffect(() => {
     lolApi.championsList().then(list => setChampions(list || [])).catch(() => {});
   }, []);
+
+  // Em champ select: procura automaticamente o adversário direto da tua lane.
+  useEffect(() => {
+    const lane = deriveLaneEnemy(session);
+    if (lane && lane.enemy !== lastAutoEnemy.current) {
+      lastAutoEnemy.current = lane.enemy;
+      setAutoFilled(true);
+      search(lane.enemy, lane.role);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session]);
 
   const filtered = useMemo(() => {
     const q = enemy.trim().toLowerCase();
@@ -2840,21 +3064,29 @@ function CounterPickPanel({ ddVersion }: { ddVersion: string }) {
       .slice(0, 8);
   }, [enemy, champions]);
 
-  async function search(name?: string) {
+  async function search(name?: string, roleOverride?: CounterRole) {
     const q = (name || enemy).trim();
     if (!q) return;
+    const r = roleOverride || role;
     setEnemy(q);
+    if (roleOverride) setRole(roleOverride);
     setShowSuggestions(false);
     setLoading(true);
     setError(null);
     try {
-      const res = await lolApi.counterPick(q, role);
+      const res = await lolApi.counterPick(q, r);
       setData({ personal: res.personal || [], external: res.external || [] });
     } catch (e: any) {
       setError(e?.message || 'Erro');
     } finally {
       setLoading(false);
     }
+  }
+
+  function manualChange(v: string) {
+    setEnemy(v);
+    setShowSuggestions(true);
+    setAutoFilled(false);
   }
 
   function pickChampion(c: { ddragon_key: string; name: string }) {
@@ -2867,6 +3099,11 @@ function CounterPickPanel({ ddVersion }: { ddVersion: string }) {
         <Search size={16} className="text-yellow-400" />
         <h3 className="text-sm font-bold">Counter pick</h3>
         <span className="text-xs text-gray-500 ml-1">— sugere quem joga bem contra um champion</span>
+        {autoFilled && enemy && (
+          <span className="ml-auto text-[10px] px-2 py-0.5 rounded-full bg-purple-500/15 text-purple-300">
+            auto · adversário da tua lane
+          </span>
+        )}
       </div>
       <div className="flex flex-col sm:flex-row gap-2">
         <div className="relative flex-1">
@@ -2874,7 +3111,7 @@ function CounterPickPanel({ ddVersion }: { ddVersion: string }) {
             ref={inputRef}
             type="text"
             value={enemy}
-            onChange={e => { setEnemy(e.target.value); setShowSuggestions(true); }}
+            onChange={e => manualChange(e.target.value)}
             onFocus={() => setShowSuggestions(true)}
             onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
             onKeyDown={e => {
@@ -2943,7 +3180,7 @@ function CounterPickPanel({ ddVersion }: { ddVersion: string }) {
           />
           <CounterTable
             title="Fontes externas"
-            subtitle="op.gg + leagueofgraphs (winrate de quem joga contra)"
+            subtitle="op.gg + u.gg + leagueofgraphs (winrate de quem joga contra)"
             rows={data.external.map(p => {
               const fromList = champions.find(c => c.name.toLowerCase() === (p.champion_key || '').toLowerCase());
               const ddKey = fromList?.ddragon_key

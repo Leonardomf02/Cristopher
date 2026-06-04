@@ -291,9 +291,10 @@ export const investmentsApi = {
   trades: () => request<any[]>('/investments/trades'),
   transactions: () => request<any[]>('/investments/transactions'),
   summary: () => request<any>('/investments/summary'),
-  importPDF: (file: File) => {
+  importPDF: (file: File, month?: string) => {
     const form = new FormData();
     form.append('file', file);
+    if (month) form.append('month', month);
     return fetch('/api/investments/import/pdf', { method: 'POST', body: form }).then(async res => {
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: 'Upload failed' }));
@@ -397,6 +398,11 @@ export const investmentsApi = {
       if (!res.ok) { const err = await res.json().catch(() => ({ detail: 'Erro' })); throw new Error(err.detail || 'Erro'); }
       return res.json();
     }),
+  saveMonthlySnapshot: (month: string, entries: { ticker: string; name: string; asset_type: string; amount_eur: number; percentage?: number | null; source: string }[]) =>
+    fetch(`/api/investments/monthly-plan/${month}/snapshot`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ entries }) }).then(async res => {
+      if (!res.ok) { const err = await res.json().catch(() => ({ detail: 'Erro' })); throw new Error(err.detail || 'Erro'); }
+      return res.json();
+    }),
   monthlyPlanHistory: (limit?: number) =>
     request<any[]>(`/investments/monthly-plan-history${limit ? `?limit=${limit}` : ''}`),
   suggestions: () => request<any>('/investments/suggestions'),
@@ -416,6 +422,7 @@ export const investmentsApi = {
   // Daily AI signals (news-based suggestions)
   signalsList: (limit = 30) => request<any[]>(`/investments/signals?limit=${limit}`),
   signalsLatest: () => request<any>('/investments/signals/latest'),
+  marketPulse: () => request<{ available: boolean; drawdown_pct?: number; level?: string; hint?: string }>('/investments/signals/market-pulse'),
   signalsGenerate: (extraQuestion?: string) =>
     fetch('/api/investments/signals/generate', {
       method: 'POST',
@@ -509,7 +516,7 @@ export const moodApi = {
     if (params?.end_date) qs.set('end_date', params.end_date);
     return request<any[]>(`/mood/?${qs}`);
   },
-  create: (data: { date: string; mood: number; note?: string; tags?: string }) =>
+  create: (data: { date: string; mood: number; quality?: string; note?: string; tags?: string }) =>
     request<any>('/mood/', { method: 'POST', body: JSON.stringify(data) }),
   delete: (id: number) => request<any>(`/mood/${id}`, { method: 'DELETE' }),
   today: () => request<any>('/mood/today'),
@@ -881,7 +888,37 @@ export const screenTimeApi = {
     if (params?.mode) qs.set('mode', params.mode);
     return request<{ bucket_start: number; total_seconds: number }[]>(`/screen-time/timeseries?${qs}`);
   },
+  insights: (params: { start_date?: string; end_date?: string; bucket?: 'day' | 'month' }) => {
+    const qs = new URLSearchParams();
+    if (params.start_date) qs.set('start_date', params.start_date);
+    if (params.end_date) qs.set('end_date', params.end_date);
+    if (params.bucket) qs.set('bucket', params.bucket);
+    return request<ScreenTimeInsights>(`/screen-time/insights?${qs}`);
+  },
+  snapshot: (daysBack = 45) =>
+    fetch(`/api/screen-time/snapshot?days_back=${daysBack}`, { method: 'POST' })
+      .then(res => res.json() as Promise<{ days_written: number }>),
 };
+
+export interface ScreenTimeInsights {
+  start: string;
+  end: string;
+  bucket: 'day' | 'month';
+  tracked_days: number;
+  first_date: string | null;
+  last_date: string | null;
+  total_all_seconds: number;
+  total_period_seconds: number;
+  daily_avg_seconds: number;
+  total_prev_seconds: number;
+  delta_pct: number | null;
+  busiest_day: { date: string; seconds: number } | null;
+  quietest_day: { date: string; seconds: number } | null;
+  timeseries: { date: string; seconds: number }[];
+  top_apps: { bundle_id: string; seconds: number; category: string }[];
+  by_category: { category: string; seconds: number }[];
+  by_weekday: { weekday: number; avg_seconds: number }[];
+}
 
 // ── VS Code Activity ──────────────────────────────────────────────
 
@@ -929,6 +966,16 @@ export interface CodeProjectNote {
   created_at: string;
 }
 
+export interface CodeKnownProject {
+  path: string;
+  name: string;
+  open_todos: number;
+  total_todos: number;
+  notes_count: number;
+  last_activity: string | null;
+  favorite: boolean;
+}
+
 export const codeActivityApi = {
   forDate: (date?: string) => {
     const qs = new URLSearchParams();
@@ -943,6 +990,15 @@ export const codeActivityApi = {
     request<{ open_todos: number; total_notes: number }>(`/code-activity/totals`),
   projectsWithTodos: () =>
     request<{ path: string; name: string }[]>(`/code-activity/projects-with-todos`),
+  allProjects: () =>
+    request<CodeKnownProject[]>(`/code-activity/all-projects`),
+  noteToTodos: (noteId: number) =>
+    request<CodeProjectTodo[]>(`/code-activity/notes/${noteId}/to-todos`, { method: 'POST' }),
+  setFavorite: (projectPath: string, favorite: boolean) =>
+    request<{ path: string; favorite: boolean }>(
+      `/code-activity/projects/${encodeURIComponent(projectPath)}/favorite`,
+      { method: 'PUT', body: JSON.stringify({ favorite }) }
+    ),
   listTodos: (projectPath: string) =>
     request<CodeProjectTodo[]>(`/code-activity/projects/${encodeURIComponent(projectPath)}/todos`),
   createTodo: (projectPath: string, content: string) =>
@@ -968,6 +1024,116 @@ export const codeActivityApi = {
     ),
   deleteNote: (id: number) =>
     request<{ deleted: number }>(`/code-activity/notes/${id}`, { method: 'DELETE' }),
+};
+
+export interface WakaBreakdownItem {
+  name: string;
+  total_seconds: number;
+  text: string;
+}
+
+export interface WakaDay {
+  date: string;
+  total_seconds: number;
+  ai_seconds: number;
+  text: string;
+}
+
+export interface WakaAgent {
+  name: string;
+  lines: number;
+  lines_text: string;
+  pct: number;
+}
+
+export interface WakaProjectDetail {
+  name: string;
+  seconds: number;
+  text: string;
+  ai_changes: number;
+  ai_changes_text: string;
+  ai_changes_pct: number;
+  human_changes: number;
+  human_changes_text: string;
+  human_changes_pct: number;
+  ai_prompts: number;
+  ai_prompt_avg_chars: number;
+  ai_sessions: number;
+  ai_avg_prompts_per_session: number;
+  input_tokens: number;
+  output_tokens: number;
+  tokens_text: string;
+  input_tokens_text: string;
+  output_tokens_text: string;
+  ai_cost: number;
+  ai_cost_text: string;
+}
+
+export const WAKA_RANGES: { key: string; label: string }[] = [
+  { key: 'today', label: 'Hoje' },
+  { key: 'last_7_days', label: 'Últimos 7 dias' },
+  { key: 'last_14_days', label: 'Últimos 14 dias' },
+  { key: 'last_30_days', label: 'Últimos 30 dias' },
+  { key: 'this_week', label: 'Esta semana' },
+  { key: 'last_week', label: 'Semana passada' },
+  { key: 'this_month', label: 'Este mês' },
+  { key: 'last_month', label: 'Mês passado' },
+];
+
+export const WAKA_PROJECT_RANGES: { key: string; label: string }[] = [
+  ...WAKA_RANGES,
+  { key: 'all_time', label: 'Desde sempre' },
+];
+
+export interface WakaAi {
+  coding_pct: number;
+  ai_lines: number;
+  ai_lines_text: string;
+  human_lines: number;
+  human_lines_text: string;
+  ai_line_pct: number;
+  input_tokens: number;
+  output_tokens: number;
+  tokens_text: string;
+  input_tokens_text: string;
+  output_tokens_text: string;
+  sessions: number;
+  prompts: number;
+  cost: number;
+  cost_text: string;
+}
+
+export interface WakaSummary {
+  configured: boolean;
+  range_key: string;
+  range_label: string;
+  start?: string;
+  end?: string;
+  days: WakaDay[];
+  projects: WakaBreakdownItem[];
+  today_projects: WakaBreakdownItem[];
+  project_details: WakaProjectDetail[];
+  agents: WakaAgent[];
+  languages: WakaBreakdownItem[];
+  editors: WakaBreakdownItem[];
+  categories: WakaBreakdownItem[];
+  dependencies: WakaBreakdownItem[];
+  ai: WakaAi;
+  total_seconds: number;
+  total_text?: string;
+  today_seconds: number;
+  today_text?: string;
+  daily_average_seconds: number;
+  daily_average_text?: string;
+  today_vs_avg_pct: number;
+  active_days: number;
+  best_day: WakaDay | null;
+}
+
+export const wakatimeApi = {
+  summary: (range: string = 'last_7_days') => request<WakaSummary>(`/wakatime/summary?range=${range}`),
+  sync: (days: number = 14) => request<{ synced_days: number }>(`/wakatime/sync?days=${days}`, { method: 'POST' }),
+  status: () => request<{ configured: boolean; api_url: string }>(`/wakatime/status`),
 };
 
 export const appGoalsApi = {

@@ -222,7 +222,10 @@ def _percentile_rank(value: Optional[float], universe: list[float], lower_is_bet
     return int(round(pct))
 
 
-def compute_factor_panel(metrics_by_ticker: dict[str, dict]) -> dict[str, dict]:
+def compute_factor_panel(
+    metrics_by_ticker: dict[str, dict],
+    reference: dict | None = None,
+) -> dict[str, dict]:
     """Add cross-sectional factor percentiles in-place.
 
     Adds keys:
@@ -230,10 +233,17 @@ def compute_factor_panel(metrics_by_ticker: dict[str, dict]) -> dict[str, dict]:
       - realized_vol_252_pct    (raw)
       - momentum_pctile         (0-100, higher = stronger momentum)
       - lowvol_pctile           (0-100, higher = lower vol = better)
+
+    `reference` (optional) supplies {'momentums': [...], 'vols': [...]} from a
+    broad factor universe so the percentiles are real, not relative to this
+    small batch. Falls back to the local batch when absent.
     """
-    # Universe lists (exclude None)
-    momentums = [m.get("momentum_12_1_pct") for m in metrics_by_ticker.values() if m]
-    vols = [m.get("realized_vol_252_pct") for m in metrics_by_ticker.values() if m]
+    if reference and reference.get("momentums") and reference.get("vols"):
+        momentums = list(reference["momentums"])
+        vols = list(reference["vols"])
+    else:
+        momentums = [m.get("momentum_12_1_pct") for m in metrics_by_ticker.values() if m]
+        vols = [m.get("realized_vol_252_pct") for m in metrics_by_ticker.values() if m]
 
     for t, m in metrics_by_ticker.items():
         if not m:
@@ -343,7 +353,9 @@ def fetch_metrics(ticker: str, asset_type: str | None = None) -> dict:
     chart: dict = {}
     symbol = _yf_symbol(ticker, asset_type)
     for sym in _candidate_symbols(ticker, asset_type):
-        chart = _fetch_yahoo_chart(sym, range_="1y", interval="1d")
+        # 2y so the 12-1 momentum factor (needs ≥253 closes) actually computes;
+        # all technicals use trailing windows, so the extra history is harmless.
+        chart = _fetch_yahoo_chart(sym, range_="2y", interval="1d")
         if chart and chart.get("closes"):
             symbol = sym
             break
@@ -374,12 +386,11 @@ def fetch_metrics(ticker: str, asset_type: str | None = None) -> dict:
     closes = chart["closes"]
     highs = chart.get("highs") or []
     lows = chart.get("lows") or []
-    # Yahoo's quoteSummary now requires auth; skip to avoid wasted 401s.
-    summary: dict = {}
+    # Yahoo's quoteSummary now requires auth — fundamentals (P/E, beta, …) come
+    # from FMP in a separate block, so we don't fetch (or emit) empty ones here.
 
     return {
         "ticker": ticker.upper(),
-        "name": summary.get("name"),
         "current_price": chart.get("current"),
         "currency": chart.get("currency"),
         "high_52w": chart.get("high_52w"),
@@ -398,12 +409,6 @@ def fetch_metrics(ticker: str, asset_type: str | None = None) -> dict:
         "atr_14": _atr(highs, lows, closes, 14),
         "drawdown": _drawdown_stats(closes, 252),
         "anomaly": _daily_anomaly(closes, 90),
-        # Fundamentals (NaN/None for crypto)
-        "pe": summary.get("pe"),
-        "forward_pe": summary.get("forward_pe"),
-        "dividend_yield": summary.get("dividend_yield"),
-        "market_cap": summary.get("market_cap"),
-        "beta": summary.get("beta"),
         "source": "yahoo",
     }
 
@@ -491,17 +496,7 @@ def format_metrics_for_prompt(metrics: dict) -> str:
     if anom.get("anomaly"):
         parts.append(f"⚠️ MOVIMENTO ANORMAL hoje: {anom.get('return_pct')}% (z={anom.get('z_score')})")
 
-    # Fundamentals
-    fund = []
-    if metrics.get("pe") is not None:
-        fund.append(f"P/E {metrics['pe']:.1f}")
-    if metrics.get("dividend_yield"):
-        fund.append(f"div {metrics['dividend_yield'] * 100:.2f}%")
-    if metrics.get("beta") is not None:
-        fund.append(f"β{metrics['beta']:.2f}")
-    if fund:
-        parts.append("(" + ", ".join(fund) + ")")
-
+    # Fundamentals (P/E, beta, …) live in the FMP block — not duplicated here.
     return "  - " + " ".join(parts)
 
 

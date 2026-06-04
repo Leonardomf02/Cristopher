@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { format, subDays } from 'date-fns';
-import { Smartphone, Tablet, Monitor, Watch, HelpCircle, RefreshCw, AlertTriangle, ExternalLink, Apple, Database, MessageCircle, Briefcase, Palette, Plane, Gamepad2, Wrench, Music, BookOpen, Layers } from 'lucide-react';
+import { format, subDays, startOfWeek, startOfMonth, startOfYear, endOfWeek, endOfMonth, endOfYear, addWeeks, addMonths, addYears } from 'date-fns';
+import { Smartphone, Tablet, Monitor, Watch, HelpCircle, RefreshCw, AlertTriangle, ExternalLink, Apple, Database, MessageCircle, Briefcase, Palette, Plane, Gamepad2, Wrench, Music, BookOpen, Layers, ChevronLeft, ChevronRight } from 'lucide-react';
 import {
-  screenTimeApi, ScreenTimeDevice, ScreenTimeAppRow, ScreenTimeDeviceRow, ScreenTimeCategoryRow,
+  screenTimeApi, ScreenTimeAppRow, ScreenTimeDeviceRow, ScreenTimeCategoryRow, ScreenTimeInsights,
 } from '../api';
 
 const CATEGORY_META: Record<string, { Icon: typeof Layers; color: string }> = {
@@ -237,9 +237,262 @@ function StackedActivityChart({
   );
 }
 
+type StatsPeriodKey = 'week' | 'month' | 'year' | 'all';
+
+const STATS_PERIODS: { key: StatsPeriodKey; label: string; bucket: 'day' | 'month' }[] = [
+  { key: 'week', label: 'Semana', bucket: 'day' },
+  { key: 'month', label: 'Mês', bucket: 'day' },
+  { key: 'year', label: 'Ano', bucket: 'month' },
+  { key: 'all', label: 'Desde sempre', bucket: 'month' },
+];
+
+const MONTH_LABELS = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+const WEEKDAY_LABELS = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'];
+
+// Início/fim do período que contém `anchor`. O fim nunca passa de hoje (não
+// mostramos dias futuros). 'all' ignora anchor (todo o histórico guardado).
+function periodBounds(key: StatsPeriodKey, anchor: Date): { start: Date; end: Date } {
+  const today = new Date();
+  if (key === 'week') return { start: startOfWeek(anchor, { weekStartsOn: 1 }), end: minDate(endOfWeek(anchor, { weekStartsOn: 1 }), today) };
+  if (key === 'month') return { start: startOfMonth(anchor), end: minDate(endOfMonth(anchor), today) };
+  if (key === 'year') return { start: startOfYear(anchor), end: minDate(endOfYear(anchor), today) };
+  return { start: today, end: today }; // 'all' não usa bounds
+}
+
+function minDate(a: Date, b: Date): Date { return a < b ? a : b; }
+
+function statsRange(key: StatsPeriodKey, anchor: Date): { start_date?: string; end_date: string; bucket: 'day' | 'month' } {
+  const cfg = STATS_PERIODS.find(p => p.key === key)!;
+  if (key === 'all') return { end_date: format(new Date(), 'yyyy-MM-dd'), bucket: cfg.bucket };
+  const { start, end } = periodBounds(key, anchor);
+  return { start_date: format(start, 'yyyy-MM-dd'), end_date: format(end, 'yyyy-MM-dd'), bucket: cfg.bucket };
+}
+
+function periodLabel(key: StatsPeriodKey, anchor: Date): string {
+  if (key === 'week') {
+    const { start, end } = periodBounds(key, anchor);
+    return `${start.getDate()} ${MONTH_LABELS[start.getMonth()]} – ${end.getDate()} ${MONTH_LABELS[end.getMonth()]}`;
+  }
+  if (key === 'month') return `${MONTH_LABELS[anchor.getMonth()]} ${anchor.getFullYear()}`;
+  if (key === 'year') return String(anchor.getFullYear());
+  return 'Desde sempre';
+}
+
+// Verdade se o período de `anchor` é o mais recente (não há "próximo").
+function isLatestPeriod(key: StatsPeriodKey, anchor: Date): boolean {
+  const today = new Date();
+  if (key === 'week') return startOfWeek(anchor, { weekStartsOn: 1 }) >= startOfWeek(today, { weekStartsOn: 1 });
+  if (key === 'month') return startOfMonth(anchor) >= startOfMonth(today);
+  if (key === 'year') return startOfYear(anchor) >= startOfYear(today);
+  return true;
+}
+
+function shiftAnchor(key: StatsPeriodKey, anchor: Date, dir: -1 | 1): Date {
+  if (key === 'week') return addWeeks(anchor, dir);
+  if (key === 'month') return addMonths(anchor, dir);
+  if (key === 'year') return addYears(anchor, dir);
+  return anchor;
+}
+
+function MiniBars({ data, color }: { data: { label: string; seconds: number; highlight?: boolean }[]; color: string }) {
+  const max = Math.max(...data.map(d => d.seconds), 1);
+  return (
+    <div className="flex items-end gap-[3px] h-32">
+      {data.map((d, i) => (
+        <div key={i} className="flex-1 flex flex-col items-center justify-end h-full group relative" title={`${d.label}: ${fmtDuration(d.seconds)}`}>
+          <div
+            className="w-full rounded-t"
+            style={{ height: `${(d.seconds / max) * 100}%`, minHeight: d.seconds > 0 ? '2px' : '0', backgroundColor: color, opacity: d.highlight ? 1 : 0.55 }}
+          />
+          <span className="text-[9px] text-zinc-600 mt-1 truncate w-full text-center">{d.label}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function StatsTab() {
+  const [period, setPeriod] = useState<StatsPeriodKey>('month');
+  const [anchor, setAnchor] = useState<Date>(() => new Date());
+  const [data, setData] = useState<ScreenTimeInsights | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState('');
+
+  async function reload() {
+    setLoading(true); setErr('');
+    try { setData(await screenTimeApi.insights(statsRange(period, anchor))); }
+    catch (e: any) { setErr(e?.message || String(e)); }
+    finally { setLoading(false); }
+  }
+  useEffect(() => { reload(); /* eslint-disable-next-line */ }, [period, anchor]);
+
+  function pickPeriod(key: StatsPeriodKey) {
+    setAnchor(new Date());  // ao trocar de tipo de período, volta ao actual
+    setPeriod(key);
+  }
+  const atLatest = isLatestPeriod(period, anchor);
+
+  async function snapshotNow() {
+    setLoading(true);
+    try { await screenTimeApi.snapshot(45); await reload(); }
+    catch (e: any) { setErr(e?.message || String(e)); setLoading(false); }
+  }
+
+  if (err) return <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300">{err}</div>;
+  if (!data) return <div className="text-sm text-zinc-500 p-6 text-center">A carregar…</div>;
+
+  if (data.tracked_days === 0) {
+    return (
+      <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-6 text-center space-y-3">
+        <p className="text-sm text-zinc-300">Ainda não há histórico guardado.</p>
+        <p className="text-xs text-zinc-500">Os dados do Screen Time passam a ser guardados diariamente a partir de agora, para teres estatísticas de longo prazo (o macOS só guarda ~4 semanas).</p>
+        <button onClick={snapshotNow} disabled={loading}
+          className="px-3 py-1.5 rounded-lg bg-blue-500/20 hover:bg-blue-500/30 text-blue-200 text-xs border border-blue-400/40 disabled:opacity-50">
+          {loading ? 'A guardar…' : 'Guardar histórico agora'}
+        </button>
+      </div>
+    );
+  }
+
+  const maxDayApp = Math.max(...data.top_apps.map(a => a.seconds), 1);
+  const totalCat = data.by_category.reduce((s, c) => s + c.seconds, 0) || 1;
+  const isMonthly = data.bucket === 'month';
+  const tsLen = data.timeseries.length;
+  const timeseriesBars = data.timeseries.map((p, i) => {
+    let label = '';
+    if (isMonthly) {
+      const [, mm] = p.date.split('-');
+      const mi = Number(mm) - 1;
+      label = (tsLen <= 12 || i % 2 === 0) ? MONTH_LABELS[mi] : '';
+    } else {
+      const dt = new Date(p.date + 'T00:00:00');
+      if (tsLen <= 14) label = WEEKDAY_LABELS[(dt.getDay() + 6) % 7][0];
+      else if (i % Math.ceil(tsLen / 8) === 0) label = String(dt.getDate());
+    }
+    return { label, seconds: p.seconds, highlight: data.busiest_day?.date === p.date };
+  });
+  const weekdayBars = data.by_weekday.map(w => ({ label: WEEKDAY_LABELS[w.weekday], seconds: w.avg_seconds }));
+
+  return (
+    <div className="space-y-6">
+      {/* Período */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {STATS_PERIODS.map(p => (
+          <button key={p.key} onClick={() => pickPeriod(p.key)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+              period === p.key ? 'bg-blue-500/20 border-blue-400 text-blue-300' : 'border-zinc-700 text-zinc-400 hover:bg-zinc-800'
+            }`}>
+            {p.label}
+          </button>
+        ))}
+        {period !== 'all' && (
+          <div className="inline-flex items-center gap-1">
+            <button onClick={() => setAnchor(a => shiftAnchor(period, a, -1))}
+              className="p-1.5 rounded-lg border border-zinc-700 text-zinc-400 hover:bg-zinc-800" title="Período anterior">
+              <ChevronLeft size={14} />
+            </button>
+            <span className="px-2 text-sm font-medium min-w-[120px] text-center">{periodLabel(period, anchor)}</span>
+            <button onClick={() => setAnchor(a => shiftAnchor(period, a, 1))} disabled={atLatest}
+              className="p-1.5 rounded-lg border border-zinc-700 text-zinc-400 hover:bg-zinc-800 disabled:opacity-30 disabled:cursor-not-allowed" title="Período seguinte">
+              <ChevronRight size={14} />
+            </button>
+            {!atLatest && (
+              <button onClick={() => setAnchor(new Date())}
+                className="ml-1 px-2 py-1 rounded-lg text-[11px] text-blue-300 hover:bg-zinc-800" title="Voltar ao actual">
+                Actual
+              </button>
+            )}
+          </div>
+        )}
+        <span className="text-xs text-zinc-600 ml-auto">
+          {data.tracked_days} {data.tracked_days === 1 ? 'dia' : 'dias'} guardados
+          {data.first_date && ` · desde ${new Date(data.first_date + 'T00:00:00').toLocaleDateString('pt-PT', { day: 'numeric', month: 'short' })}`}
+        </span>
+      </div>
+
+      {/* Cards resumo */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4">
+          <div className="text-xs text-zinc-500">Total no período</div>
+          <div className="text-2xl font-bold mt-1">{fmtBigDuration(data.total_period_seconds)}</div>
+          {data.delta_pct !== null && (
+            <div className={`text-xs mt-1 ${data.delta_pct > 0 ? 'text-red-400' : 'text-emerald-400'}`}>
+              {data.delta_pct > 0 ? '↑' : '↓'} {Math.abs(data.delta_pct)}% vs período anterior
+            </div>
+          )}
+        </div>
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4">
+          <div className="text-xs text-zinc-500">Média / dia</div>
+          <div className="text-2xl font-bold mt-1 text-emerald-300">{fmtDuration(data.daily_avg_seconds)}</div>
+        </div>
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4">
+          <div className="text-xs text-zinc-500">Dia mais usado</div>
+          {data.busiest_day ? (
+            <>
+              <div className="text-2xl font-bold mt-1">{fmtDuration(data.busiest_day.seconds)}</div>
+              <div className="text-xs text-zinc-500 mt-1">{new Date(data.busiest_day.date + 'T00:00:00').toLocaleDateString('pt-PT', { weekday: 'short', day: 'numeric', month: 'short' })}</div>
+            </>
+          ) : <div className="text-2xl font-bold mt-1 text-zinc-600">—</div>}
+        </div>
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4">
+          <div className="text-xs text-zinc-500">Total guardado</div>
+          <div className="text-2xl font-bold mt-1">{fmtBigDuration(data.total_all_seconds)}</div>
+          <div className="text-xs text-zinc-500 mt-1">{data.tracked_days} dias de histórico</div>
+        </div>
+      </div>
+
+      {/* Evolução */}
+      <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4">
+        <h2 className="font-semibold text-sm mb-3">{isMonthly ? 'Evolução por mês' : 'Evolução diária'}</h2>
+        <MiniBars data={timeseriesBars} color="#60a5fa" />
+      </section>
+
+      {/* Média por dia da semana */}
+      <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4">
+        <h2 className="font-semibold text-sm mb-3">Média por dia da semana</h2>
+        <MiniBars data={weekdayBars} color="#34d399" />
+      </section>
+
+      {/* Top apps */}
+      <section className="rounded-xl border border-zinc-800 bg-zinc-900/50">
+        <div className="px-4 py-3 border-b border-zinc-800"><h2 className="font-semibold text-sm">Apps mais usadas</h2></div>
+        <ul className="divide-y divide-zinc-800">
+          {data.top_apps.map(a => (
+            <li key={a.bundle_id} className="px-4 py-2.5 flex items-center gap-3">
+              <AppIcon bundleId={a.bundle_id} category={a.category} size={28} />
+              <div className="flex-1 min-w-0">
+                <div className="text-sm truncate">{bundleToFriendly(a.bundle_id)}</div>
+                <div className="h-1.5 rounded-full bg-zinc-800 mt-1.5 overflow-hidden">
+                  <div className="h-full rounded-full" style={{ width: `${(a.seconds / maxDayApp) * 100}%`, backgroundColor: CATEGORY_FILL[a.category] || '#52525b' }} />
+                </div>
+              </div>
+              <div className="text-sm font-mono text-zinc-300 flex-shrink-0">{fmtDuration(a.seconds)}</div>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      {/* Por categoria */}
+      <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4">
+        <h2 className="font-semibold text-sm mb-3">Por categoria</h2>
+        <div className="space-y-2.5">
+          {data.by_category.map(c => (
+            <div key={c.category} className="flex items-center gap-3">
+              <div className="w-36 text-xs text-zinc-400 truncate flex-shrink-0">{c.category}</div>
+              <div className="flex-1 h-2 rounded-full bg-zinc-800 overflow-hidden">
+                <div className="h-full rounded-full" style={{ width: `${(c.seconds / totalCat) * 100}%`, backgroundColor: CATEGORY_FILL[c.category] || '#52525b' }} />
+              </div>
+              <div className="text-xs font-mono text-zinc-400 w-16 text-right flex-shrink-0">{fmtDuration(c.seconds)}</div>
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 export default function ScreenTimePage() {
   const [health, setHealth] = useState<{ available: boolean; reason: string; db_path: string; python_app_path?: string } | null>(null);
-  const [devices, setDevices] = useState<ScreenTimeDevice[]>([]);
   const [byDevice, setByDevice] = useState<ScreenTimeDeviceRow[]>([]);
   const [byApp, setByApp] = useState<ScreenTimeAppRow[]>([]);
   const [byCategory, setByCategory] = useState<ScreenTimeCategoryRow[]>([]);
@@ -257,9 +510,7 @@ export default function ScreenTimePage() {
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>('');
-  const [editing, setEditing] = useState<string | null>(null);
-  const [editLabel, setEditLabel] = useState('');
-  const [editKind, setEditKind] = useState<string>('unknown');
+  const [tab, setTab] = useState<'live' | 'stats'>('live');
 
   const cfg = RANGES.find(r => r.key === range)!;
 
@@ -281,14 +532,12 @@ export default function ScreenTimePage() {
         setLoading(false);
         return;
       }
-      const [devs, sumDev, sumApp, sumCat, tsStacked] = await Promise.all([
-        screenTimeApi.devices(),
+      const [sumDev, sumApp, sumCat, tsStacked] = await Promise.all([
         screenTimeApi.byDevice({ ...dateRange, mode }),
         screenTimeApi.byApp({ ...dateRange, device_id: filterDevice || undefined, mode }),
         screenTimeApi.byCategory({ ...dateRange, device_id: filterDevice || undefined, mode }),
         screenTimeApi.timeseriesStacked({ ...dateRange, bucket: cfg.bucket, device_id: filterDevice || undefined, mode }),
       ]);
-      setDevices(devs);
       setByDevice(sumDev);
       setByApp(sumApp);
       setByCategory(sumCat);
@@ -307,22 +556,6 @@ export default function ScreenTimePage() {
   const totalSelected = filterDevice
     ? (byDevice.find(d => d.device_id === filterDevice)?.total_seconds ?? 0)
     : byDevice.reduce((s, r) => s + r.total_seconds, 0);
-
-  function startEdit(d: ScreenTimeDevice) {
-    setEditing(d.device_id);
-    setEditLabel(d.label || '');
-    setEditKind(d.kind || 'unknown');
-  }
-  async function saveEdit() {
-    if (!editing) return;
-    try {
-      await screenTimeApi.labelDevice(editing, { label: editLabel.trim(), kind: editKind });
-      setEditing(null);
-      load();
-    } catch (e: any) {
-      setError(e?.message || String(e));
-    }
-  }
 
   if (health && !health.available) {
     return (
@@ -383,44 +616,66 @@ export default function ScreenTimePage() {
   return (
     <div className="max-w-5xl mx-auto p-4 sm:p-6 space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-2">
-        <h1 className="text-2xl font-bold">Screen Time</h1>
-        <div className="flex items-center gap-2 flex-wrap">
-          <div className="inline-flex rounded-lg border border-zinc-700 overflow-hidden" title="Algoritmo de agregação">
+        <div className="flex items-center gap-3 flex-wrap">
+          <h1 className="text-2xl font-bold">Screen Time</h1>
+          <div className="inline-flex rounded-lg border border-zinc-700 overflow-hidden">
             <button
-              onClick={() => setMode('raw')}
-              className={`px-2.5 py-1.5 text-xs font-medium flex items-center gap-1 transition-colors ${
-                mode === 'raw' ? 'bg-zinc-700 text-white' : 'text-zinc-400 hover:bg-zinc-800'
-              }`}
+              onClick={() => setTab('live')}
+              className={`px-3 py-1.5 text-xs font-medium transition-colors ${tab === 'live' ? 'bg-zinc-700 text-white' : 'text-zinc-400 hover:bg-zinc-800'}`}
             >
-              <Database size={12} /> Raw
+              Resumo
             </button>
             <button
-              onClick={() => setMode('apple')}
-              className={`px-2.5 py-1.5 text-xs font-medium flex items-center gap-1 transition-colors border-l border-zinc-700 ${
-                mode === 'apple' ? 'bg-zinc-700 text-white' : 'text-zinc-400 hover:bg-zinc-800'
-              }`}
+              onClick={() => setTab('stats')}
+              className={`px-3 py-1.5 text-xs font-medium transition-colors border-l border-zinc-700 ${tab === 'stats' ? 'bg-zinc-700 text-white' : 'text-zinc-400 hover:bg-zinc-800'}`}
             >
-              <Apple size={12} /> Apple
+              Estatísticas
             </button>
           </div>
-          {RANGES.map(r => (
-            <button key={r.key} onClick={() => setRange(r.key)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
-                range === r.key ? 'bg-blue-500/20 border-blue-400 text-blue-300' : 'border-zinc-700 text-zinc-400 hover:bg-zinc-800'
-              }`}>
-              {r.label}
-            </button>
-          ))}
-          <button onClick={load} className="p-2 rounded-lg hover:bg-zinc-800 text-zinc-400">
-            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
-          </button>
         </div>
+        {tab === 'live' && (
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="inline-flex rounded-lg border border-zinc-700 overflow-hidden" title="Algoritmo de agregação">
+              <button
+                onClick={() => setMode('raw')}
+                className={`px-2.5 py-1.5 text-xs font-medium flex items-center gap-1 transition-colors ${
+                  mode === 'raw' ? 'bg-zinc-700 text-white' : 'text-zinc-400 hover:bg-zinc-800'
+                }`}
+              >
+                <Database size={12} /> Raw
+              </button>
+              <button
+                onClick={() => setMode('apple')}
+                className={`px-2.5 py-1.5 text-xs font-medium flex items-center gap-1 transition-colors border-l border-zinc-700 ${
+                  mode === 'apple' ? 'bg-zinc-700 text-white' : 'text-zinc-400 hover:bg-zinc-800'
+                }`}
+              >
+                <Apple size={12} /> Apple
+              </button>
+            </div>
+            {RANGES.map(r => (
+              <button key={r.key} onClick={() => setRange(r.key)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                  range === r.key ? 'bg-blue-500/20 border-blue-400 text-blue-300' : 'border-zinc-700 text-zinc-400 hover:bg-zinc-800'
+                }`}>
+                {r.label}
+              </button>
+            ))}
+            <button onClick={load} className="p-2 rounded-lg hover:bg-zinc-800 text-zinc-400">
+              <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+            </button>
+          </div>
+        )}
       </div>
 
 
       {error && (
         <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300">{error}</div>
       )}
+
+      {tab === 'stats' && <StatsTab />}
+
+      {tab === 'live' && (<>
 
       {/* ── Activity chart ─────────────────────────── */}
       <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4">
@@ -600,45 +855,7 @@ export default function ScreenTimePage() {
         )}
       </section>
 
-      {/* ── Etiquetas dos devices ──────────────────── */}
-      <section className="rounded-xl border border-zinc-800 bg-zinc-900/50">
-        <div className="px-4 py-3 border-b border-zinc-800">
-          <h2 className="font-semibold">Identificar devices</h2>
-          <p className="text-xs text-zinc-500 mt-0.5">Dá um nome a cada device para distinguires Mac, iPhone e iPad nas listas.</p>
-        </div>
-        <ul className="divide-y divide-zinc-800">
-          {devices.map(d => {
-            const Icon = kindIcon(d.kind);
-            const isEditing = editing === d.device_id;
-            return (
-              <li key={d.device_id} className="px-4 py-3">
-                {isEditing ? (
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <input value={editLabel} onChange={e => setEditLabel(e.target.value)}
-                      placeholder="ex: iPhone do Cris"
-                      className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-sm flex-1 min-w-[160px]" />
-                    <select value={editKind} onChange={e => setEditKind(e.target.value)}
-                      className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-sm">
-                      {KIND_OPTIONS.map(k => <option key={k.value} value={k.value}>{k.label}</option>)}
-                    </select>
-                    <button onClick={saveEdit} className="px-3 py-1 rounded bg-blue-500/20 text-blue-300 text-xs">Guardar</button>
-                    <button onClick={() => setEditing(null)} className="px-3 py-1 rounded bg-zinc-800 text-zinc-400 text-xs">Cancelar</button>
-                  </div>
-                ) : (
-                  <div onClick={() => startEdit(d)} className="flex items-center gap-3 cursor-pointer hover:bg-zinc-800/30 -mx-2 px-2 py-1 rounded">
-                    <Icon size={16} className="text-zinc-400" />
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm">{d.label || <span className="text-zinc-500 italic">sem nome</span>}</div>
-                      <div className="text-[11px] text-zinc-600 font-mono truncate">{d.device_id}</div>
-                    </div>
-                    <span className="text-xs text-zinc-500">{d.event_count} eventos</span>
-                  </div>
-                )}
-              </li>
-            );
-          })}
-        </ul>
-      </section>
+      </>)}
 
     </div>
   );

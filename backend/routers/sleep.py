@@ -4,7 +4,7 @@ from sqlalchemy import func, extract
 from datetime import date, datetime, time, timedelta
 from typing import Optional
 
-from database import get_db
+from database import get_db, SessionLocal
 from models import SleepEntry
 from schemas import SleepCreate, SleepUpdate, SleepOut
 
@@ -111,6 +111,56 @@ def _estimate_sleep_from_pc(target_date: date) -> Optional[dict]:
     return None
 
 
+def auto_register_recent_sleep(days_back: int = 7) -> int:
+    """Estima e regista automaticamente o sono das últimas noites a partir do
+    uso do PC, criando apenas entradas em falta (source='auto'). Nunca toca em
+    entradas existentes (manuais ou já auto-registadas), por isso é seguro
+    correr repetidamente. Devolve o número de noites registadas.
+
+    Cada entrada usa SÓ a noite que TERMINA nesse dia (acordar = data da entrada),
+    para que cada noite seja atribuída a exactamente um dia (sem duplicados)."""
+    try:
+        import screen_time_reader as reader
+    except ImportError:
+        return 0
+    ok, _ = reader.is_available()
+    if not ok:
+        return 0
+
+    created = 0
+    db = SessionLocal()
+    try:
+        today = date.today()
+        for offset in range(days_back + 1):
+            d = today - timedelta(days=offset)
+            if db.query(SleepEntry).filter(SleepEntry.date == d).first():
+                continue
+            est = _estimate_for_night(reader, d - timedelta(days=1), d)
+            if not est:
+                continue
+            db.add(SleepEntry(
+                date=d,
+                bedtime=est["bedtime"],
+                wake_time=est["wake_time"],
+                hours=est["hours"],
+                quality=None,
+                notes="",
+                source="auto",
+            ))
+            created += 1
+        if created:
+            db.commit()
+    finally:
+        db.close()
+    return created
+
+
+@router.post("/auto-register")
+def trigger_auto_register(days_back: int = Query(7, ge=1, le=60)):
+    """Força um ciclo de auto-registo (usado pelo arranque e opcionalmente pela UI)."""
+    return {"created": auto_register_recent_sleep(days_back)}
+
+
 @router.get("/", response_model=list[SleepOut])
 def list_sleep(
     start_date: Optional[date] = Query(None),
@@ -127,7 +177,7 @@ def list_sleep(
 
 @router.get("/stats")
 def sleep_stats(
-    days: int = Query(30, ge=1, le=365),
+    days: int = Query(30, ge=1, le=36500),
     db: Session = Depends(get_db),
 ):
     from datetime import timedelta
@@ -180,6 +230,7 @@ def update_sleep(entry_id: int, data: SleepUpdate, db: Session = Depends(get_db)
         raise HTTPException(status_code=404, detail="Sleep entry not found")
     for key, value in data.model_dump(exclude_unset=True).items():
         setattr(entry, key, value)
+    entry.source = "manual"  # editado pelo utilizador deixa de ser auto
     db.commit()
     db.refresh(entry)
     return entry

@@ -23,7 +23,7 @@ import uuid
 import logging
 
 from database import get_db
-from models import CodeProjectTodo, CodeProjectNote, CodeFileSnapshot
+from models import CodeProjectTodo, CodeProjectNote, CodeFileSnapshot, CodeProjectFavorite
 from ai_config import AI_API_URL, AI_API_KEY, AI_CHANNEL_ID
 import hashlib
 
@@ -824,6 +824,208 @@ def get_totals(db: Session = Depends(get_db)):
     open_todos = db.query(CodeProjectTodo).filter(CodeProjectTodo.done == False).count()
     notes = db.query(CodeProjectNote).count()
     return {"open_todos": open_todos, "total_notes": notes}
+
+
+@router.get("/all-projects")
+def list_all_projects(db: Session = Depends(get_db)):
+    """Every project we've ever seen — via notes, TODOs or file snapshots — with
+    counts and last activity. Lets the user browse projects beyond just today's."""
+    from sqlalchemy import func as safunc, case
+
+    agg: dict[str, dict] = {}
+
+    def ensure(pp: str) -> dict:
+        if pp not in agg:
+            name = pp.rstrip("/").split("/")[-1] or pp
+            agg[pp] = {
+                "path": pp, "name": name,
+                "open_todos": 0, "total_todos": 0, "notes_count": 0,
+                "last_activity": None, "favorite": False,
+            }
+        return agg[pp]
+
+    def bump(e: dict, dt) -> None:
+        if dt is None:
+            return
+        if e["last_activity"] is None or dt > e["last_activity"]:
+            e["last_activity"] = dt
+
+    todo_rows = (
+        db.query(
+            CodeProjectTodo.project_path,
+            safunc.count(CodeProjectTodo.id),
+            safunc.sum(case((CodeProjectTodo.done == False, 1), else_=0)),
+            safunc.max(CodeProjectTodo.created_at),
+        )
+        .group_by(CodeProjectTodo.project_path)
+        .all()
+    )
+    for pp, total, openc, last in todo_rows:
+        if not pp:
+            continue
+        e = ensure(pp)
+        e["total_todos"] = int(total or 0)
+        e["open_todos"] = int(openc or 0)
+        bump(e, last)
+
+    note_rows = (
+        db.query(
+            CodeProjectNote.project_path,
+            safunc.count(CodeProjectNote.id),
+            safunc.max(CodeProjectNote.created_at),
+        )
+        .group_by(CodeProjectNote.project_path)
+        .all()
+    )
+    for pp, cnt, last in note_rows:
+        if not pp:
+            continue
+        e = ensure(pp)
+        e["notes_count"] = int(cnt or 0)
+        bump(e, last)
+
+    snap_rows = (
+        db.query(
+            CodeFileSnapshot.project_path,
+            safunc.max(CodeFileSnapshot.captured_at),
+        )
+        .group_by(CodeFileSnapshot.project_path)
+        .all()
+    )
+    for pp, last in snap_rows:
+        if not pp:
+            continue
+        bump(ensure(pp), last)
+
+    favs = {pp for (pp,) in db.query(CodeProjectFavorite.project_path).all()}
+    # A favorite may have no notes/todos/snapshots yet — surface it anyway.
+    for pp in favs:
+        ensure(pp)
+    out = []
+    for e in agg.values():
+        la = e["last_activity"]
+        e["favorite"] = e["path"] in favs
+        out.append({**e, "last_activity": la.isoformat() if la else None})
+    out.sort(key=lambda x: (x["favorite"], x["last_activity"] or ""), reverse=True)
+    return out
+
+
+class FavoriteIn(BaseModel):
+    favorite: bool
+
+
+@router.put("/projects/{project_path:path}/favorite")
+def set_favorite(project_path: str, data: FavoriteIn, db: Session = Depends(get_db)):
+    pp = _decode_path(project_path)
+    existing = db.query(CodeProjectFavorite).filter(CodeProjectFavorite.project_path == pp).first()
+    if data.favorite and not existing:
+        db.add(CodeProjectFavorite(project_path=pp))
+    elif not data.favorite and existing:
+        db.delete(existing)
+    db.commit()
+    return {"path": pp, "favorite": data.favorite}
+
+
+def _naive_bullets(text: str) -> list[str]:
+    """Fallback: split into lines, strip bullet/numbering prefixes."""
+    out = []
+    for line in text.splitlines():
+        c = line.strip()
+        c = re.sub(r"^[-*•]\s*", "", c)
+        c = re.sub(r"^\d+[.)]\s*", "", c)
+        c = c.strip()
+        if c:
+            out.append(c)
+    return out
+
+
+async def _ai_bullets(text: str) -> Optional[list[str]]:
+    """Ask the AI to rewrite a note into short, actionable TODO bullets. None on failure."""
+    prompt = f"""Transforma a nota abaixo numa lista CURTA de TODOs accionáveis, em português PT.
+
+Nota:
+{text}
+
+REGRAS DURAS:
+- POUCOS TODOs: agrupa ideias relacionadas num só. 1 a 4 no total, nunca mais.
+- Cada TODO numa linha, a começar por "- ".
+- Verbo de acção à cabeça (ex: "adicionar", "corrigir", "criar"), imperativo.
+- MUITO curto: máx ~8 palavras. Sem números, sem markdown extra.
+- NÃO repitas contexto óbvio em cada linha (ex: "no VS Code", "na app") — diz só a tarefa.
+- Não inventes nada fora da nota; junta o que for a mesma feature.
+- Sem introdução nem conclusão. Só os bullets."""
+    thread_id = uuid.uuid4().hex[:20]
+    full_text = ""
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                AI_API_URL,
+                headers={"x-api-key": AI_API_KEY},
+                data={
+                    "channel_id": AI_CHANNEL_ID,
+                    "thread_id": thread_id,
+                    "user_info": "{}",
+                    "message": prompt,
+                },
+            )
+            if response.status_code != 200:
+                return None
+            token_text = ""
+            for line in response.text.split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                    if event.get("type") == "message":
+                        content = event.get("content", {})
+                        full_text = content.get("content", "") if isinstance(content, dict) else str(content)
+                        break
+                    elif event.get("type") == "token":
+                        token_text += event.get("content", "")
+                except json.JSONDecodeError:
+                    continue
+            if not full_text:
+                full_text = token_text
+    except httpx.HTTPError:
+        return None
+
+    full_text = re.sub(r"^```.*?\n|\n```$", "", full_text.strip(), flags=re.DOTALL).strip()
+    bullets = _naive_bullets(full_text)
+    return bullets or None
+
+
+@router.post("/notes/{note_id}/to-todos", response_model=list[TodoOut])
+async def note_to_todos(note_id: int, db: Session = Depends(get_db)):
+    """Convert a note into TODOs. Uses the AI to rewrite it into short, well-phrased
+    actionable bullets; falls back to a plain line split if the AI is unavailable."""
+    note = db.query(CodeProjectNote).filter(CodeProjectNote.id == note_id).first()
+    if not note:
+        raise HTTPException(status_code=404)
+
+    naive = _naive_bullets(note.content)
+    looks_like_list = bool(naive) and all(len(b.split()) <= 12 for b in naive)
+    if looks_like_list:
+        # Already short bullets (e.g. an AI note) — keep as-is, no AI needed.
+        bullets = naive
+    else:
+        bullets = await _ai_bullets(note.content)
+        if not bullets:
+            raise HTTPException(
+                status_code=502,
+                detail="A IA não está disponível para reescrever a nota. Tenta outra vez.",
+            )
+    created = []
+    for b in bullets:
+        todo = CodeProjectTodo(project_path=note.project_path, content=b, done=False)
+        db.add(todo)
+        created.append(todo)
+    if not created:
+        raise HTTPException(status_code=400, detail="Nota sem conteúdo para converter")
+    db.commit()
+    for t in created:
+        db.refresh(t)
+    return created
 
 
 @router.get("/projects-with-todos")

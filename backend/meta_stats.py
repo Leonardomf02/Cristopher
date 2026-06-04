@@ -778,6 +778,87 @@ async def _fetch_opgg_counters(slug: str, role: str) -> list[dict]:
     return out
 
 
+# Numeric champion id (Riot key) -> DDragon name, for decoding u.gg matchup payloads.
+_ugg_id_to_name: dict[int, str] = {}
+
+
+async def _ensure_ugg_id_map():
+    """Load Riot numeric champion id -> DDragon key (e.g. 238 -> 'Zed')."""
+    global _ugg_id_to_name
+    if _ugg_id_to_name:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            version = (await client.get(DDRAGON_VERSIONS_URL)).json()[0]
+            data = (await client.get(DDRAGON_CHAMPIONS_TPL.format(version=version))).json()["data"]
+        _ugg_id_to_name = {int(c["key"]): c["id"] for c in data.values()}
+    except Exception as e:
+        logger.warning(f"Failed to load u.gg id map: {e}")
+
+
+# u.gg roles match ours directly: jungle, mid, top, adc, support.
+# Aggregate buckets to try, most-data first.
+_UGG_BUCKETS = ("world_platinum_plus_{r}", "world_emerald_plus_{r}",
+                "world_diamond_plus_{r}", "world_overall_{r}")
+
+
+async def _fetch_ugg_counters(slug: str, role: str) -> list[dict]:
+    """Scrape u.gg counter page SSR. The matchup payload lists the *queried*
+    champion's win rate vs each opponent, so a counter's WR = 100 - that value.
+    """
+    await _ensure_ugg_id_map()
+    url = f"https://u.gg/lol/champions/{slug}/counter"
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            resp = await client.get(url, headers=_HEADERS)
+        if resp.status_code != 200:
+            return []
+    except Exception as e:
+        logger.warning(f"ugg counters {slug}/{role}: {e}")
+        return []
+
+    m = re.search(r'window\.__SSR_DATA__\s*=\s*(\{.*?\})\s*\n', resp.text, re.DOTALL)
+    if not m:
+        return []
+    try:
+        ssr = json.loads(m.group(1))
+    except (json.JSONDecodeError, ValueError):
+        return []
+
+    mk = next((k for k in ssr if "matchups" in k), None)
+    if not mk:
+        return []
+    data = ssr[mk].get("data", {})
+    counters = []
+    for bucket in _UGG_BUCKETS:
+        counters = data.get(bucket.format(r=role), {}).get("counters", [])
+        if counters:
+            break
+
+    out: list[dict] = []
+    seen: set[str] = set()
+    for c in counters:
+        name = _ugg_id_to_name.get(c.get("champion_id"))
+        games = c.get("matches", 0)
+        enemy_wr = c.get("win_rate", 50.0)
+        if not name or games < 30:
+            continue
+        counter_wr = round(100.0 - enemy_wr, 2)
+        if counter_wr <= 50 or counter_wr > 100:
+            continue
+        if name in seen:
+            continue
+        seen.add(name)
+        out.append({
+            "champion_key": name,
+            "champion_slug": _slugify_champion(name),
+            "winrate": counter_wr,
+            "games": games,
+            "source": "u.gg",
+        })
+    return out
+
+
 async def _fetch_leagueofgraphs_counters(slug: str, role: str) -> list[dict]:
     """Scrape leagueofgraphs.com counters page."""
     log_role = role.lower()
@@ -818,10 +899,11 @@ async def _fetch_leagueofgraphs_counters(slug: str, role: str) -> list[dict]:
 
 async def fetch_external_counters(champion_name: str, role: str = "jungle") -> list[dict]:
     """Return a list of champions that counter `champion_name` in `role`, merged
-    across whatever external sources we can reach. Each entry has:
-        {champion_key, champion_slug, winrate, games, source}
-
-    Best effort — if no source returns data, returns []. Cached for 6h.
+    across every external source we can reach (op.gg, u.gg, League of Graphs).
+    Each entry has:
+        {champion_key, champion_slug, winrate, games, sources, source_count, source}
+    WR is weighted-averaged by games across sources. Best effort — if no source
+    returns data, returns []. Cached for 6h.
     """
     slug = _slugify_champion(champion_name)
     cache_key = (slug, role)
@@ -830,19 +912,50 @@ async def fetch_external_counters(champion_name: str, role: str = "jungle") -> l
     if cached and now - cached[0] < COUNTER_CACHE_TTL:
         return cached[1]
 
-    opgg, log = await asyncio.gather(
+    results = await asyncio.gather(
         _fetch_opgg_counters(slug, role),
+        _fetch_ugg_counters(slug, role),
         _fetch_leagueofgraphs_counters(slug, role),
-        return_exceptions=False,
+        return_exceptions=True,
     )
+    all_entries: list[dict] = []
+    for r in results:
+        if isinstance(r, list):
+            all_entries.extend(r)
 
-    # Merge by champion_slug — prefer entries with more games (i.e. op.gg).
+    # Merge by canonical champion name: weighted-average WR by games, and track
+    # which sources agree (more sources = higher confidence).
     merged_map: dict[str, dict] = {}
-    for entry in opgg + log:
-        cs = entry["champion_slug"]
-        cur = merged_map.get(cs)
-        if cur is None or cur["games"] < entry["games"]:
-            merged_map[cs] = entry
-    merged = sorted(merged_map.values(), key=lambda r: (-r["winrate"], -r["games"]))[:20]
+    for e in all_entries:
+        canon = re.sub(r"[^a-z0-9]", "", (e.get("champion_slug") or e.get("champion_key", "")).lower())
+        if not canon:
+            continue
+        w = max(e.get("games", 0), 1)
+        b = merged_map.get(canon)
+        if b is None:
+            b = merged_map[canon] = {
+                "champion_key": e["champion_key"], "champion_slug": e["champion_slug"],
+                "_wr_sum": 0.0, "_w": 0, "games": 0, "sources": [],
+            }
+        b["_wr_sum"] += e["winrate"] * w
+        b["_w"] += w
+        b["games"] += e.get("games", 0)
+        if e["source"] not in b["sources"]:
+            b["sources"].append(e["source"])
+
+    merged: list[dict] = []
+    for b in merged_map.values():
+        merged.append({
+            "champion_key": b["champion_key"],
+            "champion_slug": b["champion_slug"],
+            "winrate": round(b["_wr_sum"] / b["_w"], 2),
+            "games": b["games"],
+            "sources": b["sources"],
+            "source_count": len(b["sources"]),
+            "source": ", ".join(b["sources"]),
+        })
+    # Strongest counters first; break ties by how many sources agree, then games.
+    merged.sort(key=lambda r: (-r["winrate"], -r["source_count"], -r["games"]))
+    merged = merged[:20]
     _counter_cache[cache_key] = (now, merged)
     return merged

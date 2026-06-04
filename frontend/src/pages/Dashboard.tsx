@@ -1,31 +1,26 @@
 import { useState, useEffect } from 'react';
-import { format, isToday, isTomorrow, startOfWeek, endOfWeek } from 'date-fns';
+import { format, isToday, isTomorrow, startOfWeek, endOfWeek, startOfMonth, endOfMonth, eachDayOfInterval, isSameMonth, isSameDay, addMonths, subMonths } from 'date-fns';
 import { pt } from 'date-fns/locale';
-import { Calendar, Wallet, Swords, Plane, Check, TrendingUp, Clock, ArrowRight, Moon, Target, Plus, X, ChevronLeft, ChevronRight, BarChart3, Smile, Frown, Meh, Heart, BookOpen, Flame, Zap, Edit2, Pencil, LineChart, ListPlus } from 'lucide-react';
+import { Calendar, Wallet, Swords, Plane, Check, TrendingUp, Clock, ArrowRight, Moon, Target, Plus, X, ChevronLeft, ChevronRight, BarChart3, Smile, Frown, Meh, Heart, BookOpen, Flame, Zap, Edit2, Pencil, LineChart, ListPlus, History } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { eventsApi, expensesApi, lolApi, tripsApi, sleepApi, habitsApi, dashboardApi, moodApi, dayTypesApi, investmentsApi, listsApi } from '../api';
 import { Event, Expense, LolStats, Trip, EVENT_CATEGORIES, EXPENSE_CATEGORIES, SleepStats, EventCreate, DAY_TYPE_PRESETS, STREAK_PROTECTED_DAY_TYPES } from '../types';
 
-const MOOD_EMOJIS = [
-  { value: 1, emoji: '😢', label: 'Péssimo', color: '#EF4444' },
-  { value: 2, emoji: '😔', label: 'Mau', color: '#F97316' },
-  { value: 3, emoji: '😐', label: 'Normal', color: '#F59E0B' },
-  { value: 4, emoji: '😊', label: 'Bom', color: '#10B981' },
-  { value: 5, emoji: '😁', label: 'Ótimo', color: '#3B82F6' },
+const DAY_QUALITIES = [
+  { value: 'bad', emoji: '😞', label: 'Mau', color: '#EF4444' },
+  { value: 'meh', emoji: '😐', label: 'Mais ou menos', color: '#F59E0B' },
+  { value: 'good', emoji: '🙂', label: 'Bom', color: '#10B981' },
+  { value: 'great', emoji: '🤩', label: 'Ótimo', color: '#3B82F6' },
 ];
 
-const MOOD_TAGS = [
-  { value: 'sono', label: 'Com sono', emoji: '😴' },
-  { value: 'cansado', label: 'Cansado', emoji: '🥱' },
-  { value: 'stress', label: 'Stress', emoji: '😣' },
-  { value: 'ansioso', label: 'Ansioso', emoji: '😰' },
-  { value: 'feliz', label: 'Feliz', emoji: '😄' },
-  { value: 'motivado', label: 'Motivado', emoji: '💪' },
-  { value: 'focado', label: 'Focado', emoji: '🎯' },
-  { value: 'calmo', label: 'Calmo', emoji: '😌' },
-  { value: 'triste', label: 'Triste', emoji: '😢' },
-  { value: 'irritado', label: 'Irritado', emoji: '😤' },
-];
+// 0-10 rating → colour (red → amber → green)
+function ratingColor(r: number) {
+  if (r <= 3) return '#EF4444';
+  if (r <= 5) return '#F97316';
+  if (r <= 6) return '#F59E0B';
+  if (r <= 8) return '#10B981';
+  return '#3B82F6';
+}
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -54,14 +49,20 @@ export default function Dashboard() {
   const [weekOffset, setWeekOffset] = useState(0);
   const [showWeeklyReview, setShowWeeklyReview] = useState(false);
 
-  // Mood & Journal
+  // Day rating & Journal
   const [todayMood, setTodayMood] = useState<any>(null);
   const [todayJournal, setTodayJournal] = useState<any>(null);
   const [moodNote, setMoodNote] = useState('');
-  const [moodTags, setMoodTags] = useState<string[]>([]);
+  const [dayQuality, setDayQuality] = useState<string>('');
+  const [dayRating, setDayRating] = useState<number | null>(null);
   const [editingMood, setEditingMood] = useState(false);
   const [journalContent, setJournalContent] = useState('');
   const [showJournal, setShowJournal] = useState(false);
+
+  // Monthly history
+  const [showMoodHistory, setShowMoodHistory] = useState(false);
+  const [historyMonth, setHistoryMonth] = useState<Date>(new Date());
+  const [historyMoods, setHistoryMoods] = useState<any[]>([]);
 
   // Day Type
   const [todayDayType, setTodayDayType] = useState<any>(null);
@@ -110,7 +111,8 @@ export default function Dashboard() {
     if (moodData?.journal) setJournalContent(moodData.journal.content || '');
     if (moodData?.mood) {
       setMoodNote(moodData.mood.note || '');
-      setMoodTags(moodData.mood.tags ? moodData.mood.tags.split(',').filter((t: string) => t.trim()) : []);
+      setDayQuality(moodData.mood.quality || '');
+      setDayRating(typeof moodData.mood.mood === 'number' ? moodData.mood.mood : null);
     }
     setTodayDayType(dayTypeData && dayTypeData.length > 0 ? dayTypeData[0] : null);
     setInvestmentSummary(investData);
@@ -191,20 +193,37 @@ export default function Dashboard() {
     }
   }
 
-  async function saveMood(value: number) {
+  async function saveMood() {
+    if (!dayQuality || dayRating === null) return;
     await moodApi.create({
       date: todayStr,
-      mood: value,
+      mood: dayRating,
+      quality: dayQuality,
       note: moodNote,
-      tags: moodTags.join(','),
     });
     const moodData = await moodApi.today();
     setTodayMood(moodData?.mood || null);
     setEditingMood(false);
   }
 
-  function toggleMoodTag(tag: string) {
-    setMoodTags(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]);
+  async function loadHistory(month: Date) {
+    const start = format(startOfMonth(month), 'yyyy-MM-dd');
+    const end = format(endOfMonth(month), 'yyyy-MM-dd');
+    const data = await moodApi.list({ start_date: start, end_date: end }).catch(() => []);
+    setHistoryMoods(data || []);
+  }
+
+  function openHistory() {
+    const m = new Date();
+    setHistoryMonth(m);
+    setShowMoodHistory(true);
+    loadHistory(m);
+  }
+
+  function changeHistoryMonth(delta: number) {
+    const m = delta < 0 ? subMonths(historyMonth, 1) : addMonths(historyMonth, 1);
+    setHistoryMonth(m);
+    loadHistory(m);
   }
 
   async function setDayType(preset: typeof DAY_TYPE_PRESETS[number] | null) {
@@ -667,58 +686,78 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* Mood Prompt — full selector when not set or editing */}
+      {/* Day rating — full selector when not set or editing */}
       {(!todayMood || editingMood) && (
         <div className="bg-[#161616] rounded-2xl border border-[#222] p-5 mb-6">
-          <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center justify-between mb-4">
             <h3 className="text-sm font-medium text-gray-300 flex items-center gap-2">
-              <Heart size={14} className="text-pink-400" /> {editingMood ? 'Editar humor' : 'Como te sentes hoje?'}
+              <Heart size={14} className="text-pink-400" /> {editingMood ? 'Editar dia' : 'Como foi o dia?'}
             </h3>
-            {editingMood && (
-              <button onClick={() => setEditingMood(false)} className="p-1 text-gray-500 hover:text-white">
-                <X size={14} />
+            <div className="flex items-center gap-1">
+              <button onClick={openHistory} className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] bg-white/5 text-gray-400 hover:text-white hover:bg-white/10">
+                <History size={12} /> Histórico
               </button>
-            )}
+              {editingMood && (
+                <button
+                  onClick={() => {
+                    setEditingMood(false);
+                    if (todayMood) {
+                      setDayQuality(todayMood.quality || '');
+                      setDayRating(typeof todayMood.mood === 'number' ? todayMood.mood : null);
+                      setMoodNote(todayMood.note || '');
+                    }
+                  }}
+                  className="p-1 text-gray-500 hover:text-white"
+                >
+                  <X size={14} />
+                </button>
+              )}
+            </div>
           </div>
-          <div className="flex items-center gap-3 mb-3">
-            {MOOD_EMOJIS.map(m => {
-              const isSelected = todayMood?.mood === m.value;
+
+          {/* Quality */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
+            {DAY_QUALITIES.map(q => {
+              const active = dayQuality === q.value;
               return (
                 <button
-                  key={m.value}
-                  onClick={() => saveMood(m.value)}
-                  className={`flex flex-col items-center gap-1 p-3 rounded-xl transition-all group ${
-                    isSelected ? 'bg-white/10 ring-2 ring-pink-400/50' : 'hover:bg-white/10'
-                  }`}
+                  key={q.value}
+                  onClick={() => setDayQuality(q.value)}
+                  className={`flex flex-col items-center gap-1 py-3 rounded-xl transition-all ${active ? 'bg-white/10' : 'bg-white/5 hover:bg-white/10'}`}
+                  style={active ? { boxShadow: `inset 0 0 0 2px ${q.color}` } : undefined}
                 >
-                  <span className="text-2xl sm:text-3xl group-hover:scale-125 transition-transform">{m.emoji}</span>
-                  <span className="text-[10px] text-gray-600 group-hover:text-gray-400">{m.label}</span>
+                  <span className="text-2xl">{q.emoji}</span>
+                  <span className="text-[11px]" style={{ color: active ? q.color : '#9ca3af' }}>{q.label}</span>
                 </button>
               );
             })}
           </div>
-          {/* Mood tags */}
-          <div className="mb-3">
-            <p className="text-[10px] text-gray-500 mb-2">Como te sentes? (escolhe todas que se aplicam)</p>
-            <div className="flex gap-1.5 flex-wrap">
-              {MOOD_TAGS.map(tag => {
-                const isActive = moodTags.includes(tag.value);
+
+          {/* Rating 0-10 */}
+          <div className="mb-4">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-[10px] text-gray-500">Avaliação (0-10)</p>
+              {dayRating !== null && (
+                <span className="text-sm font-bold" style={{ color: ratingColor(dayRating) }}>{dayRating}/10</span>
+              )}
+            </div>
+            <div className="flex gap-1 flex-wrap">
+              {Array.from({ length: 11 }, (_, n) => {
+                const active = dayRating === n;
                 return (
                   <button
-                    key={tag.value}
-                    onClick={() => toggleMoodTag(tag.value)}
-                    className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] transition-all ${
-                      isActive
-                        ? 'bg-pink-500/20 text-pink-300 ring-1 ring-pink-400/50'
-                        : 'bg-white/5 text-gray-400 hover:bg-white/10'
-                    }`}
+                    key={n}
+                    onClick={() => setDayRating(n)}
+                    className={`flex-1 min-w-[26px] py-2 rounded-lg text-xs font-medium transition-all ${active ? 'text-white' : 'bg-white/5 text-gray-400 hover:bg-white/10'}`}
+                    style={active ? { backgroundColor: ratingColor(n) } : undefined}
                   >
-                    <span>{tag.emoji}</span> {tag.label}
+                    {n}
                   </button>
                 );
               })}
             </div>
           </div>
+
           <input
             type="text"
             value={moodNote}
@@ -726,58 +765,162 @@ export default function Dashboard() {
             placeholder="Nota rápida (opcional)..."
             className="w-full bg-[#222] border border-[#333] rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-pink-500/50"
           />
-          {editingMood && todayMood && (
-            <div className="mt-2 flex justify-end">
-              <button
-                onClick={() => saveMood(todayMood.mood)}
-                className="px-4 py-1.5 bg-pink-600 hover:bg-pink-500 text-white text-xs font-medium rounded-lg"
-              >
-                Guardar alterações
-              </button>
-            </div>
-          )}
+          <div className="mt-3 flex justify-end">
+            <button
+              onClick={saveMood}
+              disabled={!dayQuality || dayRating === null}
+              className="px-4 py-1.5 bg-pink-600 hover:bg-pink-500 disabled:opacity-30 disabled:cursor-not-allowed text-white text-xs font-medium rounded-lg"
+            >
+              {editingMood ? 'Guardar alterações' : 'Guardar'}
+            </button>
+          </div>
         </div>
       )}
 
-      {/* Today's mood display + journal toggle */}
-      {todayMood && !editingMood && (
-        <div className="bg-[#161616] rounded-2xl border border-[#222] p-4 mb-6 flex items-center justify-between">
-          <div className="flex items-center gap-3 flex-1 min-w-0">
-            <span className="text-2xl">{MOOD_EMOJIS.find(m => m.value === todayMood.mood)?.emoji || '😐'}</span>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium">Humor: {MOOD_EMOJIS.find(m => m.value === todayMood.mood)?.label}</p>
-              {todayMood.tags && (
-                <div className="flex gap-1 flex-wrap mt-1">
-                  {todayMood.tags.split(',').filter((t: string) => t.trim()).map((tagValue: string) => {
-                    const tag = MOOD_TAGS.find(t => t.value === tagValue.trim());
-                    if (!tag) return null;
+      {/* Today's rating display + journal toggle */}
+      {todayMood && !editingMood && (() => {
+        const q = DAY_QUALITIES.find(x => x.value === todayMood.quality);
+        return (
+          <div className="bg-[#161616] rounded-2xl border border-[#222] p-4 mb-6 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3 flex-1 min-w-0">
+              <span className="text-2xl">{q?.emoji || '😐'}</span>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium flex items-center gap-2 flex-wrap">
+                  <span style={{ color: q?.color }}>{q?.label || 'Dia'}</span>
+                  <span className="text-xs font-bold px-1.5 py-0.5 rounded" style={{ backgroundColor: `${ratingColor(todayMood.mood)}22`, color: ratingColor(todayMood.mood) }}>{todayMood.mood}/10</span>
+                </p>
+                {todayMood.note && <p className="text-xs text-gray-500 mt-1 truncate">{todayMood.note}</p>}
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={openHistory}
+                className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs bg-white/5 text-gray-400 hover:text-white hover:bg-white/10"
+              >
+                <History size={12} /> Histórico
+              </button>
+              <button
+                onClick={() => setEditingMood(true)}
+                className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs bg-white/5 text-gray-400 hover:text-white hover:bg-white/10"
+              >
+                <Edit2 size={12} /> Editar
+              </button>
+              <button
+                onClick={() => setShowJournal(!showJournal)}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs transition-all ${showJournal ? 'bg-purple-600/20 text-purple-400' : 'bg-white/5 text-gray-400 hover:text-white'}`}
+              >
+                <BookOpen size={14} /> Diário
+              </button>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Monthly history modal */}
+      {showMoodHistory && (() => {
+        const monthStart = startOfMonth(historyMonth);
+        const monthEnd = endOfMonth(historyMonth);
+        const gridStart = startOfWeek(monthStart, { weekStartsOn: 1 });
+        const gridEnd = endOfWeek(monthEnd, { weekStartsOn: 1 });
+        const days = eachDayOfInterval({ start: gridStart, end: gridEnd });
+        const byDate: Record<string, any> = {};
+        historyMoods.forEach(m => { byDate[m.date] = m; });
+        const monthEntries = historyMoods.filter(m => isSameMonth(new Date(m.date + 'T00:00:00'), historyMonth));
+        const avg = monthEntries.length ? monthEntries.reduce((s, m) => s + m.mood, 0) / monthEntries.length : null;
+        const isFutureMonth = startOfMonth(historyMonth) >= startOfMonth(new Date());
+        return (
+          <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" onClick={() => setShowMoodHistory(false)}>
+            <div className="bg-[#161616] rounded-2xl border border-[#222] p-5 w-full max-w-md" onClick={e => e.stopPropagation()}>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-sm font-medium text-gray-200 flex items-center gap-2"><History size={15} className="text-pink-400" /> Histórico de dias</h3>
+                <button onClick={() => setShowMoodHistory(false)} className="p-1 text-gray-500 hover:text-white"><X size={16} /></button>
+              </div>
+              <div className="flex items-center justify-between mb-4">
+                <button onClick={() => changeHistoryMonth(-1)} className="p-1.5 rounded-lg hover:bg-white/10 text-gray-400"><ChevronLeft size={16} /></button>
+                <div className="text-center">
+                  <p className="text-sm font-medium capitalize">{format(historyMonth, 'MMMM yyyy', { locale: pt })}</p>
+                  {avg !== null
+                    ? <p className="text-[11px] text-gray-500">média <span className="font-bold" style={{ color: ratingColor(Math.round(avg)) }}>{avg.toFixed(1)}/10</span> · {monthEntries.length} dias</p>
+                    : <p className="text-[11px] text-gray-600">sem registos</p>}
+                </div>
+                <button onClick={() => changeHistoryMonth(1)} disabled={isFutureMonth} className="p-1.5 rounded-lg hover:bg-white/10 text-gray-400 disabled:opacity-30"><ChevronRight size={16} /></button>
+              </div>
+              <div className="grid grid-cols-7 gap-1 mb-1">
+                {['S', 'T', 'Q', 'Q', 'S', 'S', 'D'].map((d, i) => <div key={i} className="text-center text-[10px] text-gray-600">{d}</div>)}
+              </div>
+              <div className="grid grid-cols-7 gap-1">
+                {days.map(day => {
+                  const key = format(day, 'yyyy-MM-dd');
+                  const entry = byDate[key];
+                  const inMonth = isSameMonth(day, historyMonth);
+                  const isCurrentDay = isSameDay(day, new Date());
+                  const q = entry ? DAY_QUALITIES.find(x => x.value === entry.quality) : null;
+                  const color = entry ? (q?.color || ratingColor(entry.mood)) : null;
+                  return (
+                    <div
+                      key={key}
+                      title={entry ? `${q?.label || ''} · ${entry.mood}/10${entry.note ? ' · ' + entry.note : ''}` : undefined}
+                      className={`aspect-square rounded-lg flex flex-col items-center justify-center leading-none ${inMonth ? '' : 'opacity-25'} ${isCurrentDay ? 'ring-1 ring-white/40' : ''}`}
+                      style={{ backgroundColor: color ? `${color}33` : 'rgba(255,255,255,0.03)' }}
+                    >
+                      <span className="text-[9px] text-gray-500">{format(day, 'd')}</span>
+                      {entry && <span className="text-[11px] font-bold" style={{ color: color! }}>{entry.mood}</span>}
+                    </div>
+                  );
+                })}
+              </div>
+              {monthEntries.length > 0 ? (
+                <div className="mt-4 pt-3 border-t border-[#222] space-y-1.5">
+                  <p className="text-[10px] text-gray-500 mb-1">Resumo do mês · {monthEntries.length} {monthEntries.length === 1 ? 'dia' : 'dias'}</p>
+                  {DAY_QUALITIES.map(q => {
+                    const count = monthEntries.filter(m => m.quality === q.value).length;
+                    const pct = Math.round((count / monthEntries.length) * 100);
                     return (
-                      <span key={tagValue} className="text-[10px] bg-pink-500/10 text-pink-300 px-1.5 py-0.5 rounded-full">
-                        {tag.emoji} {tag.label}
-                      </span>
+                      <div key={q.value} className="flex items-center gap-2 text-[11px]">
+                        <span className="w-4 text-center">{q.emoji}</span>
+                        <span className="w-24 shrink-0" style={{ color: q.color }}>{q.label}</span>
+                        <div className="flex-1 h-1.5 rounded-full bg-white/5 overflow-hidden">
+                          <div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: q.color }} />
+                        </div>
+                        <span className="w-16 text-right text-gray-400 shrink-0">{count} · {pct}%</span>
+                      </div>
                     );
                   })}
                 </div>
+              ) : (
+                <div className="flex items-center justify-center gap-3 mt-4 flex-wrap">
+                  {DAY_QUALITIES.map(q => (
+                    <span key={q.value} className="flex items-center gap-1 text-[10px] text-gray-500">
+                      <span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: q.color }} /> {q.label}
+                    </span>
+                  ))}
+                </div>
               )}
-              {todayMood.note && <p className="text-xs text-gray-500 mt-1 truncate">{todayMood.note}</p>}
+              {monthEntries.some(m => m.note && m.note.trim()) && (
+                <div className="mt-4 pt-3 border-t border-[#222]">
+                  <p className="text-[10px] text-gray-500 mb-2">Notas do mês</p>
+                  <div className="max-h-40 overflow-y-auto space-y-2 pr-1">
+                    {[...monthEntries]
+                      .filter(m => m.note && m.note.trim())
+                      .sort((a, b) => (a.date < b.date ? 1 : -1))
+                      .map(m => {
+                        const mq = DAY_QUALITIES.find(x => x.value === m.quality);
+                        return (
+                          <div key={m.id} className="flex items-start gap-2 text-xs">
+                            <span className="shrink-0 text-gray-500 w-12">{format(new Date(m.date + 'T00:00:00'), 'd MMM', { locale: pt })}</span>
+                            <span className="shrink-0">{mq?.emoji || '•'}</span>
+                            <span className="shrink-0 font-bold" style={{ color: mq?.color || ratingColor(m.mood) }}>{m.mood}</span>
+                            <span className="text-gray-400 break-words flex-1 min-w-0">{m.note}</span>
+                          </div>
+                        );
+                      })}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              onClick={() => setEditingMood(true)}
-              className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs bg-white/5 text-gray-400 hover:text-white hover:bg-white/10"
-            >
-              <Edit2 size={12} /> Editar
-            </button>
-            <button
-              onClick={() => setShowJournal(!showJournal)}
-              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs transition-all ${showJournal ? 'bg-purple-600/20 text-purple-400' : 'bg-white/5 text-gray-400 hover:text-white'}`}
-            >
-              <BookOpen size={14} /> Diário
-            </button>
-          </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Quick Journal */}
       {showJournal && (
@@ -1008,11 +1151,11 @@ export default function Dashboard() {
               )}
             </div>
 
-            {/* Mood */}
+            {/* Day rating */}
             {wr.mood && wr.mood.entries > 0 && (
               <div className="bg-[#1a1a1a] rounded-xl p-3">
-                <p className="text-[10px] text-gray-500 mb-1 flex items-center gap-1"><Heart size={10} /> Humor</p>
-                <p className="text-lg font-bold">{MOOD_EMOJIS.find(m => m.value === Math.round(wr.mood.average))?.emoji || '😐'} {wr.mood.average.toFixed(1)}</p>
+                <p className="text-[10px] text-gray-500 mb-1 flex items-center gap-1"><Heart size={10} /> Dias</p>
+                <p className="text-lg font-bold" style={{ color: ratingColor(Math.round(wr.mood.average)) }}>{wr.mood.average.toFixed(1)}<span className="text-xs text-gray-500">/10</span></p>
                 <p className="text-[10px] text-gray-500">{wr.mood.entries} registos</p>
               </div>
             )}

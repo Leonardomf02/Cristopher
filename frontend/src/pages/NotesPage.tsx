@@ -134,7 +134,7 @@ export default function NotesPage() {
   const mobileShowEditor = !!selectedNote;
 
   return (
-    <div className="flex flex-col lg:flex-row gap-0 lg:h-[calc(100vh-100px)]">
+    <div className="flex flex-col lg:flex-row gap-0 lg:h-full">
       {/* Unified sidebar: search + folders + notes list */}
       {!sidebarCollapsed && (
         <div className={`${mobileShowEditor ? 'hidden lg:flex' : 'flex'} w-full lg:w-72 lg:shrink-0 lg:border-r lg:border-[#222] flex-col max-h-[60vh] lg:max-h-none border-b border-[#222] lg:border-b-0 pb-3 lg:pb-0 mb-3 lg:mb-0`}>
@@ -305,7 +305,7 @@ export default function NotesPage() {
               </button>
             </div>
 
-            <div className="flex-1 overflow-y-auto px-6 py-4"
+            <div className="flex-1 flex flex-col overflow-y-auto px-6 py-4"
               style={{ backgroundColor: selectedNote.color || 'transparent' }}
             >
               <input
@@ -323,7 +323,7 @@ export default function NotesPage() {
                 value={selectedNote.content}
                 onChange={e => handleNoteFieldChange('content', e.target.value)}
                 placeholder="Começa a escrever..."
-                className="w-full bg-transparent text-sm leading-relaxed focus:outline-none resize-none min-h-[400px] placeholder-gray-600"
+                className="w-full flex-1 bg-transparent text-sm leading-relaxed focus:outline-none resize-none min-h-[400px] placeholder-gray-600"
               />
             </div>
           </>

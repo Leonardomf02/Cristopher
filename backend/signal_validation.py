@@ -351,10 +351,15 @@ def validate_suggestions(
 
         # Diversidade de sinais: tese forte cruza ≥2 famílias (técnico, fundamental,
         # sentimento, macro, on-chain, insider). Mono-dimensional = ruído.
-        families = detect_signal_families(thesis)
-        sug["signal_families"] = sorted(families)
-        if action == "buy" and len(families) < 2:
-            flags.append(f"single_dimension:{','.join(sorted(families)) or 'none'}")
+        # Para candidatos do motor (engine=True) as famílias já vêm dos sinais reais
+        # e as gates ex-ante já validaram a diversidade — não as redetetamos do texto.
+        if sug.get("engine"):
+            families = set(sug.get("signal_families") or [])
+        else:
+            families = detect_signal_families(thesis)
+            sug["signal_families"] = sorted(families)
+            if action == "buy" and len(families) < 2:
+                flags.append(f"single_dimension:{','.join(sorted(families)) or 'none'}")
 
         if not check_conviction_supported(conviction, thesis):
             flags.append("weak_conviction")

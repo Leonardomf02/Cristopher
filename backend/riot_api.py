@@ -2387,3 +2387,59 @@ async def get_leagueofgraphs_ranking(game_name: str, tag_line: str, region: str 
     except Exception as e:
         logger.warning(f"Failed to fetch League of Graphs ranking: {e}")
         return None
+
+
+# ── op.gg — Season Peak + Ladder Rank ────────────────────────────
+
+_opgg_profile_cache: dict[str, tuple[float, dict]] = {}
+_OPGG_PROFILE_TTL = 1800  # 30 minutes
+
+
+async def get_opgg_profile(game_name: str, tag_line: str, region: str = "euw") -> dict | None:
+    """Scrape the op.gg summoner page for data the Riot API doesn't expose:
+      - season peak ("Top Tier"): peak_tier, peak_lp
+      - current ladder rank with percentile: euw_rank, top_percent
+    op.gg tracks LP continuously, so this recovers peaks we never snapshotted.
+    Returns a dict with whatever could be parsed, or None on failure.
+    """
+    import urllib.parse
+
+    cache_key = f"{game_name}#{tag_line}@{region}"
+    cached = _opgg_profile_cache.get(cache_key)
+    if cached and asyncio.get_event_loop().time() - cached[0] < _OPGG_PROFILE_TTL:
+        return cached[1]
+
+    name = urllib.parse.quote(f"{game_name}-{tag_line}")
+    url = f"https://op.gg/lol/summoners/{region}/{name}"
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            resp = await client.get(url, headers=_LOG_HEADERS)
+        if resp.status_code != 200:
+            return None
+        html = resp.text
+        result: dict = {"source": "op.gg"}
+
+        # Season peak: the "Top Tier" badge sits right after a tier + LP block.
+        idx = html.find(">Top Tier<")
+        if idx >= 0:
+            m = re.search(
+                r'<strong[^>]*>([a-zA-Z]+)</strong>.*?>([0-9,]+)<!-- --> LP',
+                html[max(0, idx - 500):idx], re.DOTALL,
+            )
+            if m:
+                result["peak_tier"] = m.group(1).upper()
+                result["peak_lp"] = int(m.group(2).replace(",", ""))
+
+        # Current ladder rank: "Ladder Rank 8,398 (0.2927% of top)"
+        m = re.search(r'Ladder Rank\s*<span[^>]*>([0-9,]+)</span>\s*\(([0-9.]+)%\s*of top\)', html)
+        if m:
+            result["euw_rank"] = int(m.group(1).replace(",", ""))
+            result["top_percent"] = float(m.group(2))
+
+        if len(result) == 1:  # only "source", nothing parsed
+            return None
+        _opgg_profile_cache[cache_key] = (asyncio.get_event_loop().time(), result)
+        return result
+    except Exception as e:
+        logger.warning(f"Failed to fetch op.gg profile: {e}")
+        return None

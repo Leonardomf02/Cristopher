@@ -11,7 +11,7 @@ except Exception:
     pass
 
 from database import engine, Base
-from routers import events, expenses, lol, trips, lists, sleep, day_types, flow, notes, investments, investment_signals, habits, dashboard, mood, budgets, templates, app_usage, app_insights, app_goals, ideas, code_activity, screen_time
+from routers import events, expenses, lol, trips, lists, sleep, day_types, flow, notes, investments, investment_signals, habits, dashboard, mood, budgets, templates, app_usage, app_insights, app_goals, ideas, code_activity, screen_time, wakatime
 
 # Create all tables
 Base.metadata.create_all(bind=engine)
@@ -25,6 +25,12 @@ _cur.execute("PRAGMA table_info(investment_plans)")
 _cols = {row[1] for row in _cur.fetchall()}
 if "name" not in _cols:
     _cur.execute("ALTER TABLE investment_plans ADD COLUMN name TEXT NOT NULL DEFAULT ''")
+    _conn.commit()
+# Add kind to waka_project_days
+_cur.execute("PRAGMA table_info(waka_project_days)")
+_waka_cols = {row[1] for row in _cur.fetchall()}
+if _waka_cols and "kind" not in _waka_cols:
+    _cur.execute("ALTER TABLE waka_project_days ADD COLUMN kind TEXT NOT NULL DEFAULT 'project'")
     _conn.commit()
 # Add is_rotational to investment_allocations
 _cur.execute("PRAGMA table_info(investment_allocations)")
@@ -61,6 +67,28 @@ _cur.execute("PRAGMA table_info(mood_entries)")
 _mood_cols = {row[1] for row in _cur.fetchall()}
 if _mood_cols and "tags" not in _mood_cols:
     _cur.execute("ALTER TABLE mood_entries ADD COLUMN tags TEXT DEFAULT ''")
+    _conn.commit()
+# Mood: migrate from 1-5 scale to 0-10 rating + quality category
+if _mood_cols and "quality" not in _mood_cols:
+    _cur.execute("ALTER TABLE mood_entries ADD COLUMN quality TEXT DEFAULT ''")
+    # Existing rows used a 1-5 mood; convert to 0-10 and assign a category once.
+    _cur.execute("SELECT id, mood FROM mood_entries")
+    for _id, _old in _cur.fetchall():
+        _r = max(0, min(10, (_old or 0) * 2))
+        _q = "great" if _r >= 9 else "good" if _r >= 7 else "meh" if _r >= 4 else "bad"
+        _cur.execute("UPDATE mood_entries SET mood = ?, quality = ? WHERE id = ?", (_r, _q, _id))
+    _conn.commit()
+# Add source (manual|auto) to sleep_entries
+_cur.execute("PRAGMA table_info(sleep_entries)")
+_sleep_cols = {row[1] for row in _cur.fetchall()}
+if _sleep_cols and "source" not in _sleep_cols:
+    _cur.execute("ALTER TABLE sleep_entries ADD COLUMN source TEXT DEFAULT 'manual'")
+    _conn.commit()
+# Notes: clear the old orange default colour (it was never user-selectable) → black
+_cur.execute("PRAGMA table_info(notes)")
+_notes_cols = {row[1] for row in _cur.fetchall()}
+if _notes_cols:
+    _cur.execute("UPDATE notes SET color = '' WHERE color = '#F59E0B'")
     _conn.commit()
 # Add audit columns to investment_signals
 _cur.execute("PRAGMA table_info(investment_signals)")
@@ -260,6 +288,7 @@ app.include_router(app_goals.router)
 app.include_router(ideas.router)
 app.include_router(code_activity.router)
 app.include_router(screen_time.router)
+app.include_router(wakatime.router)
 
 
 @app.get("/api/health")
@@ -321,6 +350,33 @@ def _start_app_tracker():
         _TRACKER_PIDFILE.write_text(str(_tracker_proc.pid))
     except Exception as e:
         print(f"[main] failed to start app_tracker: {e}", file=sys.stderr)
+
+
+@app.on_event("startup")
+def _start_sleep_auto_register():
+    """Regista o sono automaticamente (estimado do uso do PC) ao arrancar e
+    depois de 6 em 6h. Só corre em macOS local; em Linux/Codespaces o estimador
+    devolve None e este loop não faz nada."""
+    if sys.platform != "darwin":
+        return
+    import threading
+    import time as _time
+
+    def _loop():
+        from routers.sleep import auto_register_recent_sleep
+        from routers.screen_time import snapshot_screen_time
+        while True:
+            try:
+                auto_register_recent_sleep(days_back=7)
+            except Exception:
+                pass
+            try:
+                snapshot_screen_time(days_back=45)
+            except Exception:
+                pass
+            _time.sleep(6 * 3600)
+
+    threading.Thread(target=_loop, daemon=True).start()
 
 
 @app.on_event("shutdown")

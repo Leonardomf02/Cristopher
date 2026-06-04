@@ -30,8 +30,9 @@ from models import (
 )
 from market_data import (
     fetch_metrics_batch, format_metrics_for_prompt, get_quick_price,
-    compute_factor_panel,
+    compute_factor_panel, fetch_metrics,
 )
+from factor_universe import fetch_universe_distributions
 from macro_data import fetch_macro_snapshot, format_macro_for_prompt
 from signal_validation import validate_suggestions, summarize_flags
 from onchain_data import (
@@ -56,14 +57,17 @@ from regime_data import (
 )
 from risk_management import apply_risk_overlays
 from notifier import notify, telegram_enabled
-from cache import cache_stats, cache_invalidate
+from cache import cache_stats, cache_invalidate, cache_get, cache_set
+import signal_engine as se
+import calibration_feedback as cf
 
 from ai_config import AI_API_URL, AI_API_KEY, AI_CHANNEL_ID
 
 router = APIRouter(prefix="/api/investments/signals", tags=["Investment Signals"])
 logger = logging.getLogger(__name__)
 
-PROMPT_VERSION = "v7-decision-gates"   # bump when SYSTEM_PROMPT or _build_user_prompt changes shape
+PROMPT_VERSION = "v8-engine"   # bump when SYSTEM_PROMPT or the narrator prompt changes shape
+ENGINE_VERSION = se.ENGINE_VERSION
 
 MIN_BUY_AMOUNT_EUR = 25  # corretoras europeias têm mínimos práticos; <25€ não é investível
 
@@ -433,182 +437,223 @@ def collect_market_data(
         seen.add(t.upper())
         targets.append((t, at))
     metrics = fetch_metrics_batch(targets)
-    return compute_factor_panel(metrics)
+    # Factor percentiles against the broad universe (cached daily); falls back to
+    # the local batch if the universe fetch fails.
+    try:
+        reference = fetch_universe_distributions()
+    except Exception as e:
+        logger.warning(f"factor universe unavailable: {e}")
+        reference = None
+    return compute_factor_panel(metrics, reference=reference)
 
 
 # ── OpenAI prompt ───────────────────────────────────────────────
 
-SYSTEM_PROMPT = """És analista financeiro a aconselhar um investidor PT jovem (DCA, longo prazo, risco moderado-alto).
+SYSTEM_PROMPT = """És analista financeiro a NARRAR decisões já tomadas por um motor quantitativo, para um investidor PT jovem (DCA, longo prazo, risco moderado-alto).
 
-Princípio orientador: **qualidade > quantidade**. Não devolvas sugestões que não cumpram as regras. É melhor 0 ideias que 10 fracas — o backend rejeita as que falhem as gates de decisão.
+IMPORTANTE — TU NÃO DECIDES. Um motor determinístico já escolheu os tickers, as ações (buy/watch/hold), os montantes € e a convicção, com base em dados quantitativos e nas gates de risco. O teu trabalho é:
+1. **Escrever a tese** de cada candidato (1 frase ≤150 caracteres) explicando o PORQUÊ, a partir do `signal_breakdown` e dos dados fornecidos. NÃO inventes números — usa só os do contexto.
+2. **Red-team**: para cada candidato, 1 frase curta com a principal fraqueza/risco da decisão (o que poderia correr mal).
+3. **Opcional**: propor `extra_ideas` (tickers fora dos candidatos) que aches que o motor falhou — mas estas voltam a passar pelo motor (são re-pontuadas e podem ser rejeitadas).
 
-Regras gerais:
-- Baseia-te SÓ nos dados fornecidos (notícias, sentimento, dados quantitativos). Não inventes números.
-- Sê concreto: ticker, ação (buy/hold/reduce/watch), montante €, convicção (high/medium/low).
-- COBERTURA OBRIGATÓRIA: TENS de devolver UMA entrada em `plan_recommendations` para CADA ativo do "PLANO DE ALOCAÇÃO ALVO" (mesmo que a recomendação seja "hold" ou "watch"). Não saltes nenhum.
+NÃO mudes a ação, o montante nem a convicção dos candidatos — esses campos são autoritativos e vêm do motor. Só escreves texto.
 
-Regras DURAS para action='buy' (qualquer violação → backend converte para 'watch'):
-- ❌ NÃO recomendes 'buy' se RSI > 70 (sobrecomprado). Usa 'watch' e diz "esperar correção".
-- ❌ NÃO recomendes 'buy' se earnings em ≤14 dias. Usa 'watch' e diz "aguardar earnings em Xd". Earnings é evento binário, não setup.
-- ❌ NÃO recomendes 'buy' se a tese só cita UMA família de sinais. Toda 'buy' TEM de cruzar ≥2 destas: técnico (RSI/SMA/MACD/breakout), fundamental (P/E, EPS, beats, margens), sentimento (notícias/fontes), macro (VIX/Fed/regime), on-chain (funding/MVRV — só crypto), insider (cluster buys).
-- ❌ NÃO recomendes 'buy' com convicção 'high' se a tese tem <120 caracteres ou cita 0 dados numéricos.
-
-IDEIAS NOVAS (`new_ideas`):
-- SEM QUOTAS. Devolve só ideias com setup real. Aceitável devolver `new_ideas: []` se hoje não há nada genuíno. NÃO inventes ideias para "encher".
-- Sem cobertura sectorial obrigatória. Se hoje só há setups bons em semis, devolves só semis.
-- Conviction 'high' só com ≥3 sinais convergentes de famílias diferentes. 'medium' com ≥2 famílias.
-
-Tese:
-- 1 frase ≤150 caracteres com 2-3 dados quantitativos cruzados de famílias diferentes.
-- Exemplo BOM (2 famílias): "RSI 32 oversold + 4 beats consecutivos com surprise médio +5.6% (técnico+fundamental)."
-- Exemplo MAU (1 família, será rejeitada): "RSI 28 oversold, momentum positivo, acima da SMA50."
-
-Montantes:
-- amount_eur = 0 OBRIGATÓRIO para 'hold'/'watch'/'reduce'.
-- Para 'buy': amount_eur >= 25€ E <= budget mensal. NUNCA 1€/5€/10€ (não dá para investir em corretoras EU). Se a % do plano der <25€, sobe para 25€ ou muda para 'watch'.
-
-Sector: classifica em "Semicondutores", "Tech Mega-cap", "Software/Cloud", "Energia", "Healthcare", "Financeiro", "Consumo", "Industrial", "Telecom", "Utilities", "Imobiliário/REIT", "Crypto", "ETF Amplo", "ETF Sectorial", "Ouro/Commodities", "Outro". Se duvidoso → "Outro" (backend re-classifica).
+Tese — exemplos de tom:
+- BOM: "Score 71: técnico forte (acima SMA200, momentum P82) + PEAD com 4 beats; risco macro risk-off parcial."
+- MAU (inventa números): "RSI exatamente 28.4 e EPS de 3.21$" (se não estiverem no contexto).
 
 OUTPUT: APENAS JSON puro, começa com { e acaba com }. SEM prefácio, SEM markdown, SEM ```json. Schema:
 {
   "headline": "tema do dia",
-  "market_summary": "2-3 frases sobre regime de mercado",
-  "plan_recommendations": [
-    {"ticker":"VUAA","name":"Vanguard S&P 500","asset_type":"etf","sector":"ETF Amplo","action":"hold","conviction":"medium","amount_eur":0,"thesis":"razão com métrica/fonte"}
+  "market_summary": "2-3 frases sobre o regime de mercado e o que o motor priorizou",
+  "theses": [
+    {"ticker":"VUAA","thesis":"porquê em ≤150 chars usando o breakdown","red_team":"principal risco em 1 frase"}
   ],
-  "new_ideas": [
-    {"ticker":"NVDA","name":"NVIDIA","asset_type":"stock","sector":"Semicondutores","action":"buy","conviction":"high","amount_eur":50,"thesis":"RSI 45 + 4 beats c/ surprise +6% + sentiment positivo (CoinDesk)"}
+  "extra_ideas": [
+    {"ticker":"NVDA","asset_type":"stock","thesis":"porque achas que vale a pena, com dados do contexto"}
   ]
 }
-asset_type: etf|crypto|stock. action: buy|hold|reduce|watch. conviction: high|medium|low."""
+Devolve UMA tese por CADA candidato listado. `extra_ideas` pode ser []."""
 
 
-def _build_user_prompt(
-    portfolio: dict,
-    news: list[dict],
-    sentiment: dict,
-    market_data: dict,
-    macro: dict | None = None,
-    onchain: dict | None = None,
-    fundamentals: dict | None = None,
-    earnings: dict | None = None,
-    insider: dict | None = None,
-    news_sentiment_agg: dict | None = None,
-    regime: dict | None = None,
-    earnings_momentum: dict | None = None,
-    sentiment_delta: dict | None = None,
-    funding_btc: dict | None = None,
-    funding_eth: dict | None = None,
-) -> str:
-    # Keep prompt small — agent rejects very large inputs.
-    news_block = "\n".join(
-        f"- [{n['source']}] {n['title'][:140]}"
-        for n in news[:25]
+# ── Engine wiring (hybrid: engine decides, LLM narrates) ────────
+
+def _build_engine_ctx(
+    *,
+    fundamentals: dict | None,
+    earnings: dict | None,
+    earnings_momentum: dict | None,
+    insider: dict | None,
+    onchain: dict | None,
+    funding_btc: dict | None,
+    funding_eth: dict | None,
+    sentiment_agg: dict | None,
+    sentiment_delta: dict | None,
+    regime: dict | None,
+    family_weights: dict,
+) -> dict:
+    """Pack the collected signals into the context the engine scores against."""
+    return {
+        "fundamentals": fundamentals or {},
+        "earnings_cal": earnings or {},
+        "earnings_momentum": earnings_momentum or {},
+        "insider": insider or {},
+        "onchain": onchain or {},
+        "funding_btc": funding_btc,
+        "funding_eth": funding_eth,
+        "sentiment_agg": sentiment_agg,
+        "sentiment_delta": sentiment_delta,
+        "regime": regime,
+        "family_weights": family_weights,
+    }
+
+
+def _fallback_thesis(cand: dict) -> str:
+    """Deterministic thesis from the engine breakdown — used when the LLM doesn't
+    narrate a candidate (graceful degradation: the system works without the LLM)."""
+    bd = cand.get("signal_breakdown") or {}
+    parts = []
+    for fam, val in sorted(bd.items(), key=lambda kv: -abs(kv[1])):
+        sign = "+" if val >= 0 else ""
+        parts.append(f"{fam} {sign}{val:.2f}")
+    detail = ", ".join(parts[:3]) if parts else "sem sinais fortes"
+    return f"Score {cand.get('score')}: {detail}."
+
+
+def _format_candidate_for_prompt(cand: dict) -> str:
+    bd = cand.get("signal_breakdown") or {}
+    bd_str = ", ".join(f"{k}={v:+.2f}" for k, v in bd.items()) or "—"
+    gates = cand.get("gates_triggered") or []
+    gate_str = (" | gates: " + ", ".join(g["gate"] for g in gates)) if gates else ""
+    amt = cand.get("amount_eur") or 0
+    return (
+        f"  - {cand['ticker']} ({cand.get('asset_type','?')}): "
+        f"action={cand.get('action')} conv={cand.get('conviction')} {amt}€ "
+        f"score={cand.get('score')} [breakdown: {bd_str}]{gate_str}"
     )
-    cfng = sentiment.get("crypto_fng")
-    efng = sentiment.get("equity_fng")
-    sentiment_lines = []
-    if efng:
-        sentiment_lines.append(f"Fear & Greed (ações US, CNN): {efng['value']}/100 — {efng['classification']}")
-    if cfng:
-        sentiment_lines.append(f"Fear & Greed (crypto, alt.me): {cfng['value']}/100 — {cfng['classification']}")
-    fng_line = "\n".join(sentiment_lines) if sentiment_lines else "Indicadores de sentimento: indisponíveis"
 
-    if market_data:
-        market_block = "\n".join(
-            format_metrics_for_prompt(m)
-            for m in market_data.values()
-            if m.get("source") not in ("none", "error")
-        )
-    else:
-        market_block = "  (dados quantitativos indisponíveis)"
 
-    macro_block = format_macro_for_prompt(macro) if macro else "  (macro indisponível)"
-    onchain_block = format_onchain_for_prompt(onchain) if onchain else "  (on-chain indisponível)"
-    fundamentals_block = format_fundamentals_for_prompt(fundamentals or {})
-    earnings_block = format_earnings_for_prompt(earnings or {})
-    insider_block = format_insider_for_prompt(insider or {})
-    news_sentiment_block = format_sentiment_for_prompt(news_sentiment_agg) if news_sentiment_agg else ""
-    regime_block = format_regime_for_prompt(regime or {})
-    earnings_mom_block = format_earnings_momentum_for_prompt(earnings_momentum or {})
-    sentiment_delta_block = format_sentiment_delta_for_prompt(sentiment_delta or {})
-    funding_lines = []
-    if funding_btc:
-        funding_lines.append(format_funding_persistence_for_prompt(funding_btc))
-    if funding_eth:
-        funding_lines.append(format_funding_persistence_for_prompt(funding_eth))
-    funding_block = "\n".join(funding_lines) if funding_lines else "  (funding persistence indisponível)"
-
+def _build_narrator_prompt(
+    plan_candidates: list[dict],
+    new_idea_candidates: list[dict],
+    portfolio: dict,
+    context_block: str,
+    calibration_summary: str,
+    excluded: set[str] | None = None,
+) -> str:
+    plan_lines = "\n".join(_format_candidate_for_prompt(c) for c in plan_candidates) or "  (nenhum)"
+    new_lines = "\n".join(_format_candidate_for_prompt(c) for c in new_idea_candidates) or "  (nenhum)"
+    excl = ""
+    if excluded:
+        excl = f"\nEXCLUSÕES (não propor em extra_ideas): {', '.join(sorted(excluded))}."
     return f"""Data: {datetime.now().strftime('%Y-%m-%d %H:%M')}
 
-PORTFOLIO ATUAL ({portfolio['total_value']:.2f}€ total, {portfolio['deposits']:.2f}€ depositado):
+PORTFOLIO ATUAL ({portfolio['total_value']:.2f}€):
 {portfolio['positions_text']}
-
-PLANO DE ALOCAÇÃO ALVO:
-{portfolio['plan_text']}
-
-ÚLTIMOS PLANOS EXECUTADOS (snapshot do que foi mesmo investido em meses anteriores — usa para perceber drift, repetição e ajustes):
-{portfolio.get('history_text', '  (sem histórico de execução)')}
 
 Budget mensal: {portfolio['monthly_budget']:.0f}€
 
-REGIME DE MERCADO (probabilidade risk-on/off):
-{regime_block}
+CANDIDATOS DO MOTOR — DO PLANO (DCA, ação/montante autoritativos):
+{plan_lines}
 
-REGIME MACRO (yield curve, VIX, USD, breakeven, copper/gold):
-{macro_block}
+CANDIDATOS DO MOTOR — IDEIAS NOVAS (ranqueadas por score):
+{new_lines}
 
-ON-CHAIN CRYPTO (MVRV, funding rates, atividade rede):
-{onchain_block}
+CONTEXTO DE MERCADO (para fundamentares as teses; NÃO inventes números fora disto):
+{context_block}
 
-FUNDING PERSISTENCE (contrarian — 5+d em extremo = squeeze provável):
-{funding_block}
+TRACK RECORD (calibração histórica — usa para calibrar a linguagem de confiança):
+{calibration_summary}
+{excl}
 
-INDICADORES DE SENTIMENTO (Fear & Greed):
-{fng_line}
+Escreve UMA tese (≤150 chars) + red-team para CADA candidato acima (plano + ideias novas).
+Opcionalmente, propõe extra_ideas com setups que o motor possa ter falhado.
+Devolve APENAS o JSON do schema."""
 
-SENTIMENT DAS NOTÍCIAS (agregado, pré-classificado):
-{news_sentiment_block}
 
-SENTIMENT DELTA (MA7 vs MA30 z-score, regime change detection):
-{sentiment_delta_block}
+def _merge_engine_with_theses(
+    plan_candidates: list[dict],
+    new_idea_candidates: list[dict],
+    parsed: dict,
+) -> list[dict]:
+    """Attach LLM theses/red-team to the engine's authoritative candidates.
 
-DADOS QUANTITATIVOS (preço, % mês/3m/12m, RSI 14, vs SMA 50/200, range 52w, percentis momentum 12-1 e low-vol):
-{market_block}
+    The engine owns ticker/action/amount/conviction/score; the LLM only adds
+    `thesis` and `risk_critique`. Missing theses fall back to a deterministic one.
+    """
+    theses = parsed.get("theses")
+    if not isinstance(theses, list):
+        theses = []
+    by_ticker: dict[str, dict] = {}
+    for t in theses:
+        if isinstance(t, dict) and t.get("ticker"):
+            by_ticker[(t["ticker"]).upper()] = t
 
-FUNDAMENTALS (sector, P/E, P/B, EV/EBITDA, ROE, margens, debt/equity, beta):
-{fundamentals_block}
+    out: list[dict] = []
+    for cand in list(plan_candidates) + list(new_idea_candidates):
+        c = dict(cand)
+        t = by_ticker.get(c["ticker"].upper())
+        thesis = (t or {}).get("thesis") if t else None
+        c["thesis"] = (thesis or "").strip() or _fallback_thesis(c)
+        rt = (t or {}).get("red_team") if t else None
+        if rt:
+            c["risk_critique"] = {"ticker": c["ticker"], "weaknesses": [str(rt)], "verdict": "narrated"}
+        c["sector"] = _classify_sector(c.get("ticker"), c.get("asset_type"))
+        c.setdefault("name", c["ticker"])
+        out.append(c)
+    return out
 
-CALENDÁRIO EARNINGS (próximos 30 dias):
-{earnings_block}
 
-EARNINGS MOMENTUM (PEAD — beats consecutivos):
-{earnings_mom_block}
-
-ATIVIDADE INSIDER (Form 4 SEC, últimos 30d):
-{insider_block}
-
-NOTÍCIAS DE HOJE ({len(news)} headlines top-relevância):
-{news_block}
-
-REGRA DE OUTPUT (recap):
-- `plan_recommendations`: UMA entrada por CADA ativo listado em "PLANO DE ALOCAÇÃO ALVO" — sem exceções, sem saltar nenhum. Mesmo que a leitura seja neutra usa "hold"/"watch".
-- `new_ideas`: alvo de 8-12 ideias FORA do plano. Aceita conviction="high" (≥3 sinais convergentes) OU "medium" (≥2 sinais positivos). Diversifica setores (mega-cap tech, financeiro, healthcare, industrial, energia, semicondutores, ETFs sectoriais, ouro). Cada `thesis` em 1 frase ≤150 caracteres — sê seco para caber tudo na resposta.
-
-Com base APENAS no que está acima, dá sugestões. USA SEMPRE:
-- regime de mercado (P risk-off ≥ 0.65 → reduz beta; ≤ 0.35 → adiciona risco)
-- regime macro para escolher entre risk-on (beta, growth, crypto) e risk-off (defensivos, gold)
-- on-chain (MVRV>3.5 = topo cycle BTC; funding alto = risco de squeeze)
-- funding persistence (5+d longs pagando >15% anual ⇒ contrarian short setup; vice-versa)
-- earnings iminentes (≤7d) → preferir HOLD/WATCH em vez de BUY
-- earnings momentum PEAD (3+ beats consecutivos com surprise médio >5% ⇒ drift positivo 60d)
-- fundamentals (P/E vs setor, ROE alto, debt baixo)
-- atividade insider (cluster buys = bullish; cluster sells = caution)
-- sentimento de notícias agregado (avg muito negativo ⇒ contrarian opportunity?)
-- sentiment delta (z >= +1.5 = swing positivo; z <= -1.5 = capitulação possível)
-- anomaly hoje (movimento >3σ ⇒ verificar catalisador antes de entrar)
-- RSI extremos, momentum P>70, posição vs SMA200
-Cita pelo menos 1 dado quantitativo concreto em CADA thesis. Devolve o JSON pedido."""
+def _score_extra_ideas(
+    parsed: dict,
+    market_data: dict,
+    ctx: dict,
+    monthly_budget: float,
+    *,
+    plan_tickers: set[str],
+    existing: set[str],
+    excluded: set[str],
+    earnings: dict | None,
+) -> list[dict]:
+    """LLM-proposed extra_ideas go back through the engine: scored + gated. Only
+    those that survive as 'buy'/'watch' (and aren't excluded/duplicate) are kept."""
+    extras = parsed.get("extra_ideas")
+    if not isinstance(extras, list):
+        return []
+    out: list[dict] = []
+    for e in extras:
+        if not isinstance(e, dict):
+            continue
+        ticker = (e.get("ticker") or "").strip().upper()
+        if not ticker or ticker in plan_tickers or ticker in existing or ticker in excluded:
+            continue
+        asset_type = (e.get("asset_type") or "").strip().lower() or _guess_asset_type(ticker, None)
+        metrics = market_data.get(ticker) or {}
+        if not metrics or metrics.get("source") in ("none", "error"):
+            continue
+        scored = se.score_asset(ticker, asset_type, metrics, ctx)
+        d2e = (earnings or {}).get(ticker) or {}
+        days = d2e.get("days_until") if isinstance(d2e, dict) else None
+        action, gates = se.decide_action(scored, metrics, days)
+        if action == "skip":
+            continue
+        amount = se.size_new_idea(metrics, monthly_budget) if action == "buy" else 0
+        out.append({
+            **scored,
+            "name": ticker,
+            "action": action,
+            "conviction": se.conviction_from_score(scored["score"]),
+            "amount_eur": amount,
+            "gates_triggered": gates,
+            "days_to_earnings": days if isinstance(days, int) else None,
+            "is_plan_asset": False,
+            "engine": True,
+            "llm_proposed": True,
+            "thesis": (e.get("thesis") or _fallback_thesis(scored)).strip(),
+            "sector": _classify_sector(ticker, asset_type),
+        })
+        existing.add(ticker)
+    return out
 
 
 class AgentTransientError(Exception):
@@ -826,6 +871,7 @@ class GenerateRequest(BaseModel):
     extra_question: str = ""
     plan_only: bool = False  # Quando True: foca só nos ativos do plano (sem watchlist, sem new_ideas) e não persiste
     excluded_tickers: list[str] = []  # tickers que o utilizador rejeitou — não devem voltar em new_ideas
+    skip_if_exists_today: bool = False  # job diário: se já há sinal hoje, devolve-o em vez de gastar nova geração
 
 
 class AnalyzePlanRequest(BaseModel):
@@ -867,124 +913,6 @@ def latest_signal(db: Session = Depends(get_db)):
     if not s:
         return None
     return _serialize(s)
-
-
-def _assemble_suggestions(
-    parsed: dict,
-    plan_assets: list[dict],
-    *,
-    plan_only: bool = False,
-    monthly_budget: float = 0,
-) -> list[dict]:
-    """Combine plan_recommendations + new_ideas into a single annotated list.
-
-    - Marks each entry with `is_plan_asset` (True/False).
-    - Guarantees coverage: every plan asset has an entry; missing ones get a
-      fallback. In plan_only mode (DCA) o fallback é "buy" com amount = %×budget;
-      caso contrário é "watch" / amount=0.
-    - Drops new_ideas whose conviction is not "high" (only confident extras pass).
-    - Backwards compat: if the agent returns the old `suggestions` array,
-      treats it as a single list and tags entries by ticker membership.
-    """
-    plan_index: dict[str, dict] = {p["ticker"].upper(): p for p in plan_assets if p.get("ticker")}
-
-    plan_recs = parsed.get("plan_recommendations")
-    new_ideas = parsed.get("new_ideas")
-
-    # Legacy fallback: agent returned old single `suggestions` array
-    if plan_recs is None and new_ideas is None:
-        legacy = parsed.get("suggestions") or []
-        plan_recs = [s for s in legacy if isinstance(s, dict) and (s.get("ticker") or "").upper() in plan_index]
-        new_ideas = [s for s in legacy if isinstance(s, dict) and (s.get("ticker") or "").upper() not in plan_index]
-
-    plan_recs = [s for s in (plan_recs or []) if isinstance(s, dict)]
-    new_ideas = [s for s in (new_ideas or []) if isinstance(s, dict)]
-
-    # Tag plan_recs and dedupe by ticker (keep first)
-    out: list[dict] = []
-    seen_plan: set[str] = set()
-    for s in plan_recs:
-        t = (s.get("ticker") or "").upper()
-        if not t or t in seen_plan:
-            continue
-        seen_plan.add(t)
-        s = dict(s)
-        s["is_plan_asset"] = True
-        out.append(s)
-
-    # Backfill missing plan assets. Em plan_only (DCA mensal) defaultamos a "buy" com o montante do plano;
-    # noutros casos mantemos "watch" para não forçar compras.
-    for ticker_upper, p in plan_index.items():
-        if ticker_upper in seen_plan:
-            continue
-        if plan_only:
-            pct = float(p.get("percentage") or 0)
-            amount = round((pct / 100) * monthly_budget) if monthly_budget else 0
-            out.append({
-                "ticker": p["ticker"],
-                "name": p.get("name") or p["ticker"],
-                "asset_type": p.get("asset_type", "stock"),
-                "action": "buy",
-                "conviction": "medium",
-                "amount_eur": amount,
-                "thesis": f"DCA mensal por defeito — {pct:.0f}% × {monthly_budget:.0f}€ = {amount}€. A IA não devolveu leitura específica para este ativo.",
-                "is_plan_asset": True,
-                "auto_filled": True,
-            })
-        else:
-            out.append({
-                "ticker": p["ticker"],
-                "name": p.get("name") or p["ticker"],
-                "asset_type": p.get("asset_type", "stock"),
-                "action": "watch",
-                "conviction": "low",
-                "amount_eur": 0,
-                "thesis": "Sem leitura clara nos dados de hoje — manter posição e DCA conforme plano.",
-                "is_plan_asset": True,
-                "auto_filled": True,
-            })
-
-    # New ideas: aceita high + medium (low é descartado por ser ruído), dedupe vs plan
-    for s in new_ideas:
-        t = (s.get("ticker") or "").upper()
-        if not t or t in plan_index:
-            continue
-        if (s.get("conviction") or "").lower() not in ("high", "medium"):
-            continue
-        s = dict(s)
-        s["is_plan_asset"] = False
-        out.append(s)
-
-    return out
-
-
-def _score_suggestion(sug: dict) -> int:
-    """Score 0-100 indicando quão forte é a sugestão.
-
-    Base por convicção (high=85, medium=60, low=35), penalizada por quality_flags.
-    Pequeno bónus para 'buy' com tese rica (>180 chars) — proxy de tese substanciada.
-    """
-    conviction = (sug.get("conviction") or "").lower()
-    base = {"high": 85, "medium": 60, "low": 35}.get(conviction, 40)
-
-    flags = sug.get("quality_flags") or []
-    penalty = 0
-    flag_weights = {
-        "ticker_invalid": 40,
-        "contradiction": 25,
-        "weak_conviction": 15,
-        "unverified_numbers": 10,
-        "amount_over_budget": 5,
-    }
-    for f in flags:
-        key = f.split(":")[0]
-        penalty += flag_weights.get(key, 5)
-
-    bonus = 0
-    if (sug.get("action") or "").lower() == "buy" and len(sug.get("thesis") or "") >= 180:
-        bonus = 5
-
-    return max(0, min(100, base - penalty + bonus))
 
 
 # ── Decision gates ──────────────────────────────────────────────
@@ -1236,6 +1164,22 @@ async def generate_signal(body: GenerateRequest = GenerateRequest(), db: Session
     força new_ideas vazio e não persiste o sinal — usado pela página Planeamento.
     """
     loop = asyncio.get_event_loop()
+
+    # Idempotência (job diário): se já existe um sinal gerado hoje, devolve-o em vez
+    # de gastar dados + chamada IA. O botão manual não passa esta flag → gera sempre.
+    if body.skip_if_exists_today and not body.plan_only:
+        today = datetime.now().date()
+        existing_today = (
+            db.query(InvestmentSignal)
+            .filter(InvestmentSignal.generated_at >= datetime(today.year, today.month, today.day))
+            .order_by(InvestmentSignal.generated_at.desc())
+            .first()
+        )
+        if existing_today:
+            out = _serialize(existing_today)
+            out["skipped_existing"] = True
+            return out
+
     portfolio = _portfolio_snapshot(db)
 
     # Modo plan_only: candidate_tickers fica restrito aos tickers do plano (para o prompt focar aí),
@@ -1300,110 +1244,113 @@ async def generate_signal(body: GenerateRequest = GenerateRequest(), db: Session
     funding_btc = await loop.run_in_executor(None, compute_funding_persistence, "BTC")
     funding_eth = await loop.run_in_executor(None, compute_funding_persistence, "ETH")
 
-    user_prompt = _build_user_prompt(
-        portfolio, top_news, sentiment, market_data, macro,
-        onchain=onchain, fundamentals=fundamentals, earnings=earnings,
-        insider=insider, news_sentiment_agg=news_sentiment_agg,
-        regime=regime, earnings_momentum=earnings_momentum,
-        sentiment_delta=sentiment_delta,
-        funding_btc=funding_btc, funding_eth=funding_eth,
-    )
     excluded_set: set[str] = {t.strip().upper() for t in (body.excluded_tickers or []) if t and t.strip()}
-    if excluded_set:
-        user_prompt += (
-            f"\n\nEXCLUSÕES DO UTILIZADOR (NÃO sugerir em new_ideas, sob NENHUMA circunstância): "
-            f"{', '.join(sorted(excluded_set))}. Escolhe alternativas diferentes."
-        )
-    if body.plan_only:
-        user_prompt += (
-            "\n\nMODO PLAN-ONLY (decisão mensal de DCA):\n"
-            "FILOSOFIA: DCA é não-fazer-market-timing. O default é COMPRAR conforme o plano. "
-            "Saltar reforço por causa de RSI alto = market timing, e estudos mostram que retail "
-            "perde para DCA constante. Por isso a regra:\n"
-            "\n"
-            "Para CADA ativo do plano:\n"
-            f"  - action='buy' (DEFAULT) → REFORÇAR este mês. amount_eur = round(% × budget mensal). NUNCA <{MIN_BUY_AMOUNT_EUR}€.\n"
-            f"  - action='buy' com amount REDUZIDO → se houver razão técnica forte (RSI>70 + próximo ATH + earnings em ≤7d), reduzes o amount para 50% do plano (mas NUNCA <{MIN_BUY_AMOUNT_EUR}€). NÃO saltas para 0.\n"
-            "  - action='hold' → SÓ se o utilizador já está sobreexposto e sinais técnicos são MUITO negativos (RSI>80 + abaixo SMA50 + sentiment negativo). Justificar com 3+ métricas.\n"
-            "  - action='watch' → SÓ para earnings em ≤7d (evento binário). Não usar para 'achar que pode cair'.\n"
-            "\n"
-            "Em dúvida, escolhe 'buy' (a filosofia DCA é não-timing). Pull-the-trigger sobre 'hold'/'watch' tem de ser muito justificada.\n"
-            "\n"
-            "NEW IDEAS (fora do plano):\n"
-            "- SEM QUOTAS. Devolve só o que tem setup real. 0 ideias é aceitável se não houver oportunidades.\n"
-            "- Sem cobertura sectorial obrigatória.\n"
-            "- Cada 'buy' TEM de cumprir as gates: RSI<70, earnings>14d, ≥2 famílias de sinais cruzadas. Caso contrário será rejeitado pelo backend.\n"
-            "- TESE CURTA — 1 frase de ≤150 caracteres com 2-3 métricas de famílias diferentes."
-        )
+
+    # ── Engine decides (deterministic) ──────────────────────────
+    # Calibration feedback: family weights nudged by track record + summary blurb.
+    fam_weights = await loop.run_in_executor(None, cf.adjusted_family_weights, se.FAMILY_WEIGHTS)
+    calibration_summary = await loop.run_in_executor(None, cf.calibration_summary_for_prompt)
+
+    ctx = _build_engine_ctx(
+        fundamentals=fundamentals, earnings=earnings, earnings_momentum=earnings_momentum,
+        insider=insider, onchain=onchain, funding_btc=funding_btc, funding_eth=funding_eth,
+        sentiment_agg=news_sentiment_agg, sentiment_delta=sentiment_delta, regime=regime,
+        family_weights=fam_weights,
+    )
+    budget_val = portfolio.get("monthly_budget", 300) or 300
+    engine_out = se.engine_generate(
+        portfolio.get("plan_assets") or [],
+        deduped,
+        market_data,
+        ctx,
+        budget_val,
+        plan_only=body.plan_only,
+        exclude=excluded_set,
+        top_n=6 if body.plan_only else 12,
+    )
+    plan_candidates = engine_out["plan"]
+    new_idea_candidates = engine_out["new_ideas"]
+
+    # ── LLM narrates (theses + red-team) ────────────────────────
+    market_lines = "\n".join(
+        format_metrics_for_prompt(m) for m in market_data.values()
+        if m.get("source") not in ("none", "error")
+    )
+    news_lines = "\n".join(f"- [{n['source']}] {n['title'][:140]}" for n in top_news[:20])
+    context_block = "\n".join([
+        "REGIME:", format_regime_for_prompt(regime),
+        "MACRO:", format_macro_for_prompt(macro),
+        "ON-CHAIN:", format_onchain_for_prompt(onchain),
+        "SENTIMENT NOTÍCIAS:", format_sentiment_for_prompt(news_sentiment_agg) if news_sentiment_agg else "  (n/d)",
+        "FUNDAMENTALS:", format_fundamentals_for_prompt(fundamentals or {}),
+        "EARNINGS MOMENTUM:", format_earnings_momentum_for_prompt(earnings_momentum or {}),
+        "DADOS QUANTITATIVOS:", market_lines or "  (n/d)",
+        f"NOTÍCIAS ({len(news)} headlines):", news_lines,
+    ])
+    narrator_prompt = _build_narrator_prompt(
+        plan_candidates, new_idea_candidates, portfolio, context_block,
+        calibration_summary, excluded=excluded_set,
+    )
     if body.extra_question.strip():
-        user_prompt += f"\n\nPERGUNTA EXTRA DO UTILIZADOR: {body.extra_question.strip()}"
+        narrator_prompt += f"\n\nPERGUNTA EXTRA DO UTILIZADOR: {body.extra_question.strip()}"
 
+    llm_failed = False
+    raw = ""
     try:
-        raw = await _call_agent(SYSTEM_PROMPT, user_prompt)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Agent call failed: {e}")
-        raise HTTPException(status_code=502, detail=f"Erro a contactar o agente IA: {e}")
-
-    try:
+        raw = await _call_agent(SYSTEM_PROMPT, narrator_prompt)
         parsed = _extract_json(raw)
-    except ValueError as e:
-        raise HTTPException(status_code=502, detail=f"Resposta sem JSON válido ({e}): {raw[:300]}")
+    except Exception as e:
+        # Graceful degradation: the engine already decided everything — fall back to
+        # deterministic theses so a flaky LLM never blocks the signal.
+        logger.warning(f"Narrator LLM falhou ({e}); a usar teses determinísticas")
+        llm_failed = True
+        parsed = {"headline": "Sinais do motor (sem narração IA)", "market_summary": "", "theses": [], "extra_ideas": []}
 
     sources = [{"title": n["title"], "url": n["url"], "source": n["source"]} for n in news[:50]]
-    # Defensiva: descarta da resposta da IA quaisquer new_ideas em ativos excluídos
-    if excluded_set and isinstance(parsed.get("new_ideas"), list):
-        parsed["new_ideas"] = [
-            s for s in parsed["new_ideas"]
-            if isinstance(s, dict) and (s.get("ticker") or "").strip().upper() not in excluded_set
-        ]
-    # Em plan_only mantemos new_ideas se a IA tiver convicção alta — são oportunidades fora do plano
-    # que o utilizador pode considerar adicionar. _assemble_suggestions já filtra por conviction=high.
-    # Combine plan_recommendations + new_ideas into a single annotated list
-    # (with `is_plan_asset` flag, plan-asset backfill, high-conviction-only extras).
-    suggestions_raw = _assemble_suggestions(
-        parsed,
-        portfolio.get("plan_assets") or [],
-        plan_only=body.plan_only,
-        monthly_budget=portfolio.get("monthly_budget", 0),
-    )
-    # 1. Quality guards
-    validated = await loop.run_in_executor(
-        None, validate_suggestions, suggestions_raw, user_prompt, portfolio.get("monthly_budget")
-    )
-    # Re-stamp the marker (validate_suggestions copies the dict but preserves keys) + score + sector
+
+    # ── Merge engine candidates + LLM theses, then re-score LLM extra ideas ──
+    merged = _merge_engine_with_theses(plan_candidates, new_idea_candidates, parsed)
     plan_tickers = {(p.get("ticker") or "").upper() for p in (portfolio.get("plan_assets") or [])}
-    valid_sectors = set(SECTOR_MAP.values()) | {"Crypto", "ETF Amplo", "ETF Sectorial", "Outro"}
-    for v in validated:
-        v.setdefault("is_plan_asset", (v.get("ticker") or "").upper() in plan_tickers)
-        v["score"] = _score_suggestion(v)
-        # Sector: confia no que a IA devolveu se for um valor válido; caso contrário re-classifica.
-        ai_sector = (v.get("sector") or "").strip()
-        if ai_sector not in valid_sectors:
-            v["sector"] = _classify_sector(v.get("ticker"), v.get("asset_type"))
-    # 2. Enrich with current price → price_at_generation
+    existing = {c["ticker"].upper() for c in merged}
+    extras = _score_extra_ideas(
+        parsed, market_data, ctx, budget_val,
+        plan_tickers=plan_tickers, existing=existing,
+        excluded=excluded_set, earnings=earnings,
+    )
+    suggestions_raw = merged + extras
+
+    # 1. Quality guards (engine families are preserved; numbers now come from the engine)
+    validated = await loop.run_in_executor(
+        None, validate_suggestions, suggestions_raw, context_block, portfolio.get("monthly_budget")
+    )
+    # 2. Empirical confidence: blend the model confidence with the bucket's hit-rate.
+    emp_stats = await loop.run_in_executor(None, cf.empirical_stats)
+    validated = [cf.blend_confidence(v, emp_stats) for v in validated]
+    # 4. Enrich with current price → price_at_generation
     enriched = await loop.run_in_executor(None, _enrich_suggestions_with_prices, validated)
-    # 3. Risk overlays: stop loss, vol-targeted sizing, position warnings
+    # 5. Risk overlays: stop loss, vol-targeted sizing, position warnings
     overlaid = apply_risk_overlays(
         enriched, market_data,
         monthly_budget=portfolio.get("monthly_budget", 300),
         total_portfolio_value=portfolio.get("total_value", 0),
     )
-    # 4. Anotar earnings proximity (days_to_earnings) para feed às gates
+    # 6. Anotar earnings proximity (days_to_earnings) — o motor já gated, isto é só anotação UI.
     overlaid = _annotate_earnings_proximity(overlaid, earnings)
-    # 5. Decision gates: filtros duros que convertem 'buy' problemáticos para 'watch'.
-    #    Aplica-se SÓ a new_ideas; plan_assets passam (DCA é DCA).
+    # 7. Decision gates: shared-budget gate + safety re-check on LLM extra ideas.
+    #    Plan assets passam (DCA é DCA); engine new_ideas já passaram as gates ex-ante.
     gated = apply_decision_gates(
         overlaid, market_data,
         monthly_budget=portfolio.get("monthly_budget"),
     )
-    # 6. Auto-critique para buys com confidence<60% — última passagem antes de persistir.
+    # 8. Auto-critique para buys com confidence<60% — última passagem antes de persistir.
     suggestions = await _run_auto_critique(
         gated,
         headline=str(parsed.get("headline", "")),
         market_summary=str(parsed.get("market_summary", "")),
     )
+    if llm_failed:
+        for s in suggestions:
+            s["llm_narration_failed"] = True
 
     # Total de buys (para o user perceber compromisso vs budget)
     monthly_budget_val = portfolio.get("monthly_budget", 0) or 0
@@ -1413,7 +1360,7 @@ async def generate_signal(body: GenerateRequest = GenerateRequest(), db: Session
         if (s.get("action") or "").lower() == "buy"
     ), 2)
 
-    prompt_hash = hashlib.sha256(user_prompt.encode("utf-8")).hexdigest()[:16]
+    prompt_hash = hashlib.sha256(narrator_prompt.encode("utf-8")).hexdigest()[:16]
 
     if body.plan_only:
         # Análise do plano — não vai para o histórico de Sinais IA, mas sim para a tabela
@@ -1468,6 +1415,21 @@ async def generate_signal(body: GenerateRequest = GenerateRequest(), db: Session
     out["fundamentals_count"] = sum(1 for f in (fundamentals or {}).values() if f.get("available"))
     out["insider_count"] = sum(1 for i in (insider or {}).values() if i.get("available"))
     out["quality_summary"] = summarize_flags(suggestions)
+    out["engine_version"] = ENGINE_VERSION
+    out["llm_narration_failed"] = llm_failed
+    out["family_weights"] = fam_weights
+
+    # Job diário: notifica (Telegram, se configurado) o resumo do sinal do dia.
+    if body.skip_if_exists_today and not body.plan_only:
+        try:
+            n_buys = sum(1 for s in suggestions if (s.get("action") or "").lower() == "buy")
+            notify(
+                "Sinais IA do dia",
+                f"{out.get('headline', '')} — {n_buys} compras, {total_buy_eur:.0f}€ alocados de {monthly_budget_val:.0f}€.",
+                severity="info",
+            )
+        except Exception as e:
+            logger.debug(f"daily notify failed: {e}")
     return out
 
 
@@ -1805,6 +1767,41 @@ Identifica fraquezas em cada uma. Devolve o JSON pedido."""
     return _serialize(s)
 
 
+@router.get("/market-pulse")
+def market_pulse():
+    """Drawdown do índice amplo (VUAA) para o nudge de DCA. A evidência é clara:
+    manter o DCA em correções sustentadas compensa; esperar a queda perde >60% das
+    vezes. Cacheado 4h — é um sinal de ambiente, não precisa de ser ao minuto."""
+    CACHE_KEY = "invest:market_pulse"
+    cached = cache_get(CACHE_KEY)
+    if cached is not None:
+        return cached
+
+    try:
+        m = fetch_metrics("VUAA", "etf")
+        dd_pct = (m.get("drawdown") or {}).get("current_dd_pct")
+    except Exception:
+        dd_pct = None
+
+    if dd_pct is None:
+        result = {"available": False}
+    else:
+        # dd_pct negativo = % abaixo do topo de 52 semanas.
+        if dd_pct <= -10:
+            level = "deep"
+            hint = "O mercado está bem abaixo do topo. Manter o DCA em correções profundas compensou historicamente (ex.: 2008-09) — boa altura para meter o budget, não para esperar mais."
+        elif dd_pct <= -5:
+            level = "dip"
+            hint = "Pequena correção em curso. Investir já costuma bater esperar a queda — mete o budget do costume."
+        else:
+            level = "normal"
+            hint = "Mercado perto do topo. Não esperes pela queda (esperar perde >60% das vezes) — mantém o teu DCA."
+        result = {"available": True, "drawdown_pct": dd_pct, "level": level, "hint": hint}
+
+    cache_set(CACHE_KEY, result, 4 * 3600)
+    return result
+
+
 @router.get("/alerts")
 def alerts_endpoint(db: Session = Depends(get_db)):
     """Triage of action-worthy events from existing signals + upcoming earnings.
@@ -1981,6 +1978,7 @@ def _collect_outcomes(db: Session) -> list[dict]:
                 "pct_since_generation": pct,
                 "days_since_signal": days,
                 "quality_flags": sug.get("quality_flags") or [],
+                "is_plan_asset": bool(sug.get("is_plan_asset")),
             })
     return rows
 
@@ -2422,6 +2420,18 @@ def backtest_vs_spy(db: Session = Depends(get_db), benchmark: str = "spy"):
             "avg_alpha_pct": round(sum(e["alpha_pct"] for e in rs) / len(rs), 2),
         }
 
+    # Honestidade do satélite ativo: o alpha das ideias FORA do plano é o que diz
+    # se o stock-picking discricionário vale a pena vs simplesmente fazer DCA ao plano.
+    new_ideas = [e for e in enriched if not e.get("is_plan_asset")]
+    satellite = None
+    if new_ideas:
+        nn = len(new_ideas)
+        satellite = {
+            "n": nn,
+            "avg_alpha_pct": round(sum(e["alpha_pct"] for e in new_ideas) / nn, 2),
+            "beat_benchmark_pct": round(sum(1 for e in new_ideas if e["beat_benchmark"]) / nn * 100, 1),
+        }
+
     return {
         "sample_size": n,
         "benchmark": benchmark,
@@ -2429,6 +2439,7 @@ def backtest_vs_spy(db: Session = Depends(get_db), benchmark: str = "spy"):
         "hit_rate_vs_benchmark_pct": hit_pct,
         "avg_alpha_pct": avg_alpha,
         "by_conviction": by_conviction,
+        "satellite": satellite,
         "rows": enriched[-30:],
         "benchmark_now": round(bench_now, 4),
     }

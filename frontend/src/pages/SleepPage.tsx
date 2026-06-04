@@ -14,7 +14,8 @@ export default function SleepPage() {
   const [stats, setStats] = useState<SleepStats | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [editingEntry, setEditingEntry] = useState<SleepEntry | null>(null);
-  const [statsDays, setStatsDays] = useState(30);
+  const [period, setPeriod] = useState<number | 'all'>(30);
+  const ALL_DAYS = 36500;
 
   const [form, setForm] = useState({
     date: format(new Date(), 'yyyy-MM-dd'),
@@ -28,14 +29,16 @@ export default function SleepPage() {
   const [estimateError, setEstimateError] = useState<string | null>(null);
   const [estimateInfo, setEstimateInfo] = useState<string | null>(null);
 
-  useEffect(() => { loadData(); }, [statsDays]);
+  useEffect(() => { loadData(); }, [period]);
 
   async function loadData() {
-    const start = format(subDays(new Date(), statsDays), 'yyyy-MM-dd');
-    const end = format(new Date(), 'yyyy-MM-dd');
+    const isAll = period === 'all';
+    const listParams = isAll
+      ? undefined
+      : { start_date: format(subDays(new Date(), period), 'yyyy-MM-dd'), end_date: format(new Date(), 'yyyy-MM-dd') };
     const [entriesData, statsData] = await Promise.all([
-      sleepApi.list({ start_date: start, end_date: end }),
-      sleepApi.stats(statsDays),
+      sleepApi.list(listParams),
+      sleepApi.stats(isAll ? ALL_DAYS : period),
     ]);
     setEntries(entriesData);
     setStats(statsData);
@@ -132,12 +135,12 @@ export default function SleepPage() {
         </div>
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-1 bg-[#161616] rounded-xl border border-[#222] p-1">
-            {[7, 14, 30, 90].map(d => (
-              <button key={d} onClick={() => setStatsDays(d)}
+            {([7, 14, 30, 90, 'all'] as const).map(d => (
+              <button key={d} onClick={() => setPeriod(d)}
                 className={`px-3 py-1.5 text-xs rounded-lg transition-all ${
-                  statsDays === d ? 'bg-white/10 text-white' : 'text-gray-500 hover:text-white'
+                  period === d ? 'bg-white/10 text-white' : 'text-gray-500 hover:text-white'
                 }`}>
-                {d}d
+                {d === 'all' ? 'Tudo' : `${d}d`}
               </button>
             ))}
           </div>
@@ -230,14 +233,15 @@ export default function SleepPage() {
         {/* Recent entries */}
         <div>
           <div className="bg-[#161616] rounded-2xl border border-[#222] overflow-hidden">
-            <div className="p-4 border-b border-[#222]">
-              <h3 className="text-sm font-medium text-gray-300">Entradas Recentes</h3>
+            <div className="p-4 border-b border-[#222] flex items-center justify-between">
+              <h3 className="text-sm font-medium text-gray-300">Entradas{period === 'all' ? '' : ' Recentes'}</h3>
+              {entries.length > 0 && <span className="text-xs text-gray-600">{entries.length}</span>}
             </div>
-            <div className="divide-y divide-[#1a1a1a]">
+            <div className="divide-y divide-[#1a1a1a] max-h-[520px] overflow-y-auto">
               {entries.length === 0 ? (
                 <div className="p-6 text-center text-gray-600 text-sm">Sem entradas</div>
               ) : (
-                entries.slice(0, 10).map(entry => (
+                entries.map(entry => (
                   <div key={entry.id} onClick={() => openEdit(entry)}
                     className="flex items-center gap-3 p-3 hover:bg-white/5 cursor-pointer">
                     <div className="w-10 h-10 rounded-xl flex items-center justify-center text-lg"
@@ -245,7 +249,12 @@ export default function SleepPage() {
                       {entry.hours >= 7 ? '😴' : entry.hours >= 5 ? '😐' : '😵'}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium">{entry.hours}h</p>
+                      <p className="text-sm font-medium flex items-center gap-1.5">
+                        {entry.hours}h
+                        {entry.source === 'auto' && (
+                          <span className="text-[9px] uppercase tracking-wide text-purple-300/80 bg-purple-500/15 px-1.5 py-0.5 rounded-full">auto</span>
+                        )}
+                      </p>
                       <p className="text-xs text-gray-500">
                         {format(new Date(entry.date), "d 'de' MMM", { locale: pt })}
                         {entry.bedtime && entry.wake_time && (
@@ -318,9 +327,15 @@ export default function SleepPage() {
                 </div>
               </div>
 
-              <div className="bg-[#222] rounded-xl p-3 text-center">
-                <p className="text-2xl sm:text-3xl font-bold text-purple-400">{form.hours}h</p>
-                <p className="text-xs text-gray-500">de sono</p>
+              <div className="bg-[#222] rounded-xl p-3 flex items-center justify-center gap-2">
+                <input
+                  type="number" step="0.1" min="0" max="24"
+                  value={form.hours}
+                  onChange={e => setForm(f => ({ ...f, hours: parseFloat(e.target.value) || 0 }))}
+                  className="w-24 bg-transparent text-2xl sm:text-3xl font-bold text-purple-400 text-right focus:outline-none"
+                />
+                <span className="text-2xl sm:text-3xl font-bold text-purple-400">h</span>
+                <span className="text-xs text-gray-500 ml-1">de sono<br />(ajustável)</span>
               </div>
 
               <div>

@@ -19,7 +19,9 @@ from cache import cached
 
 logger = logging.getLogger(__name__)
 
-FMP_BASE = "https://financialmodelingprep.com/api/v3"
+# API "stable" da FMP. Os endpoints v3 (profile/{t}, ratios-ttm/{t}) foram
+# descontinuados em 2025-08-31 (403 "Legacy Endpoint"). A stable usa ?symbol=.
+FMP_BASE = "https://financialmodelingprep.com/stable"
 
 # In-memory daily cache: ticker → metrics (avoid burning budget on hot reloads)
 _FMP_CACHE: dict[str, dict] = {}
@@ -65,12 +67,16 @@ def fetch_fundamentals(ticker: str) -> dict:
         return _FMP_CACHE[t]
 
     # 1. Profile (sector, industry, market cap, beta)
-    profile = _get(f"profile/{t}")
+    profile = _get("profile", {"symbol": t})
     profile_row = profile[0] if isinstance(profile, list) and profile else {}
 
-    # 2. Ratios TTM (P/E, P/B, ROE, debt/equity, etc.)
-    ratios = _get(f"ratios-ttm/{t}")
+    # 2. Ratios TTM (P/E, P/B, debt/equity, margens, dividend yield)
+    ratios = _get("ratios-ttm", {"symbol": t})
     ratios_row = ratios[0] if isinstance(ratios, list) and ratios else {}
+
+    # 3. Key metrics TTM (ROE/ROIC/EV-EBITDA vivem aqui na API stable)
+    kmetrics = _get("key-metrics-ttm", {"symbol": t})
+    km_row = kmetrics[0] if isinstance(kmetrics, list) and kmetrics else {}
 
     if not profile_row and not ratios_row:
         out: dict = {"ticker": t, "available": False}
@@ -82,22 +88,20 @@ def fetch_fundamentals(ticker: str) -> dict:
             "sector": profile_row.get("sector"),
             "industry": profile_row.get("industry"),
             "country": profile_row.get("country"),
-            "market_cap": profile_row.get("mktCap"),
+            "market_cap": profile_row.get("marketCap") or km_row.get("marketCap"),
             "beta": profile_row.get("beta"),
-            # FMP returns lastDiv as the most recent dividend in $, not yield.
-            "last_dividend_usd": profile_row.get("lastDiv"),
-            # Real yield: from ratios endpoint when available
-            "dividend_yield_pct": (ratios_row.get("dividendYielTTM") or ratios_row.get("dividendYieldTTM")),
-            "pe_ttm": ratios_row.get("priceEarningsRatioTTM"),
+            "last_dividend_usd": profile_row.get("lastDividend"),
+            "dividend_yield_pct": ratios_row.get("dividendYieldTTM"),
+            "pe_ttm": ratios_row.get("priceToEarningsRatioTTM"),
             "pb_ttm": ratios_row.get("priceToBookRatioTTM"),
-            "ev_ebitda": ratios_row.get("enterpriseValueMultipleTTM"),
-            "roe_ttm": ratios_row.get("returnOnEquityTTM"),
-            "roic_ttm": ratios_row.get("returnOnCapitalEmployedTTM"),
-            "debt_equity": ratios_row.get("debtEquityRatioTTM"),
+            "ev_ebitda": km_row.get("evToEBITDATTM"),
+            "roe_ttm": km_row.get("returnOnEquityTTM"),
+            "roic_ttm": km_row.get("returnOnInvestedCapitalTTM"),
+            "debt_equity": ratios_row.get("debtToEquityRatioTTM"),
             "current_ratio": ratios_row.get("currentRatioTTM"),
             "gross_margin": ratios_row.get("grossProfitMarginTTM"),
             "net_margin": ratios_row.get("netProfitMarginTTM"),
-            "fcf_yield": ratios_row.get("freeCashFlowYieldTTM"),
+            "fcf_yield": km_row.get("freeCashFlowYieldTTM"),
         }
     _FMP_CACHE[t] = out
     return out

@@ -5,13 +5,9 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 from datetime import date as date_type
-import httpx
-import json
-import re
-import uuid
 import logging
 
-from ai_config import AI_API_URL, AI_API_KEY, AI_CHANNEL_ID
+from ai_config import ask_agent_async, extract_json
 
 router = APIRouter(prefix="/api/ideas", tags=["Ideas"])
 logger = logging.getLogger(__name__)
@@ -62,61 +58,14 @@ Texto:
 {text}
 \"\"\""""
 
-    thread_id = uuid.uuid4().hex[:20]
-    try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(
-                AI_API_URL,
-                headers={"x-api-key": AI_API_KEY},
-                data={
-                    "channel_id": AI_CHANNEL_ID,
-                    "thread_id": thread_id,
-                    "user_info": "{}",
-                    "message": prompt,
-                },
-            )
-            if response.status_code != 200:
-                logger.warning(f"Ideas AI failed: HTTP {response.status_code}")
-                raise HTTPException(status_code=502, detail="AI indisponível")
-
-            full_text = ""
-            token_text = ""
-            for line in response.text.split("\n"):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    event = json.loads(line)
-                    if event.get("type") == "message":
-                        content = event.get("content", {})
-                        if isinstance(content, dict):
-                            full_text = content.get("content", "")
-                        else:
-                            full_text = str(content)
-                        break
-                    elif event.get("type") == "token":
-                        token_text += event.get("content", "")
-                except json.JSONDecodeError:
-                    continue
-            if not full_text:
-                full_text = token_text
-    except httpx.HTTPError as e:
-        logger.warning(f"Ideas AI HTTPError: {e}")
+    full_text = await ask_agent_async(prompt)
+    if not full_text:
         raise HTTPException(status_code=502, detail="AI indisponível")
 
-    code_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', full_text, re.DOTALL)
-    json_str = code_match.group(1) if code_match else None
-    if not json_str:
-        json_match = re.search(r'\{.*\}', full_text, re.DOTALL)
-        if not json_match:
-            logger.warning(f"Ideas AI no JSON: {full_text[:300]}")
-            raise HTTPException(status_code=502, detail="Resposta da IA inválida")
-        json_str = json_match.group()
-
-    try:
-        parsed = json.loads(json_str)
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=502, detail="JSON da IA inválido")
+    parsed = extract_json(full_text)
+    if not isinstance(parsed, dict):
+        logger.warning(f"Ideas AI no JSON: {full_text[:300]}")
+        raise HTTPException(status_code=502, detail="Resposta da IA inválida")
 
     raw_todos = parsed.get("todos") or []
     out: list[ExtractedTodo] = []

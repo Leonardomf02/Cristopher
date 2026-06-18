@@ -18,6 +18,7 @@ import logging
 from database import get_db
 from models import Expense, MonthlyIncome
 from schemas import ExpenseCreate, ExpenseUpdate, ExpenseOut
+from ai_config import AI_API_KEY, ask_agent_async, extract_json
 
 router = APIRouter(prefix="/api/expenses", tags=["Expenses"])
 logger = logging.getLogger(__name__)
@@ -95,10 +96,7 @@ def _auto_categorize(description: str, notes: str = "") -> str:
 
 
 # ── AI Categorization ───────────────────────────────────────────
-
-AI_API_URL = "https://api.iaedu.pt/agent-chat//api/v1/agent/cmamvd3n40000c801qeacoad2/stream"
-AI_API_KEY = os.getenv("AI_API_KEY", "")
-AI_CHANNEL_ID = "cmnauzuoxjik3hv01gjna24hw"
+# Agente IA (URL/key/channel) vem de ai_config — partilhado e já no novo Opus 4.7.
 
 VALID_CATEGORIES = {"food", "groceries", "transport", "entertainment", "subscriptions", "shopping", "health", "bills", "travel", "other"}
 
@@ -204,64 +202,16 @@ Gastos:
 {descriptions_text}"""
 
     try:
-        thread_id = uuid.uuid4().hex[:20]
+        full_text = await ask_agent_async(prompt)
+        if not full_text:
+            logger.warning("AI categorization: resposta vazia/indisponível")
+            return {}
+        logger.info(f"AI response ({len(full_text)} chars): {full_text[:200]}")
 
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(
-                AI_API_URL,
-                headers={"x-api-key": AI_API_KEY},
-                data={
-                    "channel_id": AI_CHANNEL_ID,
-                    "thread_id": thread_id,
-                    "user_info": "{}",
-                    "message": prompt,
-                },
-            )
-
-            if response.status_code != 200:
-                logger.warning(f"AI categorization failed: HTTP {response.status_code}")
-                return {}
-
-            # Parse response — each line is a JSON object with type/content fields
-            # Look for the "message" event which has the full AI response,
-            # or accumulate "token" events as fallback
-            full_text = ""
-            token_text = ""
-            for line in response.text.split("\n"):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    event = json.loads(line)
-                    if event.get("type") == "message":
-                        content = event.get("content", {})
-                        if isinstance(content, dict):
-                            full_text = content.get("content", "")
-                        else:
-                            full_text = str(content)
-                        break
-                    elif event.get("type") == "token":
-                        token_text += event.get("content", "")
-                except json.JSONDecodeError:
-                    continue
-
-            if not full_text:
-                full_text = token_text
-
-            logger.info(f"AI response ({len(full_text)} chars): {full_text[:200]}")
-
-        # Extract JSON — AI may wrap it in ```json ... ```
-        code_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', full_text, re.DOTALL)
-        if code_match:
-            json_str = code_match.group(1)
-        else:
-            json_match = re.search(r'\{[^{}]*\}', full_text, re.DOTALL)
-            if not json_match:
-                logger.warning(f"AI response has no JSON: {full_text[:300]}")
-                return {}
-            json_str = json_match.group()
-
-        result = json.loads(json_str)
+        result = extract_json(full_text)
+        if not isinstance(result, dict):
+            logger.warning(f"AI response has no JSON: {full_text[:300]}")
+            return {}
 
         # Validate and map
         categorized = {}

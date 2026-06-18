@@ -741,3 +741,143 @@ class ScreenTimeDailyApp(Base):
     __table_args__ = (
         UniqueConstraint("date", "device_id", "bundle_id", name="uq_stda_day_dev_bundle"),
     )
+
+
+# ── Deals (caça-deals automático) ────────────────────────────────
+
+class DealWatch(Base):
+    """Uma 'wish' que o utilizador quer monitorizar (ex: 'Yamaha MT-07').
+    De hora a hora as fontes são pesquisadas e a IA avalia/filtra os resultados."""
+    __tablename__ = "deal_watches"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String, nullable=False)              # rótulo humano: "iPhone 17"
+    query = Column(String, nullable=False)              # termos de pesquisa
+    category = Column(String, default="")               # phone, motorcycle, accessory, other (ajuda a IA)
+    condition = Column(String, default="any")           # any | new | used
+    sources = Column(String, default="all")             # all | vinted | csv ("vinted,olx")
+    max_price = Column(Float, nullable=True)            # filtro duro (None = sem limite)
+    min_rating = Column(Integer, default=60)            # só notifica acima disto
+    ai_context = Column(Text, default="")               # "é o normal, NÃO o 17e nem plus"
+    exclude_keywords = Column(Text, default="")         # csv de palavras a excluir (pré-filtro barato)
+    active = Column(Boolean, default=True)
+    last_checked_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+
+
+class DealResult(Base):
+    """Um anúncio encontrado para um DealWatch. Dedupe por (source, external_id)."""
+    __tablename__ = "deal_results"
+
+    id = Column(Integer, primary_key=True, index=True)
+    watch_id = Column(Integer, nullable=False, index=True)
+    source = Column(String, nullable=False)             # vinted | olx
+    external_id = Column(String, nullable=False)        # id do anúncio na fonte
+    title = Column(String, nullable=False, default="")
+    description = Column(Text, default="")
+    price = Column(Float, nullable=True)
+    currency = Column(String, default="EUR")
+    condition = Column(String, default="")              # texto da fonte (Novo/Usado/Muito bom…)
+    url = Column(String, default="")
+    image_url = Column(String, default="")
+    location = Column(String, default="")
+    seller = Column(String, default="")
+    ai_rating = Column(Integer, nullable=True)          # 0-100 (None = ainda não avaliado)
+    ai_match = Column(Boolean, default=True)            # é mesmo o item pedido?
+    ai_reason = Column(Text, default="")                # justificação curta da IA
+    status = Column(String, default="new")              # new | seen | saved | dismissed
+    first_seen_at = Column(DateTime, server_default=func.now())
+    last_seen_at = Column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("source", "external_id", "watch_id", name="uq_deal_src_ext_watch"),
+    )
+
+
+# ── Stories (pesquisas explicadas pela IA) ───────────────────────
+
+class Story(Base):
+    """Um tema que o utilizador mandou explicar (ex: 'o que aconteceu em Chernobyl').
+    Cada nível de profundidade (simples/médio/grande) é gerado on-demand e guardado
+    como um StoryVersion, para alternar sem repetir a chamada à IA."""
+    __tablename__ = "stories"
+
+    id = Column(Integer, primary_key=True, index=True)
+    query = Column(String, nullable=False)              # o que o utilizador escreveu
+    title = Column(String, nullable=False, default="")  # título limpo gerado pela IA
+    last_level = Column(String, nullable=False, default="medium")  # nível visto por último
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class StoryVersion(Base):
+    """A explicação de uma Story a um nível específico. Markdown + fontes web (JSON)."""
+    __tablename__ = "story_versions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    story_id = Column(Integer, nullable=False, index=True)
+    level = Column(String, nullable=False)              # simple | medium | long
+    body = Column(Text, nullable=False, default="")     # explicação em markdown
+    sources = Column(Text, nullable=False, default="[]")  # JSON: [{"title","url"}]
+    created_at = Column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("story_id", "level", name="uq_story_version_level"),
+    )
+
+
+# ── Spotify Curator ──────────────────────────────────────────────
+
+class SpotifyPlaylist(Base):
+    """Playlist importada manualmente (colar ou CSV). A 'vibe' descreve o espírito que
+    a IA usa para curar (ex: 'triste/melancólica', 'rock + hype'). A última análise fica
+    em cache (JSON) para reabrir sem repetir a chamada à IA."""
+    __tablename__ = "spotify_playlists"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    vibe = Column(Text, nullable=False, default="")
+    is_favorites = Column(Boolean, default=False)             # a "playlist" das músicas gostadas
+    last_analysis = Column(Text, nullable=False, default="")  # JSON do último resultado da IA
+    analyzed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class SpotifyTrack(Base):
+    """Uma faixa dentro de uma playlist importada."""
+    __tablename__ = "spotify_tracks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    playlist_id = Column(Integer, nullable=False, index=True)
+    position = Column(Integer, default=0)
+    title = Column(String, nullable=False)
+    artist = Column(String, nullable=False, default="")
+    album = Column(String, nullable=False, default="")
+    spotify_url = Column(String, nullable=False, default="")
+
+
+class SpotifyOverview(Base):
+    """Cache (singleton, id=1) da análise transversal a TODAS as playlists: duplicados,
+    agrupamento por género/mood e recolocações. Recalculada a pedido pelo utilizador."""
+    __tablename__ = "spotify_overview"
+
+    id = Column(Integer, primary_key=True, index=True)
+    last_analysis = Column(Text, nullable=False, default="")  # JSON do último resultado
+    analyzed_at = Column(DateTime, nullable=True)
+
+
+class SpotifySuggestion(Base):
+    """Música nova recomendada para uma playlist OU para um grupo de género da Visão Geral.
+    `accepted` fica True quando o utilizador a 'adiciona' — aí entra na lista a copiar.
+    Se `group_name` estiver preenchido é uma sugestão de grupo (playlist_id fica a 0)."""
+    __tablename__ = "spotify_suggestions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    playlist_id = Column(Integer, nullable=False, index=True)
+    group_name = Column(String, nullable=True, index=True)   # grupo de género (Visão Geral) ou NULL
+    title = Column(String, nullable=False)
+    artist = Column(String, nullable=False, default="")
+    reason = Column(String, nullable=False, default="")
+    accepted = Column(Boolean, default=False)
+    created_at = Column(DateTime, server_default=func.now())

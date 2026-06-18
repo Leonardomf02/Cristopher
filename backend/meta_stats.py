@@ -20,6 +20,47 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# u.gg and LeagueOfGraphs sit behind Cloudflare bot management, which fingerprints
+# the TLS ClientHello — plain httpx (Python's OpenSSL fingerprint) gets a 403, while
+# op.gg/lolalytics let it through. curl_cffi replays a real Chrome TLS fingerprint so
+# those two sources stop 403-ing. If it's not installed we fall back to httpx (the
+# blocked sources just stay empty, same as before — no regression).
+try:
+    from curl_cffi.requests import AsyncSession as _CurlAsyncSession
+    _HAS_CURL = True
+except ImportError:
+    _CurlAsyncSession = None
+    _HAS_CURL = False
+
+
+class _Resp:
+    __slots__ = ("status_code", "text")
+
+    def __init__(self, status_code: int, text: str):
+        self.status_code = status_code
+        self.text = text
+
+
+async def _browser_get(url: str, timeout: float = 15.0) -> "_Resp | None":
+    """GET a page with a browser TLS fingerprint (curl_cffi) to get past Cloudflare.
+    Falls back to httpx when curl_cffi is unavailable. Returns None on transport error."""
+    if _HAS_CURL:
+        try:
+            async with _CurlAsyncSession() as s:
+                r = await s.get(url, impersonate="chrome131", timeout=timeout,
+                                allow_redirects=True)
+            return _Resp(r.status_code, r.text)
+        except Exception as e:
+            logger.warning(f"meta_stats: browser_get {url}: {e}")
+            return None
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            r = await client.get(url, headers=_HEADERS)
+        return _Resp(r.status_code, r.text)
+    except Exception as e:
+        logger.warning(f"meta_stats: browser_get(httpx) {url}: {e}")
+        return None
+
 # All valid source names
 ALL_SOURCES = ("lolalytics", "ugg", "opgg", "leagueofgraphs")
 
@@ -50,8 +91,18 @@ _HEADERS = {
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     ),
-    "Accept": "text/html,application/xhtml+xml",
+    # u.gg returns 403 to bare requests; it gates on the full browser fingerprint
+    # (Sec-Fetch + Sec-Ch-Ua). Send the lot so the scrapers don't get blocked.
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Ch-Ua": '"Chromium";v="131", "Not_A Brand";v="24"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"macOS"',
 }
 
 
@@ -349,11 +400,10 @@ async def _fetch_opgg() -> dict[str, dict] | None:
     Fetch from op.gg champion tier list (Next.js flight data).
     Returns dict mapping lowercase slug -> {wr, pr, br, tier, rank, games}.
     """
-    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-        resp = await client.get(OPGG_URL, headers=_HEADERS)
-        if resp.status_code != 200:
-            logger.error(f"meta_stats: op.gg HTTP {resp.status_code}")
-            return None
+    resp = await _browser_get(OPGG_URL)
+    if resp is None or resp.status_code != 200:
+        logger.error(f"meta_stats: op.gg HTTP {resp.status_code if resp else 'error'}")
+        return None
 
     html = resp.text
 
@@ -425,11 +475,10 @@ async def _fetch_leagueofgraphs() -> dict[str, dict] | None:
     """
     from html import unescape as html_unescape
 
-    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-        resp = await client.get(LOG_URL, headers=_HEADERS)
-        if resp.status_code != 200:
-            logger.error(f"meta_stats: LeagueOfGraphs HTTP {resp.status_code}")
-            return None
+    resp = await _browser_get(LOG_URL)
+    if resp is None or resp.status_code != 200:
+        logger.error(f"meta_stats: LeagueOfGraphs HTTP {resp.status_code if resp else 'error'}")
+        return None
 
     html = resp.text
     # LoG embeds data as HTML-escaped JSON in a Vue.js :items attribute
@@ -606,11 +655,10 @@ def _merge_sources_multi(sources: dict[str, dict[str, dict]]) -> dict[str, dict]
 
 async def _fetch_lolalytics() -> dict[str, dict] | None:
     """Fetch from LoLalytics SSR."""
-    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-        resp = await client.get(LOLALYTICS_URL, headers=_HEADERS)
-        if resp.status_code != 200:
-            logger.error(f"meta_stats: LoLalytics HTTP {resp.status_code}")
-            return None
+    resp = await _browser_get(LOLALYTICS_URL)
+    if resp is None or resp.status_code != 200:
+        logger.error(f"meta_stats: LoLalytics HTTP {resp.status_code if resp else 'error'}")
+        return None
     return _parse_ssr_state(resp.text)
 
 
@@ -621,11 +669,10 @@ async def _fetch_ugg() -> dict[str, dict] | None:
     native tier scoring (stdevs composite) and exact match counts.
     Returns dict mapping lowercase DDragon name -> {wr, pr, br, games, tier, rank}.
     """
-    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-        resp = await client.get(UGG_TIERLIST_URL, headers=_HEADERS)
-        if resp.status_code != 200:
-            logger.error(f"meta_stats: u.gg HTTP {resp.status_code}")
-            return None
+    resp = await _browser_get(UGG_TIERLIST_URL)
+    if resp is None or resp.status_code != 200:
+        logger.error(f"meta_stats: u.gg HTTP {resp.status_code if resp else 'error'}")
+        return None
 
     html = resp.text
 
@@ -730,232 +777,225 @@ def get_average_wr() -> float:
 
 # ── Per-enemy counter scraping ──────────────────────────────────────
 
-_counter_cache: dict[tuple[str, str], tuple[float, list[dict]]] = {}
+_counter_cache: dict[tuple[str, str], tuple[float, dict]] = {}
 COUNTER_CACHE_TTL = 6 * 3600
 
 
 def _slugify_champion(name: str) -> str:
-    """Convert a display name like 'Lee Sin' into op.gg's URL slug 'leesin'."""
+    """Strip a name to alnum-lowercase (e.g. 'Lee Sin' -> 'leesin')."""
     return re.sub(r"[^a-z0-9]", "", name.lower())
 
 
-async def _fetch_opgg_counters(slug: str, role: str) -> list[dict]:
-    """Scrape op.gg counters page (Next.js flight payload)."""
-    url = f"https://www.op.gg/lol/champions/{slug}/counters/{role}"
-    try:
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-            resp = await client.get(url, headers=_HEADERS)
-        if resp.status_code != 200:
-            return []
-    except Exception as e:
-        logger.warning(f"opgg counters {slug}/{role}: {e}")
-        return []
-
-    # Each counter entry in the flight payload looks like (with double-escaping):
-    #   play\":3911,\"win\":1938,\"win_rate\":49.55,\"champion\":{\"image_url\":\"...\",\"name\":\"Zed\",\"key\":\"zed\"
-    pattern = (
-        r'play\\":(\d+),\\"win\\":\d+,\\"win_rate\\":([0-9.]+),'
-        r'\\"champion\\":\{\\"image_url\\":\\"[^"]*\\",'
-        r'\\"name\\":\\"([^"\\]+)\\",\\"key\\":\\"([a-zA-Z0-9]+)\\"'
-    )
-    out: list[dict] = []
-    seen: set[str] = set()
-    for play, wr, name, key in re.findall(pattern, resp.text):
-        if key in seen:
-            continue
-        seen.add(key)
-        games = int(play)
-        winrate = float(wr)
-        if games < 50 or winrate <= 0 or winrate > 100:
-            continue
-        out.append({
-            "champion_key": name,  # display-friendly
-            "champion_slug": key,
-            "winrate": round(winrate, 2),
-            "games": games,
-            "source": "op.gg",
-        })
-    return out
+# Display name / internal key -> op.gg & u.gg URL slug. These sites slug champions
+# by their Riot internal id, which differs from the display name for a handful of
+# champs (Wukong=MonkeyKing, Nunu & Willump=Nunu, Renata Glasc=Renata, …). Without
+# this, "wukong" hits a non-existent page and every source returns nothing.
+_slug_map: dict[str, str] = {}
+_cid_map: dict[int, tuple[str, str]] = {}  # numeric champion id -> (display name, slug)
 
 
-# Numeric champion id (Riot key) -> DDragon name, for decoding u.gg matchup payloads.
-_ugg_id_to_name: dict[int, str] = {}
-
-
-async def _ensure_ugg_id_map():
-    """Load Riot numeric champion id -> DDragon key (e.g. 238 -> 'Zed')."""
-    global _ugg_id_to_name
-    if _ugg_id_to_name:
+async def _ensure_slug_map():
+    global _slug_map
+    if _slug_map:
         return
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             version = (await client.get(DDRAGON_VERSIONS_URL)).json()[0]
             data = (await client.get(DDRAGON_CHAMPIONS_TPL.format(version=version))).json()["data"]
-        _ugg_id_to_name = {int(c["key"]): c["id"] for c in data.values()}
+        m: dict[str, str] = {}
+        for c in data.values():
+            slug = c["id"].lower()  # internal id lowercased == op.gg/u.gg slug
+            m[_slugify_champion(c["name"])] = slug  # display name -> slug
+            m[_slugify_champion(c["id"])] = slug    # internal key -> slug
+            _cid_map[int(c["key"])] = (c["name"], slug)
+        _slug_map = m
     except Exception as e:
-        logger.warning(f"Failed to load u.gg id map: {e}")
+        logger.warning(f"Failed to load champion slug map: {e}")
 
 
-# u.gg roles match ours directly: jungle, mid, top, adc, support.
-# Aggregate buckets to try, most-data first.
-_UGG_BUCKETS = ("world_platinum_plus_{r}", "world_emerald_plus_{r}",
-                "world_diamond_plus_{r}", "world_overall_{r}")
+async def _resolve_slug(name: str) -> str:
+    """Resolve any champion name/key to its op.gg/u.gg URL slug."""
+    await _ensure_slug_map()
+    key = _slugify_champion(name)
+    return _slug_map.get(key, key)
 
 
-async def _fetch_ugg_counters(slug: str, role: str) -> list[dict]:
-    """Scrape u.gg counter page SSR. The matchup payload lists the *queried*
-    champion's win rate vs each opponent, so a counter's WR = 100 - that value.
-    """
-    await _ensure_ugg_id_map()
-    url = f"https://u.gg/lol/champions/{slug}/counter"
-    try:
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-            resp = await client.get(url, headers=_HEADERS)
-        if resp.status_code != 200:
-            return []
-    except Exception as e:
-        logger.warning(f"ugg counters {slug}/{role}: {e}")
+def canon_slug(name: str) -> str:
+    """Sync canonical slug for any champion name/key/display (e.g. 'Wukong',
+    'wukong' and 'MonkeyKing' all → 'monkeyking'). Lets the personal matchup
+    lookup match a typed display name against the DDragon keys stored in the DB.
+    Requires _ensure_slug_map() to have run; falls back to a bare slug otherwise."""
+    key = _slugify_champion(name)
+    return _slug_map.get(key, key)
+
+
+# Both sources expose the queried champion's win rate vs each opponent at Master+: a
+# low value means the opponent counters it, a high value means it stomps the opponent.
+# LoLalytics' counter API (global Master+, last 30 days) carries the full matchup
+# table — both hard and easy matchups — with samples in the thousands per matchup.
+# u.gg's build page (global Master+) only lists the *toughest* matchups, so it
+# corroborates counters but never the "strong against" side.
+# patch=30 = 30-day window: the current-patch-only view starts empty at Master+
+# right after a patch drops, the 30-day one never does.
+LOLALYTICS_COUNTER_TPL = (
+    "https://a1.lolalytics.com/mega/?ep=counter&v=1&patch=30"
+    "&c={champ}&lane={lane}&tier=master_plus&queue=ranked&region=all"
+)
+UGG_BUILD_TPL = "https://u.gg/lol/champions/{slug}/build/{role}?rank=master_plus"
+COUNTER_MIN_GAMES = 10  # Master+ pools are small; keep the low-sample matchups the sites show
+
+# Our role names -> lolalytics lane names.
+_LOLA_LANES = {"jungle": "jungle", "top": "top", "mid": "middle", "adc": "bottom", "support": "support"}
+
+
+async def _fetch_lolalytics_matchups(slug: str, role: str) -> list[dict]:
+    """Fetch the full matchup table from lolalytics' counter API (global Master+,
+    30-day window). Returns raw matchup rows {champion_key, champion_slug, enemy_wr,
+    games} where enemy_wr is the *queried* champion's win rate vs that opponent."""
+    await _ensure_slug_map()
+    champ = normalize_name(_to_ddragon_key(slug))
+    lane = _LOLA_LANES.get(role, role)
+    url = LOLALYTICS_COUNTER_TPL.format(champ=champ, lane=lane)
+    resp = await _browser_get(url)
+    if resp is None or resp.status_code != 200:
         return []
-
-    m = re.search(r'window\.__SSR_DATA__\s*=\s*(\{.*?\})\s*\n', resp.text, re.DOTALL)
-    if not m:
-        return []
     try:
-        ssr = json.loads(m.group(1))
+        rows = json.loads(resp.text).get("counters") or []
     except (json.JSONDecodeError, ValueError):
+        logger.warning(f"lolalytics counter API: bad JSON for {champ}/{lane}")
         return []
-
-    mk = next((k for k in ssr if "matchups" in k), None)
-    if not mk:
-        return []
-    data = ssr[mk].get("data", {})
-    counters = []
-    for bucket in _UGG_BUCKETS:
-        counters = data.get(bucket.format(r=role), {}).get("counters", [])
-        if counters:
-            break
 
     out: list[dict] = []
-    seen: set[str] = set()
-    for c in counters:
-        name = _ugg_id_to_name.get(c.get("champion_id"))
-        games = c.get("matches", 0)
-        enemy_wr = c.get("win_rate", 50.0)
-        if not name or games < 30:
+    for r in rows:
+        name, opp_slug = _cid_map.get(int(r.get("cid", 0)), (None, None))
+        games = int(r.get("n", 0))
+        enemy_wr = float(r.get("vsWr", 0))
+        if name is None or games < COUNTER_MIN_GAMES or enemy_wr <= 0 or enemy_wr >= 100:
             continue
-        counter_wr = round(100.0 - enemy_wr, 2)
-        if counter_wr <= 50 or counter_wr > 100:
-            continue
-        if name in seen:
-            continue
-        seen.add(name)
         out.append({
             "champion_key": name,
-            "champion_slug": _slugify_champion(name),
-            "winrate": counter_wr,
+            "champion_slug": opp_slug,
+            "enemy_wr": enemy_wr,
             "games": games,
-            "source": "u.gg",
         })
     return out
 
 
-async def _fetch_leagueofgraphs_counters(slug: str, role: str) -> list[dict]:
-    """Scrape leagueofgraphs.com counters page."""
-    log_role = role.lower()
-    url = f"https://www.leagueofgraphs.com/champions/counters/{slug}/{log_role}"
-    try:
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-            resp = await client.get(url, headers=_HEADERS)
-        if resp.status_code != 200:
-            return []
-    except Exception as e:
-        logger.warning(f"leagueofgraphs counters {slug}/{role}: {e}")
+# u.gg uses the same role slugs we do (jungle/top/mid/adc/support).
+_UGG_MATCHUP_RE = re.compile(
+    r'champion-matchup"\s+href="/lol/champions/([a-z0-9]+)/build/[a-z]+\?[^"]*"'
+    r'.*?<div class="champion-name">([^<]+)</div>'
+    r'.*?<div class="win-rate[^"]*"><strong>([0-9.]+)<!-- -->%</strong>'
+    r'.*?<div class="total-matches">([\d,]+)<',
+    re.DOTALL,
+)
+
+
+async def _fetch_ugg_matchups(slug: str, role: str) -> list[dict]:
+    """Scrape u.gg's global Master+ build page. Returns its 'Toughest Matchups' rows
+    {champion_key, champion_slug, enemy_wr, games} — only champions that counter the
+    queried champion (u.gg shows no easy-matchup list here)."""
+    from html import unescape as _unescape
+
+    url = UGG_BUILD_TPL.format(slug=slug, role=role)
+    resp = await _browser_get(url)
+    if resp is None or resp.status_code != 200:
         return []
 
-    # League of Graphs HTML structure (best-effort): each row has a champion link
-    # /champions/stats/<slug> followed by progressbar with data-value (winrate).
-    pattern = (
-        r'/champions/stats/([a-z\-]+)[^>]*>[^<]*<span[^>]*>([^<]+)</span>'
-        r'.{0,400}?progressbar[^>]*data-value=["\']([0-9.]+)'
-    )
     out: list[dict] = []
     seen: set[str] = set()
-    for slug2, name, wr in re.findall(pattern, resp.text, re.DOTALL):
-        if slug2 in seen:
+    for opp_slug, name, wr, matches in _UGG_MATCHUP_RE.findall(resp.text):
+        if opp_slug in seen:
             continue
-        seen.add(slug2)
-        winrate = float(wr)
-        if winrate <= 0 or winrate > 100:
+        seen.add(opp_slug)
+        games = int(matches.replace(",", ""))
+        enemy_wr = float(wr)
+        if games < COUNTER_MIN_GAMES or enemy_wr <= 0 or enemy_wr >= 100:
             continue
         out.append({
-            "champion_key": name.strip(),
-            "champion_slug": slug2,
-            "winrate": round(winrate, 2),
-            "games": 0,
-            "source": "leagueofgraphs",
+            "champion_key": _unescape(name).strip(),
+            "champion_slug": opp_slug,
+            "enemy_wr": enemy_wr,
+            "games": games,
         })
     return out
 
 
-async def fetch_external_counters(champion_name: str, role: str = "jungle") -> list[dict]:
-    """Return a list of champions that counter `champion_name` in `role`, merged
-    across every external source we can reach (op.gg, u.gg, League of Graphs).
-    Each entry has:
-        {champion_key, champion_slug, winrate, games, sources, source_count, source}
-    WR is weighted-averaged by games across sources. Best effort — if no source
-    returns data, returns []. Cached for 6h.
-    """
-    slug = _slugify_champion(champion_name)
+def _prefer_name(a: str, b: str) -> str:
+    """Pick the nicer display name — the one with a space/apostrophe (e.g. 'Kha'Zix'
+    over 'Khazix', 'Master Yi' over 'MasterYi')."""
+    if any(c in a for c in " '"):
+        return a
+    if any(c in b for c in " '"):
+        return b
+    return a or b
+
+
+async def fetch_external_counters(champion_name: str, role: str = "jungle") -> dict:
+    """Counters for `champion_name` in `role`, merged from op.gg (EUW Master+) and
+    u.gg (global Master+) — the same Master views the user sees on both sites. Returns:
+      - counters: champions that beat it. winrate = their WR vs it (>50), hardest first.
+      - strong_against: champions it beats. winrate = its WR vs them (>50), biggest first.
+    Per opponent the queried champion's WR is averaged across sources weighted by games;
+    `source` lists which sites agree. Best effort — empty lists if both fail. Cached 6h."""
+    slug = await _resolve_slug(champion_name)
     cache_key = (slug, role)
     now = time.time()
     cached = _counter_cache.get(cache_key)
     if cached and now - cached[0] < COUNTER_CACHE_TTL:
         return cached[1]
 
-    results = await asyncio.gather(
-        _fetch_opgg_counters(slug, role),
-        _fetch_ugg_counters(slug, role),
-        _fetch_leagueofgraphs_counters(slug, role),
+    opgg_rows, ugg_rows = await asyncio.gather(
+        _fetch_opgg_matchups(slug, role),
+        _fetch_ugg_matchups(slug, role),
         return_exceptions=True,
     )
-    all_entries: list[dict] = []
-    for r in results:
+    rows: list[dict] = []
+    for r, src in ((opgg_rows, "op.gg"), (ugg_rows, "u.gg")):
         if isinstance(r, list):
-            all_entries.extend(r)
+            for e in r:
+                rows.append({**e, "source": src})
 
-    # Merge by canonical champion name: weighted-average WR by games, and track
-    # which sources agree (more sources = higher confidence).
-    merged_map: dict[str, dict] = {}
-    for e in all_entries:
-        canon = re.sub(r"[^a-z0-9]", "", (e.get("champion_slug") or e.get("champion_key", "")).lower())
-        if not canon:
-            continue
-        w = max(e.get("games", 0), 1)
-        b = merged_map.get(canon)
+    # Merge by canonical opponent: weighted-average the queried champ's WR by games.
+    merged: dict[str, dict] = {}
+    for e in rows:
+        canon = canon_slug(e["champion_slug"]) or e["champion_slug"]
+        b = merged.get(canon)
         if b is None:
-            b = merged_map[canon] = {
+            b = merged[canon] = {
                 "champion_key": e["champion_key"], "champion_slug": e["champion_slug"],
                 "_wr_sum": 0.0, "_w": 0, "games": 0, "sources": [],
             }
-        b["_wr_sum"] += e["winrate"] * w
+        else:
+            b["champion_key"] = _prefer_name(b["champion_key"], e["champion_key"])
+        w = max(e["games"], 1)
+        b["_wr_sum"] += e["enemy_wr"] * w
         b["_w"] += w
-        b["games"] += e.get("games", 0)
+        b["games"] += e["games"]
         if e["source"] not in b["sources"]:
             b["sources"].append(e["source"])
 
-    merged: list[dict] = []
-    for b in merged_map.values():
-        merged.append({
+    counters: list[dict] = []
+    strong: list[dict] = []
+    for b in merged.values():
+        enemy_wr = b["_wr_sum"] / b["_w"]
+        entry = {
             "champion_key": b["champion_key"],
             "champion_slug": b["champion_slug"],
-            "winrate": round(b["_wr_sum"] / b["_w"], 2),
             "games": b["games"],
             "sources": b["sources"],
             "source_count": len(b["sources"]),
             "source": ", ".join(b["sources"]),
-        })
-    # Strongest counters first; break ties by how many sources agree, then games.
-    merged.sort(key=lambda r: (-r["winrate"], -r["source_count"], -r["games"]))
-    merged = merged[:20]
-    _counter_cache[cache_key] = (now, merged)
-    return merged
+        }
+        if enemy_wr < 50:
+            counters.append({**entry, "winrate": round(100.0 - enemy_wr, 1)})
+        elif enemy_wr > 50:
+            strong.append({**entry, "winrate": round(enemy_wr, 1)})
+
+    # Strongest first; tie-break by source agreement, then sample size.
+    counters.sort(key=lambda r: (-r["winrate"], -r["source_count"], -r["games"]))
+    strong.sort(key=lambda r: (-r["winrate"], -r["source_count"], -r["games"]))
+
+    result = {"counters": counters, "strong_against": strong}
+    _counter_cache[cache_key] = (now, result)
+    return result

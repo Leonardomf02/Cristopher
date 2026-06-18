@@ -119,6 +119,7 @@ export const lolApi = {
   getRank: () => request<any>('/lol/riot/rank'),
   getLive: () => request<any>('/lol/riot/live'),
   getLiveDetailed: () => request<any>('/lol/riot/live/detailed'),
+  getLiveWinprob: () => request<any>('/lol/live-client/winprob'),
   getMastery: (top?: number) => request<any[]>(`/lol/riot/mastery${top ? `?top=${top}` : ''}`),
   getTimeline: (matchId: string) => request<any>(`/lol/riot/timeline/${matchId}`),
   getSummoner: () => request<any>('/lol/riot/summoner'),
@@ -130,7 +131,7 @@ export const lolApi = {
   getChampSelectSession: () => request<any>('/lol/champ-select/session'),
   getMetaStats: (source?: string) => request<any>('/lol/meta-stats' + (source && source !== 'all' ? `?source=${source}` : '')),
   counterPick: (enemy: string, role: string = 'jungle') =>
-    request<{ enemy: string; role: string; personal: any[]; external: any[] }>(
+    request<{ enemy: string; role: string; personal: any[]; counters: any[]; strong_against: any[] }>(
       `/lol/counter-pick?enemy=${encodeURIComponent(enemy)}&role=${encodeURIComponent(role)}`
     ),
   championsList: () =>
@@ -1150,4 +1151,207 @@ export const appGoalsApi = {
     qs.set('streak_window_days', String(streak_window_days));
     return request<{ date: string; goals: AppGoalProgress[] }>(`/app-goals/progress?${qs}`);
   },
+};
+
+// ── Deals (caça-deals) ──────────────────────────────────────────
+
+export interface DealWatch {
+  id: number;
+  title: string;
+  query: string;
+  category: string;
+  condition: string;          // any | new | used
+  sources: string;            // all | vinted | csv
+  max_price: number | null;
+  min_rating: number;
+  ai_context: string;
+  exclude_keywords: string;
+  active: boolean;
+  last_checked_at: string | null;
+  new_count: number;
+  total_count: number;
+  pending_count: number;
+  scanning: boolean;
+}
+
+export interface DealResult {
+  id: number;
+  watch_id: number;
+  source: string;
+  title: string;
+  description: string;
+  price: number | null;
+  currency: string;
+  condition: string;
+  url: string;
+  image_url: string;
+  location: string;
+  seller: string;
+  ai_rating: number | null;
+  ai_match: boolean;
+  ai_reason: string;
+  status: string;             // new | seen | saved | dismissed
+  first_seen_at: string | null;
+  last_seen_at: string | null;
+}
+
+export type DealWatchInput = {
+  title: string;
+  query: string;
+  category?: string;
+  condition?: string;
+  sources?: string;
+  max_price?: number | null;
+  min_rating?: number;
+  ai_context?: string;
+  exclude_keywords?: string;
+  active?: boolean;
+};
+
+export const dealsApi = {
+  listWatches: () => request<DealWatch[]>('/deals/watches'),
+  createWatch: (data: DealWatchInput) =>
+    request<DealWatch>('/deals/watches', { method: 'POST', body: JSON.stringify(data) }),
+  updateWatch: (id: number, data: Partial<DealWatchInput>) =>
+    request<DealWatch>(`/deals/watches/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteWatch: (id: number) =>
+    request<{ ok: true }>(`/deals/watches/${id}`, { method: 'DELETE' }),
+  runWatch: (id: number) =>
+    request<DealWatch>(`/deals/watches/${id}/run`, { method: 'POST' }),
+  results: (watch_id: number, opts?: { status?: string; include_unmatched?: boolean }) => {
+    const qs = new URLSearchParams({ watch_id: String(watch_id) });
+    if (opts?.status) qs.set('status', opts.status);
+    if (opts?.include_unmatched) qs.set('include_unmatched', 'true');
+    return request<DealResult[]>(`/deals/results?${qs}`);
+  },
+  patchResult: (id: number, status: string) =>
+    request<DealResult>(`/deals/results/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) }),
+  markSeen: (watch_id: number) =>
+    request<{ ok: true }>(`/deals/results/mark-seen?watch_id=${watch_id}`, { method: 'POST' }),
+  summary: () => request<{
+    new_count: number;
+    watch_count: number;
+    ai: { rate_limited: boolean; seconds_ago: number | null; message: string };
+  }>('/deals/summary'),
+  aiCheck: () => request<{ rate_limited: boolean; seconds_ago: number | null; message: string }>(
+    '/deals/ai-check', { method: 'POST' }),
+};
+
+// ── Stories (histórias explicadas pela IA) ──────────────────────
+
+export type StoryLevel = 'simple' | 'medium' | 'long';
+
+export interface StorySource {
+  title: string;
+  url: string;
+}
+
+export interface StoryVersion {
+  level: StoryLevel;
+  body: string;
+  sources: StorySource[];
+  created_at: string;
+}
+
+export interface Story {
+  id: number;
+  query: string;
+  title: string;
+  last_level: StoryLevel;
+  created_at: string;
+  versions: StoryVersion[];
+}
+
+export interface StoryListItem {
+  id: number;
+  query: string;
+  title: string;
+  last_level: StoryLevel;
+  created_at: string;
+  levels: StoryLevel[];
+  snippet: string;
+}
+
+export const storiesApi = {
+  list: () => request<StoryListItem[]>('/stories'),
+  get: (id: number) => request<Story>(`/stories/${id}`),
+  create: (data: { query: string; level: StoryLevel }) =>
+    request<Story>('/stories', { method: 'POST', body: JSON.stringify(data) }),
+  setLevel: (id: number, level: StoryLevel) =>
+    request<StoryVersion>(`/stories/${id}/level`, { method: 'POST', body: JSON.stringify({ level }) }),
+  remove: (id: number) => request<{ ok: true }>(`/stories/${id}`, { method: 'DELETE' }),
+};
+
+// ── Spotify Curator ─────────────────────────────────────────────
+
+export interface SpotifyPlaylist {
+  id: number;
+  name: string;
+  vibe: string;
+  is_favorites: boolean;
+  track_count: number;
+  analyzed_at: string | null;
+  created_at: string;
+}
+
+export interface SpotifyTrack {
+  id: number;
+  position: number;
+  title: string;
+  artist: string;
+  album: string;
+  spotify_url: string;
+}
+
+export interface SpotifyAnalysis {
+  summary: string;
+  intruders: { track_id: number; title: string; artist: string; reason: string }[];
+  additions: { title: string; artist: string; reason: string; search_url: string }[];
+  analyzed_at: string | null;
+}
+
+export interface SpotifyOverview {
+  summary: string;
+  groups: { name: string; playlist_name: string; mood: string; tracks: { title: string; artist: string; from: string }[] }[];
+  relocations: { title: string; artist: string; from: string; to: string; reason: string }[];
+  duplicates: { title: string; artist: string; count: number; playlist: string }[];
+  playlist_count: number;
+  track_count: number;
+  truncated: boolean;
+  analyzed_at: string | null;
+}
+
+export interface SpotifySuggestion {
+  id: number;
+  title: string;
+  artist: string;
+  reason: string;
+  accepted: boolean;
+  search_url: string;
+}
+
+export const spotifyApi = {
+  list: () => request<SpotifyPlaylist[]>('/spotify/playlists'),
+  create: (data: { name: string; vibe?: string; is_favorites?: boolean }) =>
+    request<SpotifyPlaylist>('/spotify/playlists', { method: 'POST', body: JSON.stringify(data) }),
+  update: (id: number, data: { name?: string; vibe?: string; is_favorites?: boolean }) =>
+    request<SpotifyPlaylist>(`/spotify/playlists/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  remove: (id: number) => request<{ ok: true }>(`/spotify/playlists/${id}`, { method: 'DELETE' }),
+  tracks: (id: number) => request<SpotifyTrack[]>(`/spotify/playlists/${id}/tracks`),
+  import: (id: number, text: string, mode: 'replace' | 'append' = 'replace') =>
+    request<{ imported: number; total: number }>(`/spotify/playlists/${id}/import`, {
+      method: 'POST', body: JSON.stringify({ text, mode }),
+    }),
+  importLink: (url: string) =>
+    request<{ playlist: SpotifyPlaylist; imported: number }>('/spotify/import-link', {
+      method: 'POST', body: JSON.stringify({ url }),
+    }),
+  removeTrack: (trackId: number) => request<{ ok: true }>(`/spotify/tracks/${trackId}`, { method: 'DELETE' }),
+  analysis: (id: number) => request<SpotifyAnalysis>(`/spotify/playlists/${id}/analysis`),
+  analyze: (id: number) => request<SpotifyAnalysis>(`/spotify/playlists/${id}/analyze`, { method: 'POST' }),
+  overview: () => request<SpotifyOverview>('/spotify/overview'),
+  analyzeOverview: () => request<SpotifyOverview>('/spotify/overview/analyze', { method: 'POST' }),
+  suggestions: (id: number) => request<SpotifySuggestion[]>(`/spotify/playlists/${id}/suggestions`),
+  toggleSuggestion: (sid: number) => request<SpotifySuggestion>(`/spotify/suggestions/${sid}/toggle`, { method: 'POST' }),
+  groupSuggestions: () => request<Record<string, SpotifySuggestion[]>>('/spotify/overview/group-suggestions'),
 };

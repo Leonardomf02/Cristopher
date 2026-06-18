@@ -11,7 +11,7 @@ except Exception:
     pass
 
 from database import engine, Base
-from routers import events, expenses, lol, trips, lists, sleep, day_types, flow, notes, investments, investment_signals, habits, dashboard, mood, budgets, templates, app_usage, app_insights, app_goals, ideas, code_activity, screen_time, wakatime
+from routers import events, expenses, lol, trips, lists, sleep, day_types, flow, notes, investments, investment_signals, habits, dashboard, mood, budgets, templates, app_usage, app_insights, app_goals, ideas, code_activity, screen_time, wakatime, deals, stories, spotify
 
 # Create all tables
 Base.metadata.create_all(bind=engine)
@@ -235,6 +235,13 @@ if not _cur.fetchone():
     _cur.execute("UPDATE lol_predictions SET season_id = ? WHERE season_id IS NULL", (_season_id,))
     _conn.commit()
 
+# Spotify: sugestões podem ser de um grupo de género (Visão Geral), não só de playlist
+_cur.execute("PRAGMA table_info(spotify_suggestions)")
+_sug_cols = {row[1] for row in _cur.fetchall()}
+if _sug_cols and "group_name" not in _sug_cols:
+    _cur.execute("ALTER TABLE spotify_suggestions ADD COLUMN group_name TEXT")
+    _conn.commit()
+
 _conn.commit()
 _conn.close()
 
@@ -249,6 +256,7 @@ _origin_regex = (
     r"|https?://192\.168\.\d+\.\d+(:\d+)?"
     r"|https?://10\.\d+\.\d+\.\d+(:\d+)?"
     r"|https?://172\.(1[6-9]|2\d|3[01])\.\d+\.\d+(:\d+)?"
+    r"|https://([a-z0-9-]+\.)*pages\.dev"
     r"|https?://[a-zA-Z0-9-]+\.[a-zA-Z0-9-]+\.ts\.net(:\d+)?)$"
 )
 app.add_middleware(
@@ -265,30 +273,23 @@ _UPLOADS_DIR = os.getenv("UPLOADS_DIR", "uploads")
 os.makedirs(os.path.join(_UPLOADS_DIR, "receipts"), exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=_UPLOADS_DIR), name="uploads")
 
-# Routers
-app.include_router(events.router)
-app.include_router(expenses.router)
-app.include_router(lol.router)
-app.include_router(trips.router)
-app.include_router(lists.router)
-app.include_router(sleep.router)
-app.include_router(day_types.router)
-app.include_router(flow.router)
-app.include_router(notes.router)
-app.include_router(investments.router)
-app.include_router(investment_signals.router)
-app.include_router(habits.router)
-app.include_router(dashboard.router)
-app.include_router(mood.router)
-app.include_router(budgets.router)
-app.include_router(templates.router)
-app.include_router(app_usage.router)
-app.include_router(app_insights.router)
-app.include_router(app_goals.router)
-app.include_router(ideas.router)
-app.include_router(code_activity.router)
-app.include_router(screen_time.router)
-app.include_router(wakatime.router)
+# Routers — protegidos por require_auth. Em dev local (sem CRISTOPHER_PASSWORD)
+# a auth está desligada e tudo passa; em produção basta definir a password.
+from fastapi import Depends
+from auth import require_auth, router as auth_router
+from routers import ingest
+
+_protected = [
+    events, expenses, lol, trips, lists, sleep, day_types, flow, notes,
+    investments, investment_signals, habits, dashboard, mood, budgets,
+    templates, app_usage, app_insights, app_goals, ideas, code_activity,
+    screen_time, wakatime, deals, stories, spotify,
+]
+for _m in _protected:
+    app.include_router(_m.router, dependencies=[Depends(require_auth)])
+
+app.include_router(auth_router)    # /api/auth/login + /status — públicos
+app.include_router(ingest.router)  # /api/ingest/* — token próprio (agente local)
 
 
 @app.get("/api/health")
@@ -331,6 +332,8 @@ def _tracker_pid_alive() -> int | None:
 @app.on_event("startup")
 def _start_app_tracker():
     global _tracker_proc
+    if os.getenv("CLOUD") == "1":
+        return  # na cloud a recolha local é feita pelo agente no Mac
     if os.getenv("TRACKER_AUTOSTART", "1") != "1":
         return
     if sys.platform != "darwin":
@@ -357,6 +360,8 @@ def _start_sleep_auto_register():
     """Regista o sono automaticamente (estimado do uso do PC) ao arrancar e
     depois de 6 em 6h. Só corre em macOS local; em Linux/Codespaces o estimador
     devolve None e este loop não faz nada."""
+    if os.getenv("CLOUD") == "1":
+        return  # snapshots de sono/screen-time vêm do agente local
     if sys.platform != "darwin":
         return
     import threading
@@ -375,6 +380,34 @@ def _start_sleep_auto_register():
             except Exception:
                 pass
             _time.sleep(6 * 3600)
+
+    threading.Thread(target=_loop, daemon=True).start()
+
+
+@app.on_event("startup")
+def _start_deals_scanner():
+    """Caça-deals: pesquisa fontes e avalia com IA periodicamente. Intervalo em
+    DEALS_SCAN_INTERVAL_HOURS (default 12h — a quota da IA é apertada, por isso não
+    de hora a hora). Corre em qualquer plataforma. Desliga com DEALS_AUTOSCAN=0."""
+    if os.getenv("DEALS_AUTOSCAN", "1") != "1":
+        return
+    import threading
+    import time as _time
+
+    try:
+        interval = max(1.0, float(os.getenv("DEALS_SCAN_INTERVAL_HOURS", "12"))) * 3600
+    except ValueError:
+        interval = 12 * 3600
+
+    def _loop():
+        from routers.deals import run_all_watches
+        _time.sleep(60)  # deixa o arranque assentar antes do 1º scan
+        while True:
+            try:
+                run_all_watches()
+            except Exception as e:
+                print(f"[main] deals scan falhou: {e}", file=sys.stderr)
+            _time.sleep(interval)
 
     threading.Thread(target=_loop, daemon=True).start()
 

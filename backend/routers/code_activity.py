@@ -24,7 +24,7 @@ import logging
 
 from database import get_db
 from models import CodeProjectTodo, CodeProjectNote, CodeFileSnapshot, CodeProjectFavorite
-from ai_config import AI_API_URL, AI_API_KEY, AI_CHANNEL_ID
+from ai_config import ask_agent_async
 import hashlib
 
 router = APIRouter(prefix="/api/code-activity", tags=["CodeActivity"])
@@ -765,40 +765,8 @@ REGRAS DURAS — ler com atenção:
 
 Responde."""
 
-    thread_id = uuid.uuid4().hex[:20]
-    full_text = ""
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(
-                AI_API_URL,
-                headers={"x-api-key": AI_API_KEY},
-                data={
-                    "channel_id": AI_CHANNEL_ID,
-                    "thread_id": thread_id,
-                    "user_info": "{}",
-                    "message": prompt,
-                },
-            )
-            if response.status_code != 200:
-                raise HTTPException(status_code=502, detail="AI indisponível")
-            token_text = ""
-            for line in response.text.split("\n"):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    event = json.loads(line)
-                    if event.get("type") == "message":
-                        content = event.get("content", {})
-                        full_text = content.get("content", "") if isinstance(content, dict) else str(content)
-                        break
-                    elif event.get("type") == "token":
-                        token_text += event.get("content", "")
-                except json.JSONDecodeError:
-                    continue
-            if not full_text:
-                full_text = token_text
-    except httpx.HTTPError:
+    full_text = await ask_agent_async(prompt, timeout=60.0)
+    if not full_text:
         raise HTTPException(status_code=502, detail="AI indisponível")
 
     full_text = full_text.strip().strip('"').strip()
@@ -954,40 +922,8 @@ REGRAS DURAS:
 - NÃO repitas contexto óbvio em cada linha (ex: "no VS Code", "na app") — diz só a tarefa.
 - Não inventes nada fora da nota; junta o que for a mesma feature.
 - Sem introdução nem conclusão. Só os bullets."""
-    thread_id = uuid.uuid4().hex[:20]
-    full_text = ""
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(
-                AI_API_URL,
-                headers={"x-api-key": AI_API_KEY},
-                data={
-                    "channel_id": AI_CHANNEL_ID,
-                    "thread_id": thread_id,
-                    "user_info": "{}",
-                    "message": prompt,
-                },
-            )
-            if response.status_code != 200:
-                return None
-            token_text = ""
-            for line in response.text.split("\n"):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    event = json.loads(line)
-                    if event.get("type") == "message":
-                        content = event.get("content", {})
-                        full_text = content.get("content", "") if isinstance(content, dict) else str(content)
-                        break
-                    elif event.get("type") == "token":
-                        token_text += event.get("content", "")
-                except json.JSONDecodeError:
-                    continue
-            if not full_text:
-                full_text = token_text
-    except httpx.HTTPError:
+    full_text = await ask_agent_async(prompt, timeout=60.0)
+    if not full_text:
         return None
 
     full_text = re.sub(r"^```.*?\n|\n```$", "", full_text.strip(), flags=re.DOTALL).strip()

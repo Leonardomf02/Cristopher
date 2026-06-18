@@ -25,7 +25,7 @@ from champion_data import (
     suggest_picks, get_damage_type, get_champion_class,
     set_matchup_data, get_matchup_data, _id_to_key,
 )
-from meta_stats import fetch_meta_stats, get_meta_stats, _to_ddragon_key
+from meta_stats import fetch_meta_stats, get_meta_stats, _to_ddragon_key, canon_slug, _ensure_slug_map
 import asyncio
 
 router = APIRouter(prefix="/api/lol", tags=["League of Legends"])
@@ -1247,6 +1247,17 @@ async def get_live_detailed():
         raise HTTPException(status_code=502, detail=e.message)
 
 
+@router.get("/live-client/winprob")
+async def live_client_winprob():
+    """Live in-game win probability from the local Live Client Data API (port 2999).
+
+    Only works while the user is in their own game (reads real game state: gold est.
+    from CS+kills+towers, objectives from the event log). Far stronger than the
+    pre-game predictor (~73% by 15 min in the literature vs ~61% pre-game)."""
+    from live_winprob import get_live_win_probability
+    return await get_live_win_probability()
+
+
 # ── Riot API — Champion Mastery ──────────────────────────────────
 
 @router.get("/riot/mastery")
@@ -1749,18 +1760,23 @@ def _build_matchup_stats_from_db() -> dict:
         db.close()
 
 
-def _get_enemy_counters(enemy_names: list[str]) -> dict:
-    """For each visible enemy, return user's picks vs that champion sorted by games."""
+async def _get_enemy_counters(enemy_names: list[str]) -> dict:
+    """For each visible enemy, return user's picks vs that champion sorted by games.
+    Matches by canonical slug so a typed display name (e.g. 'Wukong') lines up with
+    the DDragon key stored in the DB ('MonkeyKing')."""
     data = get_matchup_data()
     if not data:
         return {}
     matchups = data.get("matchups", {})
+    await _ensure_slug_map()
     counters: dict[str, list] = {}
     for enemy in enemy_names:
+        enemy_slug = canon_slug(enemy)
         picks_vs: list[dict] = []
         for my_champ, vs_map in matchups.items():
-            if enemy in vs_map:
-                s = vs_map[enemy]
+            for vs_champ, s in vs_map.items():
+                if canon_slug(vs_champ) != enemy_slug:
+                    continue
                 picks_vs.append({
                     "champion": my_champ,
                     "wins": s["wins"],
@@ -1806,7 +1822,7 @@ async def get_matchups(force: bool = Query(False)):
 async def get_counters_for_champion(champion_name: str):
     """Get user's personal counter picks against a specific champion."""
     await _ensure_matchup_data()
-    counters = _get_enemy_counters([champion_name])
+    counters = await _get_enemy_counters([champion_name])
     return {"champion": champion_name, "counters": counters.get(champion_name, [])}
 
 
@@ -1833,27 +1849,29 @@ async def counter_pick(
     enemy: str = Query(..., min_length=2),
     role: str = Query("jungle"),
 ):
-    """Suggest picks against `enemy`. Returns two lists:
+    """Suggest picks against `enemy`. Returns:
     - personal: from the user's own match history (sorted by games, then WR)
-    - external: from public sources (op.gg + LeagueOfGraphs), sorted by WR
+    - counters: champions that beat `enemy` (op.gg EUW Master+), hardest first
+    - strong_against: champions `enemy` beats (op.gg EUW Master+), biggest gap first
     """
     from meta_stats import fetch_external_counters
 
     await _ensure_matchup_data()
-    personal_map = _get_enemy_counters([enemy])
+    personal_map = await _get_enemy_counters([enemy])
     personal = personal_map.get(enemy, [])
 
     try:
         external = await fetch_external_counters(enemy, role=role)
     except Exception as e:
         logger.warning(f"external counters failed for {enemy}: {e}")
-        external = []
+        external = {"counters": [], "strong_against": []}
 
     return {
         "enemy": enemy,
         "role": role,
         "personal": personal,
-        "external": external,
+        "counters": external.get("counters", []),
+        "strong_against": external.get("strong_against", []),
     }
 
 
@@ -1935,7 +1953,7 @@ async def champ_select_data():
 
     # Enemy counters: for each visible enemy champ, user's picks vs them
     enemy_key_names = [_id_to_key.get(cid, "") for cid in their_ids if cid != 0]
-    enemy_counters = _get_enemy_counters([n for n in enemy_key_names if n])
+    enemy_counters = await _get_enemy_counters([n for n in enemy_key_names if n])
 
     # Timer info
     timer = session.get("timer", {})

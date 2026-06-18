@@ -28,6 +28,7 @@ export default function LolPage() {
   const [rankInfo, setRankInfo] = useState<RankInfo | null>(null);
   const [liveGame, setLiveGame] = useState<LiveGame | null>(null);
   const [liveDetailed, setLiveDetailed] = useState<LiveGameDetailed | null>(null);
+  const [liveWinprob, setLiveWinprob] = useState<any | null>(null);
   const [mastery, setMastery] = useState<ChampionMastery[]>([]);
   const [selectedTimeline, setSelectedTimeline] = useState<MatchTimeline | null>(null);
   const [summoner, setSummoner] = useState<SummonerInfo | null>(null);
@@ -36,7 +37,6 @@ export default function LolPage() {
   // Champ Select state
   const [csStatus, setCsStatus] = useState<ChampSelectStatus | null>(null);
   const [csSession, setCsSession] = useState<ChampSelectSession | null>(null);
-  const [showCounterWindow, setShowCounterWindow] = useState(false);
   const wasInChampSelect = useRef(false);
   const csPolling = useRef<ReturnType<typeof setInterval> | null>(null);
   const livePolling = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -73,8 +73,8 @@ export default function LolPage() {
   const [metaLoading, setMetaLoading] = useState(false);
   const [metaError, setMetaError] = useState(false);
 
-  // Tab state: 'main' or 'stats'
-  const [activeTab, setActiveTab] = useState<'main' | 'stats'>('main');
+  // Tab state: 'main' | 'stats' | 'champselect'
+  const [activeTab, setActiveTab] = useState<'main' | 'stats' | 'champselect'>('main');
   const [detailedStats, setDetailedStats] = useState<any>(null);
 
   // Stats tab: champion search filter
@@ -171,11 +171,10 @@ export default function LolPage() {
     return () => { if (csPolling.current) clearInterval(csPolling.current); };
   }, [pollChampSelect]);
 
-  // Auto-open the Counter Pick window when champ select starts; close it when it ends.
+  // Auto-switch to the Champ Select tab when champ select starts (user can switch back freely).
   useEffect(() => {
     const inCs = !!csStatus?.in_champ_select;
-    if (inCs && !wasInChampSelect.current) setShowCounterWindow(true);
-    if (!inCs && wasInChampSelect.current) setShowCounterWindow(false);
+    if (inCs && !wasInChampSelect.current) setActiveTab('champselect');
     wasInChampSelect.current = inCs;
   }, [csStatus?.in_champ_select]);
 
@@ -189,8 +188,10 @@ export default function LolPage() {
           wasInGame.current = true;
           const detailed = await lolApi.getLiveDetailed();
           if (detailed) setLiveDetailed(detailed);
+          lolApi.getLiveWinprob().then(w => setLiveWinprob(w?.in_game ? w : null)).catch(() => {});
         } else {
           setLiveDetailed(null);
+          setLiveWinprob(null);
           // Game just ended — auto-sync games and resolve predictions
           if (wasInGame.current) {
             wasInGame.current = false;
@@ -247,8 +248,10 @@ export default function LolPage() {
         // If in game, fetch detailed stats for all players
         if (live.in_game) {
           lolApi.getLiveDetailed().then(d => { if (d) setLiveDetailed(d); }).catch(() => {});
+          lolApi.getLiveWinprob().then(w => setLiveWinprob(w?.in_game ? w : null)).catch(() => {});
         } else {
           setLiveDetailed(null);
+          setLiveWinprob(null);
         }
       }
       if (summ) setSummoner(summ);
@@ -419,175 +422,6 @@ export default function LolPage() {
 
   return (
     <div>
-      {/* ── Champ Select Helper ──────────────────────────────────── */}
-      {csStatus?.client_running && (
-        <div className={`mb-6 rounded-2xl border overflow-hidden transition-all ${
-          csSession?.active
-            ? 'bg-gradient-to-r from-[#1a1020] to-[#161616] border-purple-500/40'
-            : 'bg-[#161616] border-[#222]'
-        }`}>
-          <div className="flex items-center gap-3 px-4 py-3">
-            <div className={`w-2.5 h-2.5 rounded-full ${
-              csSession?.active ? 'bg-purple-500 animate-pulse' : 'bg-gray-600'
-            }`} />
-            <span className="text-sm font-medium">
-              {csSession?.active ? 'Champ Select Ativo' : 'League Client conectado'}
-            </span>
-            {csStatus.phase && csStatus.phase !== 'None' && !csSession?.active && (
-              <span className="text-xs text-gray-500">{csStatus.phase}</span>
-            )}
-            {csStatus.in_champ_select && !showCounterWindow && (
-              <button onClick={() => setShowCounterWindow(true)}
-                className="ml-auto flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium bg-purple-600/20 hover:bg-purple-600/30 border border-purple-500/30 text-purple-300">
-                <Search size={12} /> Counter Pick
-              </button>
-            )}
-          </div>
-
-          {csSession?.active && (
-            <div className="px-4 pb-4 space-y-4">
-              {/* Teams */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {/* My Team */}
-                <div>
-                  <p className="text-[10px] text-blue-400 font-medium mb-2 uppercase tracking-wider">Tua Equipa</p>
-                  <div className="space-y-1.5">
-                    {csSession.my_team?.map((p, i) => (
-                      <div key={i} className={`flex items-center gap-2 px-2 py-1.5 rounded-lg ${
-                        p.is_local_player ? 'bg-blue-500/15 border border-blue-500/30' : 'bg-[#111]'
-                      }`}>
-                        <span className="text-[10px] text-gray-500 w-10 truncate">{p.position || '?'}</span>
-                        <span className={`text-xs font-medium ${p.champion_name ? 'text-blue-300' : 'text-gray-600'}`}>
-                          {p.champion_name || '—'}
-                        </span>
-                        {p.is_local_player && <span className="text-[9px] text-blue-400 ml-auto">TU</span>}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Enemy Team */}
-                <div>
-                  <p className="text-[10px] text-red-400 font-medium mb-2 uppercase tracking-wider">Equipa Inimiga</p>
-                  <div className="space-y-1.5">
-                    {csSession.their_team?.map((p, i) => (
-                      <div key={i} className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-[#111]">
-                        <span className="text-[10px] text-gray-500 w-10 truncate">{p.position || '?'}</span>
-                        <span className={`text-xs font-medium ${p.champion_name ? 'text-red-300' : 'text-gray-600'}`}>
-                          {p.champion_name || '—'}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              {/* Bans */}
-              {((csSession.my_bans?.length ?? 0) > 0 || (csSession.their_bans?.length ?? 0) > 0) && (
-                <div className="flex items-center gap-4 text-[10px]">
-                  <span className="text-gray-500">Bans:</span>
-                  <div className="flex gap-1 flex-wrap">
-                    {csSession.my_bans?.map((b, i) => (
-                      <span key={`m${i}`} className="px-1.5 py-0.5 bg-blue-500/10 text-blue-400 rounded">{b}</span>
-                    ))}
-                    {csSession.their_bans?.map((b, i) => (
-                      <span key={`t${i}`} className="px-1.5 py-0.5 bg-red-500/10 text-red-400 rounded">{b}</span>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Team Comp Analysis */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <CompAnalysis label="Tua Equipa" comp={csSession.my_comp} color="blue" />
-                <CompAnalysis label="Inimigo" comp={csSession.their_comp} color="red" />
-              </div>
-
-              {/* Warnings */}
-              {csSession.my_comp?.warnings && csSession.my_comp.warnings.length > 0 && (
-                <div className="space-y-1">
-                  {csSession.my_comp.warnings.map((w, i) => (
-                    <p key={i} className="text-xs text-yellow-400 bg-yellow-500/10 rounded-lg px-3 py-1.5">{w}</p>
-                  ))}
-                </div>
-              )}
-
-              {/* Enemy Counters — shown BEFORE suggestions for prominence */}
-              {csSession.enemy_counters && Object.keys(csSession.enemy_counters).length > 0 && (
-                <div>
-                  <p className="text-[10px] text-red-400 font-medium mb-2 uppercase tracking-wider">🎯 Os teus picks contra cada inimigo</p>
-                  <div className="space-y-3">
-                    {Object.entries(csSession.enemy_counters).map(([enemy, picks]) => (
-                      picks.length > 0 && (
-                        <div key={enemy} className="bg-[#0d0d0d] rounded-lg p-3 border border-red-500/20">
-                          <p className="text-xs text-red-300 font-semibold mb-2">vs {enemy}</p>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                            {picks.slice(0, 6).map((p) => (
-                              <div key={p.champion} className={`flex items-center justify-between px-2 py-1 rounded ${
-                                p.winrate >= 60 ? 'bg-green-500/10 border border-green-500/20' :
-                                p.winrate >= 50 ? 'bg-gray-500/10 border border-[#333]' :
-                                'bg-red-500/10 border border-red-500/20'
-                              }`}>
-                                <span className="text-[11px] font-medium text-white">{p.champion}</span>
-                                <span className={`text-[10px] font-semibold ${
-                                  p.winrate >= 60 ? 'text-green-400' : p.winrate >= 50 ? 'text-gray-400' : 'text-red-400'
-                                }`}>{p.winrate}% <span className="text-gray-500 font-normal">({p.wins}W {p.losses}L)</span></span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Pick Suggestions */}
-              {csSession.suggestions && csSession.suggestions.length > 0 && (
-                <div>
-                  <p className="text-[10px] text-purple-400 font-medium mb-2 uppercase tracking-wider">Sugestões de Pick</p>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
-                    {csSession.suggestions.slice(0, 8).map((s) => (
-                      <div key={s.champion} className={`bg-[#111] rounded-lg p-2 border ${
-                        s.score >= 70 ? 'border-green-500/30' : s.score >= 50 ? 'border-[#333]' : 'border-red-500/20'
-                      }`}>
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="text-xs font-medium text-white truncate">{s.champion_name}</span>
-                          <span className={`text-[10px] font-bold ${
-                            s.score >= 70 ? 'text-green-400' : s.score >= 50 ? 'text-gray-400' : 'text-red-400'
-                          }`}>{s.score}</span>
-                        </div>
-                        <div className="flex items-center gap-1 mb-1">
-                          <span className={`text-[9px] px-1 py-0.5 rounded ${
-                            s.damage === 'AP' ? 'bg-purple-500/20 text-purple-300' :
-                            s.damage === 'AD' ? 'bg-orange-500/20 text-orange-300' :
-                            'bg-gray-500/20 text-gray-400'
-                          }`}>{s.damage}</span>
-                          <span className={`text-[9px] font-medium ${
-                            s.winrate >= 60 ? 'text-green-400' : s.winrate >= 50 ? 'text-gray-400' : 'text-red-400'
-                          }`}>{s.winrate}% ({s.games}g)</span>
-                          {s.meta_wr != null && (
-                            <span className={`text-[9px] font-medium ${
-                              s.meta_wr >= 52 ? 'text-cyan-400' : s.meta_wr >= 50 ? 'text-gray-500' : 'text-red-400/60'
-                            }`}>🌍{s.meta_wr}%</span>
-                          )}
-                        </div>
-                        {s.reasons.length > 1 && (
-                          <div className="space-y-0.5">
-                            {s.reasons.slice(1, 3).map((r, i) => (
-                              <p key={i} className="text-[9px] text-gray-500 leading-tight">{r}</p>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
 
       {/* Live Game Detailed Stats — Porofessor-style */}
       {liveDetailed?.in_game && liveDetailed.my_team && liveDetailed.enemy_team && (
@@ -678,7 +512,10 @@ export default function LolPage() {
             ddVersion={ddVersion}
           />
 
-          {/* Win Probability */}
+          {/* Live in-game win probability (real game state, much stronger than pre-game) */}
+          {liveWinprob && <LiveWinProbabilityBar w={liveWinprob} />}
+
+          {/* Win Probability (pre-game) */}
           <WinProbabilityBar wp={liveDetailed.win_probability} />
 
           {/* Team Comp Analysis */}
@@ -770,6 +607,15 @@ export default function LolPage() {
               activeTab === 'stats' ? 'bg-cyan-600 text-white' : 'text-gray-400 hover:text-white'
             }`}>
             <span className="hidden sm:inline">📊 </span>Estatísticas
+          </button>
+          <button onClick={() => { setActiveTab('champselect'); }}
+            className={`relative px-3 sm:px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${
+              activeTab === 'champselect' ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-white'
+            }`}>
+            <span className="hidden sm:inline">⚔️ </span>Champ Select
+            {csStatus?.in_champ_select && activeTab !== 'champselect' && (
+              <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-purple-400 animate-pulse" />
+            )}
           </button>
         </div>
       </div>
@@ -1843,25 +1689,181 @@ export default function LolPage() {
         </div>
       )}
 
-      {/* Counter Pick window — opens automatically on champ select */}
-      {showCounterWindow && (
-        <div className="fixed inset-0 bg-black/70 flex items-start justify-center z-50 p-4 overflow-y-auto"
-          onClick={() => setShowCounterWindow(false)}>
-          <div className="bg-[#1a1a1a] rounded-2xl border border-purple-500/40 w-[680px] max-w-[92vw] mt-10 shadow-2xl"
-            onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between px-4 py-3 border-b border-[#222]">
-              <div className="flex items-center gap-2">
-                <span className="w-2.5 h-2.5 rounded-full bg-purple-500 animate-pulse" />
-                <h3 className="text-sm font-bold">Champ Select — Counter Pick</h3>
+      {/* ═══════ CHAMP SELECT TAB ═══════ */}
+      {activeTab === 'champselect' && (
+        <div className="space-y-6">
+          {!csStatus?.client_running && (
+            <div className="rounded-2xl border border-[#222] bg-[#161616] px-4 py-3 text-sm text-gray-400">
+              <span className="text-gray-300 font-medium">Cliente do LoL não detetado.</span> Abre o jogo para veres as equipas, bans e sugestões em tempo real. O counter pick aqui em baixo funciona sempre.
+            </div>
+          )}
+          {/* ── Champ Select Helper ──────────────────────────────────── */}
+          {csStatus?.client_running && (
+            <div className={`mb-6 rounded-2xl border overflow-hidden transition-all ${
+              csSession?.active
+                ? 'bg-gradient-to-r from-[#1a1020] to-[#161616] border-purple-500/40'
+                : 'bg-[#161616] border-[#222]'
+            }`}>
+              <div className="flex items-center gap-3 px-4 py-3">
+                <div className={`w-2.5 h-2.5 rounded-full ${
+                  csSession?.active ? 'bg-purple-500 animate-pulse' : 'bg-gray-600'
+                }`} />
+                <span className="text-sm font-medium">
+                  {csSession?.active ? 'Champ Select Ativo' : 'League Client conectado'}
+                </span>
+                {csStatus.phase && csStatus.phase !== 'None' && !csSession?.active && (
+                  <span className="text-xs text-gray-500">{csStatus.phase}</span>
+                )}
               </div>
-              <button onClick={() => setShowCounterWindow(false)} className="text-gray-500 hover:text-white"><X size={20} /></button>
+
+              {csSession?.active && (
+                <div className="px-4 pb-4 space-y-4">
+                  {/* Teams */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    {/* My Team */}
+                    <div>
+                      <p className="text-[10px] text-blue-400 font-medium mb-2 uppercase tracking-wider">Tua Equipa</p>
+                      <div className="space-y-1.5">
+                        {csSession.my_team?.map((p, i) => (
+                          <div key={i} className={`flex items-center gap-2 px-2 py-1.5 rounded-lg ${
+                            p.is_local_player ? 'bg-blue-500/15 border border-blue-500/30' : 'bg-[#111]'
+                          }`}>
+                            <span className="text-[10px] text-gray-500 w-10 truncate">{p.position || '?'}</span>
+                            <span className={`text-xs font-medium ${p.champion_name ? 'text-blue-300' : 'text-gray-600'}`}>
+                              {p.champion_name || '—'}
+                            </span>
+                            {p.is_local_player && <span className="text-[9px] text-blue-400 ml-auto">TU</span>}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Enemy Team */}
+                    <div>
+                      <p className="text-[10px] text-red-400 font-medium mb-2 uppercase tracking-wider">Equipa Inimiga</p>
+                      <div className="space-y-1.5">
+                        {csSession.their_team?.map((p, i) => (
+                          <div key={i} className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-[#111]">
+                            <span className="text-[10px] text-gray-500 w-10 truncate">{p.position || '?'}</span>
+                            <span className={`text-xs font-medium ${p.champion_name ? 'text-red-300' : 'text-gray-600'}`}>
+                              {p.champion_name || '—'}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Bans */}
+                  {((csSession.my_bans?.length ?? 0) > 0 || (csSession.their_bans?.length ?? 0) > 0) && (
+                    <div className="flex items-center gap-4 text-[10px]">
+                      <span className="text-gray-500">Bans:</span>
+                      <div className="flex gap-1 flex-wrap">
+                        {csSession.my_bans?.map((b, i) => (
+                          <span key={`m${i}`} className="px-1.5 py-0.5 bg-blue-500/10 text-blue-400 rounded">{b}</span>
+                        ))}
+                        {csSession.their_bans?.map((b, i) => (
+                          <span key={`t${i}`} className="px-1.5 py-0.5 bg-red-500/10 text-red-400 rounded">{b}</span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Team Comp Analysis */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <CompAnalysis label="Tua Equipa" comp={csSession.my_comp} color="blue" />
+                    <CompAnalysis label="Inimigo" comp={csSession.their_comp} color="red" />
+                  </div>
+
+                  {/* Warnings */}
+                  {csSession.my_comp?.warnings && csSession.my_comp.warnings.length > 0 && (
+                    <div className="space-y-1">
+                      {csSession.my_comp.warnings.map((w, i) => (
+                        <p key={i} className="text-xs text-yellow-400 bg-yellow-500/10 rounded-lg px-3 py-1.5">{w}</p>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Enemy Counters — shown BEFORE suggestions for prominence */}
+                  {csSession.enemy_counters && Object.keys(csSession.enemy_counters).length > 0 && (
+                    <div>
+                      <p className="text-[10px] text-red-400 font-medium mb-2 uppercase tracking-wider">🎯 Os teus picks contra cada inimigo</p>
+                      <div className="space-y-3">
+                        {Object.entries(csSession.enemy_counters).map(([enemy, picks]) => (
+                          picks.length > 0 && (
+                            <div key={enemy} className="bg-[#0d0d0d] rounded-lg p-3 border border-red-500/20">
+                              <p className="text-xs text-red-300 font-semibold mb-2">vs {enemy}</p>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                                {picks.slice(0, 6).map((p) => (
+                                  <div key={p.champion} className={`flex items-center justify-between px-2 py-1 rounded ${
+                                    p.winrate >= 60 ? 'bg-green-500/10 border border-green-500/20' :
+                                    p.winrate >= 50 ? 'bg-gray-500/10 border border-[#333]' :
+                                    'bg-red-500/10 border border-red-500/20'
+                                  }`}>
+                                    <span className="text-[11px] font-medium text-white">{p.champion}</span>
+                                    <span className={`text-[10px] font-semibold ${
+                                      p.winrate >= 60 ? 'text-green-400' : p.winrate >= 50 ? 'text-gray-400' : 'text-red-400'
+                                    }`}>{p.winrate}% <span className="text-gray-500 font-normal">({p.wins}W {p.losses}L)</span></span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Pick Suggestions */}
+                  {csSession.suggestions && csSession.suggestions.length > 0 && (
+                    <div>
+                      <p className="text-[10px] text-purple-400 font-medium mb-2 uppercase tracking-wider">Sugestões de Pick</p>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+                        {csSession.suggestions.slice(0, 8).map((s) => (
+                          <div key={s.champion} className={`bg-[#111] rounded-lg p-2 border ${
+                            s.score >= 70 ? 'border-green-500/30' : s.score >= 50 ? 'border-[#333]' : 'border-red-500/20'
+                          }`}>
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="text-xs font-medium text-white truncate">{s.champion_name}</span>
+                              <span className={`text-[10px] font-bold ${
+                                s.score >= 70 ? 'text-green-400' : s.score >= 50 ? 'text-gray-400' : 'text-red-400'
+                              }`}>{s.score}</span>
+                            </div>
+                            <div className="flex items-center gap-1 mb-1">
+                              <span className={`text-[9px] px-1 py-0.5 rounded ${
+                                s.damage === 'AP' ? 'bg-purple-500/20 text-purple-300' :
+                                s.damage === 'AD' ? 'bg-orange-500/20 text-orange-300' :
+                                'bg-gray-500/20 text-gray-400'
+                              }`}>{s.damage}</span>
+                              <span className={`text-[9px] font-medium ${
+                                s.winrate >= 60 ? 'text-green-400' : s.winrate >= 50 ? 'text-gray-400' : 'text-red-400'
+                              }`}>{s.winrate}% ({s.games}g)</span>
+                              {s.meta_wr != null && (
+                                <span className={`text-[9px] font-medium ${
+                                  s.meta_wr >= 52 ? 'text-cyan-400' : s.meta_wr >= 50 ? 'text-gray-500' : 'text-red-400/60'
+                                }`}>🌍{s.meta_wr}%</span>
+                              )}
+                            </div>
+                            {s.reasons.length > 1 && (
+                              <div className="space-y-0.5">
+                                {s.reasons.slice(1, 3).map((r, i) => (
+                                  <p key={i} className="text-[9px] text-gray-500 leading-tight">{r}</p>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
-            <div className="p-4">
-              <CounterPickPanel ddVersion={ddVersion} session={csSession} />
-            </div>
-          </div>
+          )}
+          <CounterPickPanel ddVersion={ddVersion} session={csSession} />
         </div>
       )}
+
     </div>
   );
 }
@@ -2650,6 +2652,41 @@ function WinProbabilityBar({ wp }: { wp?: WinProbability }) {
   );
 }
 
+function LiveWinProbabilityBar({ w }: { w: any }) {
+  const pct = Math.round(w.probability);
+  const enemyPct = 100 - pct;
+  const color = pct >= 60 ? 'text-green-400' : pct >= 50 ? 'text-blue-400' : pct >= 40 ? 'text-orange-400' : 'text-red-400';
+  const barColor = pct >= 60 ? 'from-green-600 to-green-400' : pct >= 50 ? 'from-blue-600 to-blue-400' : pct >= 40 ? 'from-orange-600 to-orange-400' : 'from-red-600 to-red-400';
+  const confLabel = w.confidence === 'high' ? 'Alta' : w.confidence === 'medium' ? 'Média' : 'Baixa';
+  const gd = w.gold_diff_est ?? 0;
+
+  return (
+    <div className="px-4 py-3 bg-[#0a0a0a] border-b border-[#1a1a1a]">
+      <div className="flex items-center justify-between mb-1.5">
+        <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-400">🎮 Win Probability AO VIVO</span>
+        <span className="text-[9px] text-gray-600">{w.game_minute}min · Confiança: {confLabel}</span>
+      </div>
+      <div className="flex items-center gap-3">
+        <span className={`text-lg font-black ${color} w-14 text-right`}>{pct}%</span>
+        <div className="flex-1 h-4 bg-[#1a1a1a] rounded-full overflow-hidden flex">
+          <div className={`h-full bg-gradient-to-r ${barColor} transition-all duration-500 rounded-l-full`} style={{ width: `${pct}%` }} />
+          <div className="h-full bg-gradient-to-r from-red-400 to-red-600 transition-all duration-500 rounded-r-full" style={{ width: `${enemyPct}%` }} />
+        </div>
+        <span className="text-lg font-black text-red-400 w-14">{enemyPct}%</span>
+      </div>
+      <div className="flex flex-wrap gap-2 mt-2 justify-center">
+        <span className={`text-[8px] px-1.5 py-0.5 rounded ${gd >= 0 ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'}`}>
+          💰 {gd >= 0 ? '+' : ''}{gd} ouro est.
+        </span>
+        <span className="text-[8px] px-1.5 py-0.5 rounded bg-gray-500/10 text-gray-300">⚔️ {w.score?.my} vs {w.score?.enemy}</span>
+        {w.kill_diff != null && <span className={`text-[8px] px-1.5 py-0.5 rounded ${w.kill_diff >= 0 ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'}`}>Abates {w.kill_diff >= 0 ? '+' : ''}{w.kill_diff}</span>}
+        {!!w.tower_diff && <span className={`text-[8px] px-1.5 py-0.5 rounded ${w.tower_diff >= 0 ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'}`}>Torres {w.tower_diff >= 0 ? '+' : ''}{w.tower_diff}</span>}
+        {!!w.dragon_diff && <span className={`text-[8px] px-1.5 py-0.5 rounded ${w.dragon_diff >= 0 ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'}`}>🐉 {w.dragon_diff >= 0 ? '+' : ''}{w.dragon_diff}</span>}
+      </div>
+    </div>
+  );
+}
+
 /* ── Team Comp Detailed Panel ─────────────────────────────────── */
 const SCALING_COLORS: Record<string, string> = {
   early: 'text-red-400', early_mid: 'text-orange-400', balanced: 'text-yellow-400',
@@ -3034,7 +3071,7 @@ function CounterPickPanel({ ddVersion, session }: { ddVersion: string; session?:
   const [role, setRole] = useState<CounterRole>('jungle');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [data, setData] = useState<{ personal: any[]; external: any[] } | null>(null);
+  const [data, setData] = useState<{ personal: any[]; counters: any[]; strong_against: any[] } | null>(null);
   const [champions, setChampions] = useState<{ ddragon_key: string; name: string }[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [autoFilled, setAutoFilled] = useState(false);
@@ -3075,7 +3112,7 @@ function CounterPickPanel({ ddVersion, session }: { ddVersion: string; session?:
     setError(null);
     try {
       const res = await lolApi.counterPick(q, r);
-      setData({ personal: res.personal || [], external: res.external || [] });
+      setData({ personal: res.personal || [], counters: res.counters || [], strong_against: res.strong_against || [] });
     } catch (e: any) {
       setError(e?.message || 'Erro');
     } finally {
@@ -3163,52 +3200,66 @@ function CounterPickPanel({ ddVersion, session }: { ddVersion: string; session?:
 
       {error && <p className="text-xs text-red-400 mt-2">{error}</p>}
 
-      {data && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
-          <CounterTable
-            title="Os meus jogos"
-            subtitle="histórico pessoal contra este champion"
-            rows={data.personal.map(p => ({
-              ddragon_key: p.champion,
-              label: p.champion,
-              winrate: p.winrate,
-              games: p.games,
-              extra: `${p.wins}V/${p.losses}D`,
-            }))}
-            ddVersion={ddVersion}
-            emptyMessage="Sem partidas contra este champion ainda."
-          />
-          <CounterTable
-            title="Fontes externas"
-            subtitle="op.gg + u.gg + leagueofgraphs (winrate de quem joga contra)"
-            rows={data.external.map(p => {
-              const fromList = champions.find(c => c.name.toLowerCase() === (p.champion_key || '').toLowerCase());
-              const ddKey = fromList?.ddragon_key
-                || (p.champion_slug ? p.champion_slug.charAt(0).toUpperCase() + p.champion_slug.slice(1) : p.champion_key);
-              return {
-                ddragon_key: ddKey,
-                label: p.champion_key,
+      {data && (() => {
+        const extRow = (p: any) => {
+          const fromList = champions.find(c => c.name.toLowerCase() === (p.champion_key || '').toLowerCase());
+          const ddKey = fromList?.ddragon_key
+            || (p.champion_slug ? p.champion_slug.charAt(0).toUpperCase() + p.champion_slug.slice(1) : p.champion_key);
+          return {
+            ddragon_key: ddKey,
+            label: p.champion_key,
+            winrate: p.winrate,
+            games: p.games || 0,
+            extra: p.source || '',
+          };
+        };
+        return (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-4">
+            <CounterTable
+              title="Os meus jogos"
+              subtitle="histórico pessoal contra este champion"
+              rows={data.personal.map(p => ({
+                ddragon_key: p.champion,
+                label: p.champion,
                 winrate: p.winrate,
-                games: p.games || 0,
-                extra: p.source || '',
-              };
-            })}
-            ddVersion={ddVersion}
-            emptyMessage="Não consegui buscar dados externos agora."
-          />
-        </div>
-      )}
+                games: p.games,
+                extra: `${p.wins}V/${p.losses}D`,
+              }))}
+              ddVersion={ddVersion}
+              emptyMessage="Sem partidas contra este champion ainda."
+            />
+            <CounterTable
+              title={`Counters de ${enemy || 'X'}`}
+              subtitle="op.gg + u.gg · Master+ · joga estes (winrate deles contra ele)"
+              rows={data.counters.map(extRow)}
+              ddVersion={ddVersion}
+              emptyMessage="Não consegui buscar counters agora."
+            />
+            <CounterTable
+              title={`${enemy || 'X'} é forte contra`}
+              subtitle="op.gg · Master+ · evita (winrate dele contra estes)"
+              rows={data.strong_against.map(extRow)}
+              ddVersion={ddVersion}
+              emptyMessage="Sem dados de matchups favoráveis."
+              highIsBad
+            />
+          </div>
+        );
+      })()}
     </div>
   );
 }
 
-function CounterTable({ title, subtitle, rows, ddVersion, emptyMessage }: {
+function CounterTable({ title, subtitle, rows, ddVersion, emptyMessage, highIsBad = false }: {
   title: string;
   subtitle: string;
   rows: { ddragon_key: string; label: string; winrate: number; games: number; extra: string }[];
   ddVersion: string;
   emptyMessage: string;
+  highIsBad?: boolean;
 }) {
+  const good = highIsBad ? 'text-red-400' : 'text-green-400';
+  const bad = highIsBad ? 'text-green-400' : 'text-red-400';
   return (
     <div className="bg-[#111] rounded-xl border border-[#1f1f1f] overflow-hidden">
       <div className="px-3 py-2 border-b border-[#1f1f1f]">
@@ -3232,7 +3283,7 @@ function CounterTable({ title, subtitle, rows, ddVersion, emptyMessage }: {
                 <p className="text-sm truncate">{r.label}</p>
                 <p className="text-[10px] text-gray-500">{r.extra}{r.games > 0 ? ` · ${r.games} jogos` : ''}</p>
               </div>
-              <span className={`text-sm font-bold ${r.winrate >= 52 ? 'text-green-400' : r.winrate < 48 ? 'text-red-400' : 'text-gray-300'}`}>
+              <span className={`text-sm font-bold ${r.winrate >= 52 ? good : r.winrate < 48 ? bad : 'text-gray-300'}`}>
                 {r.winrate.toFixed(0)}%
               </span>
             </li>

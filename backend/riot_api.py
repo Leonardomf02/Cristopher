@@ -944,7 +944,8 @@ def _compute_matchups(my_team: list[dict], enemy_team: list[dict]) -> list[dict]
                         best_role = role
             if best_player is None:
                 break
-            assigned.append({**best_player, "_assigned_role": best_role})
+            best_player["_assigned_role"] = best_role  # mutate original so my_team/enemy_team keep it
+            assigned.append(best_player)
             used_pids.add(best_pid)
             used_roles.add(best_role)
 
@@ -1588,47 +1589,11 @@ def _compute_win_probability(
         adj = (en_first - my_first) * 2
         factors.append({"name": "First Time", "value": adj})
 
-    # ── 5. Team Composition Factors ──────────────────────────────
-    if my_comp and enemy_comp:
-        comp_adj = 0
+    # NB: team-composition factors (Full AD/AP, Engage, No Frontline) and Duo synergy
+    # were removed — on 85 resolved predictions they showed ~0 correlation with the
+    # outcome (Engage -0.007, Duo -0.003), i.e. pure noise that only diluted the signal.
 
-        # 5a. Full AD/AP penalty — enemy can stack one resistance
-        my_warnings = my_comp.get("warnings", [])
-        en_warnings = enemy_comp.get("warnings", [])
-        my_full_dmg = any("Full AD" in w or "Full AP" in w for w in my_warnings)
-        en_full_dmg = any("Full AD" in w or "Full AP" in w for w in en_warnings)
-        if my_full_dmg and not en_full_dmg:
-            comp_adj -= 4
-            factors.append({"name": "Full AD/AP", "value": -4})
-        elif en_full_dmg and not my_full_dmg:
-            comp_adj += 4
-            factors.append({"name": "Full AD/AP", "value": 4})
-
-        # 5b. Engage advantage — teams with engage win teamfights
-        my_engage = my_comp.get("engage_count", 0)
-        en_engage = enemy_comp.get("engage_count", 0)
-        if my_engage >= 2 and en_engage == 0:
-            factors.append({"name": "Engage", "value": 3})
-        elif en_engage >= 2 and my_engage == 0:
-            factors.append({"name": "Engage", "value": -3})
-
-        # 5c. No frontline penalty
-        my_no_front = not my_comp.get("has_tank", False) and my_comp.get("archetypes", {}).get("bruiser", 0) == 0
-        en_no_front = not enemy_comp.get("has_tank", False) and enemy_comp.get("archetypes", {}).get("bruiser", 0) == 0
-        if my_no_front and not en_no_front:
-            factors.append({"name": "No Frontline", "value": -2})
-        elif en_no_front and not my_no_front:
-            factors.append({"name": "No Frontline", "value": 2})
-
-    # ── 6. Duo Synergy ──────────────────────────────────────────
-    duos_my = duos_my or []
-    duos_enemy = duos_enemy or []
-    duo_diff = len(duos_my) - len(duos_enemy)
-    if duo_diff != 0:
-        adj = min(3, max(-3, duo_diff * 2))
-        factors.append({"name": "Duo", "value": adj})
-
-    # ── 7. Momentum / Streak Asymmetry ───────────────────────────
+    # ── 5. Momentum / Streak Asymmetry ───────────────────────────
     def _team_momentum(team: list[dict]) -> float:
         """Avg momentum score across team."""
         vals = []
@@ -1654,6 +1619,14 @@ def _compute_win_probability(
         factors.append({"name": "Momentum", "value": adj})
 
     # ── Apply all factors ────────────────────────────────────────
+    # The per-lane base score is compressed and timid (≈56% accuracy alone), while the
+    # player-skill factors above (rank, winrate, autofill, first-timer, momentum) carry
+    # the real signal but, added raw, rarely move the base far enough to flip a call.
+    # Amplifying them lifted leave-one-out accuracy 62.4% → 64.7% (Brier 0.234 → 0.229)
+    # on the resolved-prediction history.
+    FACTOR_WEIGHT = 2.0
+    for f in factors:
+        f["value"] = round(f["value"] * FACTOR_WEIGHT, 1)
     total_adj = sum(f["value"] for f in factors)
     probability = max(10, min(90, base_prob + total_adj))
 
@@ -1957,6 +1930,14 @@ async def get_live_game_detailed(
     my_team_stats = _compute_team_stats(my_team)
     enemy_team_stats = _compute_team_stats(enemy_team)
     matchup_analysis = _compute_matchups(my_team, enemy_team)
+
+    # _compute_matchups tags each player with _assigned_role; order both teams by
+    # canonical role so row i lines up with the same lane on the enemy side.
+    def _role_sort_key(p: dict) -> int:
+        r = p.get("_assigned_role")
+        return _ROLE_ORDER.index(r) if r in _ROLE_ORDER else 99
+    my_team.sort(key=_role_sort_key)
+    enemy_team.sort(key=_role_sort_key)
 
     # ── Advanced Features ──────────────────────────────────────
     # Feature 2: Duo detection

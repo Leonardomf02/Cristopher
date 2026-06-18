@@ -65,7 +65,10 @@ Tudo o resto funciona (gastos, calendário, notas, mood, hábitos, viagens, inve
 ```
 FMP_API_KEY=                 # opcional (fundamentals)
 FINNHUB_API_KEY=             # opcional (earnings)
-AI_API_KEY=                  # iaedu.pt agent (Ideas → Todos, signals)
+AI_API_KEY=                  # iaedu.pt agent (Claude Opus + web search) — IA principal
+FALLBACK_AI_API_KEY=         # opcional: 2º agente iaedu.pt (ChatGPT) usado quando o Claude falha/rate-limita
+FALLBACK_AI_API_URL=         # URL do agente de fallback (tem default)
+FALLBACK_AI_CHANNEL_ID=      # channel id do fallback (tem default)
 ALLOWED_ORIGINS=             # CORS extra (separados por vírgula). Vazio = só localhost/Tailscale
 DATABASE_URL=sqlite:///./cristopher.db
 UPLOADS_DIR=uploads

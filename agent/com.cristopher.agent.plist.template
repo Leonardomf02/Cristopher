@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Template — o install.sh substitui os __PLACEHOLDERS__ e instala em ~/Library/LaunchAgents -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.cristopher.agent</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PYTHON__</string>
+        <string>__SCRIPT__</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>CRISTOPHER_CLOUD_URL</key>
+        <string>__CLOUD_URL__</string>
+        <key>INGEST_TOKEN</key>
+        <string>__TOKEN__</string>
+        <key>PUSH_INTERVAL</key>
+        <string>__INTERVAL__</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>__LOG__</string>
+    <key>StandardErrorPath</key>
+    <string>__LOG__</string>
+</dict>
+</plist>

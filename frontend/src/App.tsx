@@ -1,6 +1,6 @@
 import { Routes, Route, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
-import { LayoutDashboard, Calendar, Wallet, Swords, Plane, ListTodo, Moon, Timer, Play, Pause, Square, StickyNote, TrendingUp, BarChart3, Code2, Smartphone, Menu, X } from 'lucide-react';
+import { LayoutDashboard, Calendar, Wallet, Swords, Plane, ListTodo, Moon, Timer, Play, Pause, Square, StickyNote, TrendingUp, BarChart3, Code2, Smartphone, Menu, X, Tag, BookOpen, Music } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
 import CalendarPage from './pages/CalendarPage';
 import ExpensesPage from './pages/ExpensesPage';
@@ -17,9 +17,14 @@ import AppUsagePage from './pages/AppUsagePage';
 import IdeasPage from './pages/IdeasPage';
 import CodeActivityPage from './pages/CodeActivityPage';
 import ScreenTimePage from './pages/ScreenTimePage';
+import DealsPage from './pages/DealsPage';
+import StoriesPage from './pages/StoriesPage';
+import SpotifyPage from './pages/SpotifyPage';
 import { FlowProvider, useFlow } from './FlowContext';
+import Login from './Login';
+import { getToken } from './auth';
 import { requestNotificationPermission, notifyEventSoon, notifyHabitReminder, isNotificationsEnabled } from './notifications';
-import { eventsApi, habitsApi } from './api';
+import { eventsApi, habitsApi, dealsApi } from './api';
 import { format } from 'date-fns';
 
 const navItems = [
@@ -28,6 +33,8 @@ const navItems = [
   { to: '/expenses', icon: Wallet, label: 'Gastos' },
   { to: '/lists', icon: ListTodo, label: 'Reminders' },
   { to: '/notes', icon: StickyNote, label: 'Notas' },
+  { to: '/stories', icon: BookOpen, label: 'Histórias' },
+  { to: '/spotify', icon: Music, label: 'Spotify' },
   { to: '/code', icon: Code2, label: 'VS Code' },
   { to: '/sleep', icon: Moon, label: 'Sono' },
   { to: '/flow', icon: Timer, label: 'Flow' },
@@ -36,9 +43,27 @@ const navItems = [
   { to: '/lol', icon: Swords, label: 'LoL Tracker' },
   { to: '/investments', icon: TrendingUp, label: 'Investimentos' },
   { to: '/trips', icon: Plane, label: 'Viagens' },
+  { to: '/deals', icon: Tag, label: 'Deals' },
 ];
 
 export default function App() {
+  // null = a verificar; true = entra; false = mostra login
+  const [authed, setAuthed] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    fetch('/api/auth/status')
+      .then((r) => r.json())
+      .then((d) => { if (alive) setAuthed(!d.auth_required || !!getToken()); })
+      .catch(() => { if (alive) setAuthed(true); }); // backend offline → não bloquear dev
+    const onUnauth = () => setAuthed(false);
+    window.addEventListener('cristopher:unauthorized', onUnauth);
+    return () => { alive = false; window.removeEventListener('cristopher:unauthorized', onUnauth); };
+  }, []);
+
+  if (authed === null) return null;
+  if (!authed) return <Login onSuccess={() => setAuthed(true)} />;
+
   return (
     <FlowProvider>
       <AppShell />
@@ -91,10 +116,19 @@ function MiniTimer() {
 function AppShell() {
   const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [dealsNew, setDealsNew] = useState(0);
 
   // Fechar drawer ao navegar para outra página (mobile)
   useEffect(() => {
     setSidebarOpen(false);
+  }, [location.pathname]);
+
+  // Badge de deals novos (refresca ao navegar e a cada 5 min)
+  useEffect(() => {
+    const load = () => dealsApi.summary().then(s => setDealsNew(s.new_count)).catch(() => {});
+    load();
+    const id = setInterval(load, 300000);
+    return () => clearInterval(id);
   }, [location.pathname]);
 
   const currentLabel = navItems.find(n => n.to === location.pathname)?.label
@@ -195,6 +229,9 @@ function AppShell() {
             >
               <Icon size={20} />
               <span className="text-sm font-medium">{label}</span>
+              {to === '/deals' && dealsNew > 0 && (
+                <span className="ml-auto text-xs font-bold bg-pink-600 text-white rounded-full px-2 py-0.5">{dealsNew}</span>
+              )}
             </NavLink>
           ))}
         </nav>
@@ -230,6 +267,8 @@ function AppShell() {
             <Route path="/ideas" element={<IdeasPage />} />
             <Route path="/code" element={<CodeActivityPage />} />
             <Route path="/notes" element={<NotesPage />} />
+            <Route path="/stories" element={<StoriesPage />} />
+            <Route path="/spotify" element={<SpotifyPage />} />
             <Route path="/sleep" element={<SleepPage />} />
             <Route path="/flow" element={<FlowPage />} />
             <Route path="/habits" element={<HabitAnalyticsPage />} />
@@ -238,6 +277,7 @@ function AppShell() {
             <Route path="/investments" element={<InvestmentsPage />} />
             <Route path="/trips" element={<TripsPage />} />
             <Route path="/trips/:id" element={<TripDetail />} />
+            <Route path="/deals" element={<DealsPage />} />
           </Routes>
         </div>
       </main>

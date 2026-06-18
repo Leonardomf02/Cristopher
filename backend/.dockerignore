@@ -1,0 +1,14 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.db
+*.db-wal
+*.db-shm
+.env
+data/
+uploads/
+app_tracker.pid
+tests/
+.pytest_cache/
+deals_sources/__pycache__/

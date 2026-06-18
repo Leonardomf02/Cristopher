@@ -6,6 +6,9 @@ python-multipart==0.0.12
 aiofiles==24.1.0
 python-dateutil==2.9.0
 httpx==0.27.2
+curl_cffi==0.15.0
 feedparser==6.0.11
 python-dotenv==1.0.1
 tenacity==9.0.0
+vinted-scraper==3.1.1
+PyJWT==2.9.0

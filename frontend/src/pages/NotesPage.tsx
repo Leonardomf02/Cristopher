@@ -1,18 +1,21 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useLayoutEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { format } from 'date-fns';
 import { pt } from 'date-fns/locale';
 import {
   Plus, X, Trash2, Search, FolderPlus, Pin, PinOff, ChevronLeft, ChevronRight,
-  Folder, FileText,
+  Folder, FileText, FolderGit2, Maximize2,
 } from 'lucide-react';
 import { notesApi } from '../api';
 import { NoteFolder, Note } from '../types';
+import { ModeToggle, NoteBody, viewModeKey } from '../components/NoteBody';
 
 const FOLDER_COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#06B6D4', '#F97316'];
 const NOTE_COLORS = ['', '#1e3a5f', '#1a3d2e', '#3d3520', '#3d1f1f', '#2d1f3d', '#3d1f35'];
 
 const LAST_NOTE_KEY = 'notesLastSelectedId';
 const SIDEBAR_COLLAPSED_KEY = 'notesSidebarCollapsed';
+
 
 export default function NotesPage() {
   const [folders, setFolders] = useState<NoteFolder[]>([]);
@@ -27,11 +30,35 @@ export default function NotesPage() {
     return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1';
   });
   const [autoSelected, setAutoSelected] = useState(false);
-  const contentRef = useRef<HTMLTextAreaElement>(null);
+  const [fullView, setFullView] = useState(false);
+  const [noteMode, setNoteMode] = useState<'scroll' | 'pages'>('scroll');
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const noteParam = searchParams.get('note');
+  const novaParam = searchParams.get('new');
 
   useEffect(() => { loadFolders(); loadNotes(); }, []);
   useEffect(() => { loadNotes(); }, [selectedFolder, searchQuery]);
+
+  // Abrir directamente uma nota via ?note=<id> (ex: vindo do botão de um projecto no VS Code)
+  useEffect(() => {
+    const id = Number(noteParam);
+    if (!id) return;
+    notesApi.get(id)
+      .then(n => { setSelectedNote(n); setAutoSelected(true); })
+      .catch(() => {})
+      .finally(() => setSearchParams({}, { replace: true }));
+  }, [noteParam]);
+
+  // ?new=1 (paleta ⌘K) abre já uma nota nova. O ref evita criar duas em dev,
+  // onde o React corre os efeitos a dobrar.
+  const novaPedida = useRef(false);
+  useEffect(() => {
+    if (novaParam !== '1' || novaPedida.current) return;
+    novaPedida.current = true;
+    setSearchParams({}, { replace: true });
+    createNote().catch(() => {});
+  }, [novaParam]);
 
   useEffect(() => {
     localStorage.setItem(SIDEBAR_COLLAPSED_KEY, sidebarCollapsed ? '1' : '0');
@@ -53,6 +80,17 @@ export default function NotesPage() {
   useEffect(() => {
     if (selectedNote) localStorage.setItem(LAST_NOTE_KEY, String(selectedNote.id));
   }, [selectedNote?.id]);
+
+  // Cada nota lembra-se se foi vista em Scroll ou Caderno.
+  useEffect(() => {
+    if (!selectedNote) return;
+    setNoteMode(localStorage.getItem(viewModeKey(selectedNote.id)) === 'pages' ? 'pages' : 'scroll');
+  }, [selectedNote?.id]);
+
+  function changeMode(m: 'scroll' | 'pages') {
+    setNoteMode(m);
+    if (selectedNote) localStorage.setItem(viewModeKey(selectedNote.id), m);
+  }
 
   async function loadFolders() {
     const data = await notesApi.listFolders();
@@ -107,6 +145,13 @@ export default function NotesPage() {
     loadNotes();
   }
 
+  async function unlinkProject() {
+    if (!selectedNote) return;
+    const updated = await notesApi.update(selectedNote.id, { project_path: null });
+    setSelectedNote(updated);
+    setNotes(prev => prev.map(n => n.id === updated.id ? updated : n));
+  }
+
   function handleNoteFieldChange(field: 'title' | 'content' | 'color', value: string) {
     if (!selectedNote) return;
     setSelectedNote(prev => prev ? { ...prev, [field]: value } : null);
@@ -134,7 +179,10 @@ export default function NotesPage() {
   const mobileShowEditor = !!selectedNote;
 
   return (
-    <div className="flex flex-col lg:flex-row gap-0 lg:h-full">
+    // A altura é a da janela menos o padding do shell, e não `h-full`: com o pai
+    // a crescer com o conteúdo, o caderno media uma "página" maior do que o ecrã
+    // e a página ganhava scroll — o contrário do que o modo caderno é.
+    <div className="flex flex-col lg:flex-row gap-0 h-full lg:h-[calc(100dvh-4rem)] min-h-0 bg-[#161616] border border-[#222] rounded-2xl overflow-hidden">
       {/* Unified sidebar: search + folders + notes list */}
       {!sidebarCollapsed && (
         <div className={`${mobileShowEditor ? 'hidden lg:flex' : 'flex'} w-full lg:w-72 lg:shrink-0 lg:border-r lg:border-[#222] flex-col max-h-[60vh] lg:max-h-none border-b border-[#222] lg:border-b-0 pb-3 lg:pb-0 mb-3 lg:mb-0`}>
@@ -278,6 +326,18 @@ export default function NotesPage() {
                 ))}
               </div>
 
+              {selectedNote.project_path && (
+                <span className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-blue-500/10 text-blue-300 text-[11px] max-w-[220px]"
+                  title={`Projecto: ${selectedNote.project_path}`}>
+                  <FolderGit2 size={12} className="shrink-0" />
+                  <span className="truncate">{selectedNote.project_path.split('/').pop()}</span>
+                  <button onClick={unlinkProject} title="Desassociar do projecto"
+                    className="shrink-0 text-blue-300/60 hover:text-red-400">
+                    <X size={12} />
+                  </button>
+                </span>
+              )}
+
               <select
                 value={selectedNote.folder_id || ''}
                 onChange={async e => {
@@ -295,9 +355,16 @@ export default function NotesPage() {
                 ))}
               </select>
 
-              <span className="text-xs text-gray-600">
+              <span className="hidden sm:inline text-xs text-gray-600">
                 {format(new Date(selectedNote.updated_at), "d MMM yyyy 'às' HH:mm", { locale: pt })}
               </span>
+
+              <ModeToggle mode={noteMode} onChange={changeMode} />
+
+              <button onClick={() => setFullView(true)} title="Ver em página inteira"
+                className="text-gray-500 hover:text-blue-400 p-1">
+                <Maximize2 size={16} />
+              </button>
 
               <button onClick={() => deleteNote(selectedNote.id)}
                 className="text-gray-500 hover:text-red-400 p-1">
@@ -305,7 +372,7 @@ export default function NotesPage() {
               </button>
             </div>
 
-            <div className="flex-1 flex flex-col overflow-y-auto px-6 py-4"
+            <div className="flex-1 flex flex-col overflow-hidden min-h-0 px-6 py-4"
               style={{ backgroundColor: selectedNote.color || 'transparent' }}
             >
               <input
@@ -315,15 +382,14 @@ export default function NotesPage() {
                 onFocus={() => setEditingTitle(true)}
                 onBlur={() => setEditingTitle(false)}
                 placeholder="Título da nota..."
-                className="w-full bg-transparent text-2xl font-bold mb-4 focus:outline-none placeholder-gray-600"
+                className="w-full bg-transparent text-2xl font-bold mb-4 shrink-0 focus:outline-none placeholder-gray-600"
                 autoFocus={editingTitle}
               />
-              <textarea
-                ref={contentRef}
-                value={selectedNote.content}
-                onChange={e => handleNoteFieldChange('content', e.target.value)}
-                placeholder="Começa a escrever..."
-                className="w-full flex-1 bg-transparent text-sm leading-relaxed focus:outline-none resize-none min-h-[400px] placeholder-gray-600"
+              <NoteBody
+                note={selectedNote}
+                mode={noteMode}
+                onContentChange={v => handleNoteFieldChange('content', v)}
+                dense
               />
             </div>
           </>
@@ -336,6 +402,17 @@ export default function NotesPage() {
           </div>
         )}
       </div>
+
+      {fullView && selectedNote && (
+        <NoteFullView
+          note={selectedNote}
+          mode={noteMode}
+          onModeChange={changeMode}
+          onContentChange={v => handleNoteFieldChange('content', v)}
+          onTitleChange={v => handleNoteFieldChange('title', v)}
+          onClose={() => setFullView(false)}
+        />
+      )}
 
       {showNewFolder && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50"
@@ -385,6 +462,42 @@ export default function NotesPage() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function NoteFullView({ note, mode, onModeChange, onContentChange, onTitleChange, onClose }: {
+  note: Note;
+  mode: 'scroll' | 'pages';
+  onModeChange: (m: 'scroll' | 'pages') => void;
+  onContentChange: (v: string) => void;
+  onTitleChange: (v: string) => void;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-[60] flex flex-col" style={{ backgroundColor: note.color || '#0f0f0f' }}>
+      <div className="flex items-center gap-3 px-4 sm:px-6 py-3 border-b border-[#222] bg-black/20 backdrop-blur shrink-0">
+        <button onClick={onClose} title="Fechar (Esc)"
+          className="p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-white/10 shrink-0">
+          <X size={18} />
+        </button>
+        <input
+          value={note.title}
+          onChange={e => onTitleChange(e.target.value)}
+          placeholder="Título da nota..."
+          className="flex-1 bg-transparent text-lg font-bold focus:outline-none min-w-0 placeholder-gray-600"
+        />
+        <ModeToggle mode={mode} onChange={onModeChange} />
+      </div>
+      <div className="flex-1 min-h-0 flex flex-col w-full max-w-4xl mx-auto px-5 sm:px-10 py-6">
+        <NoteBody note={note} mode={mode} onContentChange={onContentChange} />
+      </div>
     </div>
   );
 }

@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import date, datetime, timedelta
+from pydantic import BaseModel
 from typing import Optional
 from collections import defaultdict
 import csv
@@ -10,20 +11,69 @@ import io
 from database import get_db
 from models import AppUsageSession, AppUsageBlocklist, AppCategoryOverride, FlowSession
 from schemas import AppUsageSessionCreate, AppUsageSessionOut
-from app_categories import categorize, CATEGORY_COLORS, CATEGORY_LABELS
+from app_categories import (
+    categorize, CATEGORY_COLORS, CATEGORY_LABELS, categorize_browser_title, is_browser,
+    e_ruido_do_browser, categorize_domain, BROWSER_BUNDLES,
+)
 
 router = APIRouter(prefix="/api/app-usage", tags=["App Usage"])
 
 
+_RULES_CACHE: dict = {"at": 0.0, "map": {}}
+
+
+def _learned_rules(db: Session) -> dict[str, str]:
+    """Regras título→categoria aprendidas (IA/utilizador), com cache de 60s."""
+    import time as _t
+    from models import BrowserTitleRule
+    if _t.time() - _RULES_CACHE["at"] < 60:
+        return _RULES_CACHE["map"]
+    try:
+        m = {r.pattern: r.category for r in db.query(BrowserTitleRule).all()}
+    except Exception:
+        m = {}
+    _RULES_CACHE.update({"at": _t.time(), "map": m})
+    return m
+
+
+_OVERRIDES_CACHE: dict = {"at": 0.0, "bundles": {}, "apps": {}}
+
+
+def _overrides(db: Session) -> tuple[dict, dict]:
+    """Categorias definidas à mão, em memória (60s).
+
+    Antes era uma consulta à base por cada sessão: 16 mil sessões davam 32 mil
+    consultas e três segundos de espera só para desenhar um gráfico."""
+    import time as _t
+    if _t.time() - _OVERRIDES_CACHE["at"] < 60:
+        return _OVERRIDES_CACHE["bundles"], _OVERRIDES_CACHE["apps"]
+    bundles: dict[str, str] = {}
+    apps: dict[str, str] = {}
+    try:
+        for o in db.query(AppCategoryOverride).all():
+            if o.bundle_id:
+                bundles[o.bundle_id] = o.category
+            if o.app_name:
+                apps[o.app_name] = o.category
+    except Exception:
+        pass
+    _OVERRIDES_CACHE.update({"at": _t.time(), "bundles": bundles, "apps": apps})
+    return bundles, apps
+
+
 def _resolve_category(db: Session, session: AppUsageSession) -> str:
     """Apply user override, otherwise use the built-in mapping."""
-    override = None
-    if session.bundle_id:
-        override = db.query(AppCategoryOverride).filter(AppCategoryOverride.bundle_id == session.bundle_id).first()
-    if not override and session.app_name:
-        override = db.query(AppCategoryOverride).filter(AppCategoryOverride.app_name == session.app_name).first()
-    if override:
-        return override.category
+    bundles, apps = _overrides(db)
+    if session.bundle_id and session.bundle_id in bundles:
+        return bundles[session.bundle_id]
+    if session.app_name and session.app_name in apps:
+        return apps[session.app_name]
+    # Browser: 183h/mês caíam todas em "browser". O título diz o site, e o site
+    # diz se aquilo era trabalho, redes ou streaming.
+    if is_browser(session.bundle_id, session.app_name):
+        pelo_titulo = categorize_browser_title(getattr(session, "window_title", None), _learned_rules(db), getattr(session, "domain", None))
+        if pelo_titulo:
+            return pelo_titulo
     return categorize(session.bundle_id, session.app_name)
 
 
@@ -214,6 +264,76 @@ def by_title(
         }
         for r in rows
     ]
+
+
+# ── Onde é que ele vai no browser ─────────────────────────────────
+
+@router.get("/by-domain")
+def by_domain(
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    limit: int = Query(25, ge=1, le=200),
+    db: Session = Depends(get_db),
+):
+    """Tempo de browser por site. O maior número da app (258h de Brave) estava
+    partido em 1970 títulos; por domínio são umas dezenas de sites."""
+    q = (
+        db.query(
+            AppUsageSession.domain,
+            func.sum(AppUsageSession.duration_seconds).label("seconds"),
+            func.count(AppUsageSession.id).label("sessions"),
+            func.count(func.distinct(AppUsageSession.date)).label("days"),
+        )
+        .filter(AppUsageSession.domain.isnot(None), AppUsageSession.domain != "")
+    )
+    if start_date:
+        q = q.filter(AppUsageSession.date >= start_date)
+    if end_date:
+        q = q.filter(AppUsageSession.date <= end_date)
+    linhas = q.group_by(AppUsageSession.domain).order_by(func.sum(AppUsageSession.duration_seconds).desc()).all()
+
+    total = sum(r.seconds or 0 for r in linhas)
+    sites = [
+        {
+            "domain": r.domain,
+            "seconds": int(r.seconds or 0),
+            "sessions": int(r.sessions or 0),
+            "days": int(r.days or 0),
+            "category": categorize_domain(r.domain) or "other",
+            "percentage": round((r.seconds or 0) / total * 100, 1) if total else 0.0,
+        }
+        for r in linhas
+    ]
+
+    por_categoria: dict[str, int] = {}
+    for s in sites:
+        por_categoria[s["category"]] = por_categoria.get(s["category"], 0) + s["seconds"]
+
+    # Quanto do browser ainda não tem domínio guardado (sessões anteriores a isto
+    # existir) — sem este número os totais parecem menores do que são.
+    sem = (
+        db.query(func.coalesce(func.sum(AppUsageSession.duration_seconds), 0))
+        .filter(AppUsageSession.domain.is_(None) | (AppUsageSession.domain == ""))
+    )
+    if start_date:
+        sem = sem.filter(AppUsageSession.date >= start_date)
+    if end_date:
+        sem = sem.filter(AppUsageSession.date <= end_date)
+    sem_dominio = int(
+        sem.filter(AppUsageSession.bundle_id.in_(tuple(BROWSER_BUNDLES))).scalar() or 0
+    )
+
+    return {
+        "sites": sites[:limit],
+        "total_seconds": total,
+        "distinct_domains": len(sites),
+        "unknown_seconds": sem_dominio,
+        "by_category": [
+            {"category": c, "label": CATEGORY_LABELS.get(c, c), "color": CATEGORY_COLORS.get(c, "#9CA3AF"),
+             "seconds": s, "percentage": round(s / total * 100, 1) if total else 0.0}
+            for c, s in sorted(por_categoria.items(), key=lambda kv: -kv[1])
+        ],
+    }
 
 
 # ── Cross-reference with Flow sessions ────────────────────────────
@@ -498,3 +618,188 @@ def cleanup(
         db.commit()
 
     return {"merged": merged, "purged": purged}
+
+
+# ── Regras de título do browser (aprender o que ainda é opaco) ────
+
+class TitleRuleIn(BaseModel):
+    pattern: str
+    category: str
+
+
+@router.get("/title-rules")
+def list_title_rules(db: Session = Depends(get_db)):
+    from models import BrowserTitleRule
+    rows = db.query(BrowserTitleRule).order_by(BrowserTitleRule.created_at.desc()).all()
+    return [{"id": r.id, "pattern": r.pattern, "category": r.category, "source": r.source} for r in rows]
+
+
+@router.put("/title-rules")
+def upsert_title_rule(data: TitleRuleIn, db: Session = Depends(get_db)):
+    from models import BrowserTitleRule
+    pattern = data.pattern.strip().lower()
+    if not pattern:
+        raise HTTPException(status_code=400, detail="Padrão vazio")
+    if data.category not in CATEGORY_LABELS:
+        raise HTTPException(status_code=400, detail="Categoria inválida")
+    row = db.query(BrowserTitleRule).filter(BrowserTitleRule.pattern == pattern).first()
+    if not row:
+        row = BrowserTitleRule(pattern=pattern, category=data.category, source="user")
+        db.add(row)
+    else:
+        row.category = data.category
+        row.source = "user"
+    db.commit()
+    _RULES_CACHE["at"] = 0.0
+    return {"pattern": pattern, "category": data.category}
+
+
+@router.delete("/title-rules/{rule_id}")
+def delete_title_rule(rule_id: int, db: Session = Depends(get_db)):
+    from models import BrowserTitleRule
+    n = db.query(BrowserTitleRule).filter(BrowserTitleRule.id == rule_id).delete()
+    db.commit()
+    _RULES_CACHE["at"] = 0.0
+    return {"deleted": n}
+
+
+@router.get("/unclassified-titles")
+def unclassified_titles(days: int = Query(60, ge=1, le=365), limit: int = Query(25, ge=1, le=100),
+                        db: Session = Depends(get_db)):
+    """Títulos de browser com tempo relevante que ainda não caem em nenhuma categoria."""
+    desde = (date.today() - timedelta(days=days)).isoformat()
+    rows = (
+        db.query(AppUsageSession.window_title, func.sum(AppUsageSession.duration_seconds))
+        .filter(AppUsageSession.date >= desde)
+        .filter(AppUsageSession.window_title.isnot(None), AppUsageSession.window_title != "")
+        # só o browser: os títulos do VS Code e afins já vão pela app
+        .filter(func.lower(AppUsageSession.app_name).in_([
+            "brave browser", "google chrome", "safari", "firefox", "arc", "microsoft edge",
+        ]))
+        .group_by(AppUsageSession.window_title)
+        .order_by(func.sum(AppUsageSession.duration_seconds).desc())
+        .limit(400)
+        .all()
+    )
+    regras = _learned_rules(db)
+    out = []
+    ruido_seg = 0
+    for titulo, seg in rows:
+        if e_ruido_do_browser(titulo):
+            ruido_seg += int(seg or 0)      # é o browser a falar, não um site
+            continue
+        if categorize_browser_title(titulo, regras) is None:
+            out.append({"title": titulo, "seconds": int(seg or 0)})
+        if len(out) >= limit:
+            break
+    sem_titulo = (
+        db.query(func.coalesce(func.sum(AppUsageSession.duration_seconds), 0))
+        .filter(AppUsageSession.date >= desde)
+        .filter(func.lower(AppUsageSession.app_name).in_([
+            "brave browser", "google chrome", "safari", "firefox", "arc", "microsoft edge",
+        ]))
+        .filter((AppUsageSession.window_title.is_(None)) | (AppUsageSession.window_title == ""))
+        .scalar()
+    ) or 0
+    total = sum(x["seconds"] for x in out)
+    return {
+        "titles": out,
+        "total_seconds": total,
+        "untitled_seconds": int(sem_titulo),
+        "browser_noise_seconds": ruido_seg,   # popups e ecrãs do próprio browser
+    }
+
+
+@router.post("/title-rules/learn")
+async def learn_title_rules(days: int = Query(60, ge=1, le=365), db: Session = Depends(get_db)):
+    """Manda os títulos opacos à IA e guarda as regras que ela devolver."""
+    from ai_config import ask_agent_async, extract_json
+    from models import BrowserTitleRule
+
+    alvo = unclassified_titles(days=days, limit=25, db=db)
+    titulos = alvo["titles"]
+    if not titulos:
+        return {"learned": 0, "rules": [], "reason": "nada por classificar"}
+
+    lista = "\n".join(f"- {t['title'][:90]} ({round(t['seconds']/3600, 1)}h)" for t in titulos)
+    categorias = ", ".join(sorted(CATEGORY_LABELS.keys()))
+    prompt = f"""Classifica títulos de janelas do meu computador em categorias de uso.
+
+Categorias possíveis (usa exactamente estes nomes): {categorias}
+
+Títulos (com o tempo que passei em cada um):
+{lista}
+
+Devolve SÓ um JSON: {{"rules": [{{"pattern": "pedaço curto e distintivo do título em minúsculas", "category": "uma das categorias"}}]}}
+
+Regras:
+- O "pattern" deve ser a parte estável do título (nome do site/app), 2 a 30 caracteres, minúsculas.
+- Ignora títulos genéricos onde não se percebe o que é (ex.: "Copy", "Translate this page?").
+- Só o que tiveres confiança. Menos regras boas é melhor que muitas erradas."""
+
+    try:
+        resposta = await ask_agent_async(prompt, timeout=120.0, feature="aquecer")
+    except Exception as ex:
+        raise HTTPException(status_code=502, detail=f"IA indisponível: {ex}")
+
+    data = extract_json(resposta) or {}
+    criadas = []
+    for r in (data.get("rules") or []):
+        pattern = str(r.get("pattern", "")).strip().lower()[:60]
+        cat = str(r.get("category", "")).strip()
+        if not pattern or len(pattern) < 2 or cat not in CATEGORY_LABELS:
+            continue
+        existe = db.query(BrowserTitleRule).filter(BrowserTitleRule.pattern == pattern).first()
+        if existe:
+            continue
+        db.add(BrowserTitleRule(pattern=pattern, category=cat, source="ai"))
+        criadas.append({"pattern": pattern, "category": cat})
+    if criadas:
+        db.commit()
+        _RULES_CACHE["at"] = 0.0
+    return {"learned": len(criadas), "rules": criadas}
+
+
+@router.get("/self-usage")
+def uso_da_propria_app(days: int = Query(30, ge=1, le=365), db: Session = Depends(get_db)):
+    """Onde é que ele passa o tempo dentro do Cristopher.
+
+    O tracker já grava o título do separador; desde que cada página passou a
+    dizer o seu nome, isto mostra que secções são realmente usadas — e quais
+    estão lá só a ocupar espaço no menu."""
+    desde = date.today() - timedelta(days=days - 1)
+    linhas = (
+        db.query(AppUsageSession)
+        .filter(AppUsageSession.date >= desde)
+        .filter(AppUsageSession.window_title.ilike("%Cristopher%"))
+        .all()
+    )
+    por_seccao: dict[str, dict] = {}
+    sem_nome = 0
+    for s in linhas:
+        titulo = (s.window_title or "").strip()
+        # "Gastos · Cristopher - Brave - Work" → "Gastos"
+        if "·" in titulo:
+            seccao = titulo.split("·")[0].strip()
+        elif titulo.lower().startswith("cristopher"):
+            sem_nome += s.duration_seconds or 0
+            continue
+        else:
+            sem_nome += s.duration_seconds or 0
+            continue
+        d = por_seccao.setdefault(seccao, {"section": seccao, "seconds": 0, "visits": 0, "last": None})
+        d["seconds"] += s.duration_seconds or 0
+        d["visits"] += 1
+        if not d["last"] or (s.start_time and s.start_time.date().isoformat() > d["last"]):
+            d["last"] = s.start_time.date().isoformat() if s.start_time else None
+
+    saida = sorted(por_seccao.values(), key=lambda r: -r["seconds"])
+    total = sum(r["seconds"] for r in saida)
+    for r in saida:
+        r["share"] = round(r["seconds"] / total * 100, 1) if total else 0
+    return {
+        "days": days,
+        "total_seconds": total,
+        "unnamed_seconds": sem_nome,      # antes de as páginas passarem a dizer o nome
+        "sections": saida,
+    }

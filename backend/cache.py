@@ -24,7 +24,7 @@ from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = "cristopher.db"
+from database import DB_PATH
 TABLE = "api_cache"
 _INIT_LOCK = threading.Lock()
 _INITIALIZED = False

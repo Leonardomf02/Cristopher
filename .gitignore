@@ -23,11 +23,18 @@ backend/.env
 frontend/.env
 frontend/.env.local
 
+# NAS: login do painel e o YAML com as chaves todas (o repositório é público)
+.env.nas
+nas-compose.yml
+
 # Databases (dados pessoais — nunca para repo)
 *.db
 *.db-journal
 *.db-wal
 *.db-shm
+*.db.bak-*
+*.db.gz
+*.db.gz.enc
 
 # Uploads (recibos, etc — dados pessoais)
 uploads/
@@ -55,3 +62,23 @@ tasks/
 # Misc
 *.swp
 *.bak
+
+# binário compilado do OCR nativo (gera-se com swiftc tools/ocr.swift)
+backend/tools/ocr
+
+# chaves de push (não vão para o repositório)
+backend/push_keys.json
+backend/push_key.pem
+
+# chave privada da ligação ao banco
+backend/enablebanking.pem
+
+# certificado local para o regresso do banco (https em localhost)
+frontend/certs/
+
+# ponte nativa para o Reminders da Apple (gera-se com swiftc tools/reminders.swift)
+backend/tools/reminders
+
+# cópias do .env (têm as chaves)
+.env.bak*
+backend/.env.bak*

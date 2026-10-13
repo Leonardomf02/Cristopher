@@ -13,15 +13,15 @@ import io
 import json
 import re
 import logging
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from urllib.parse import quote
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from database import SessionLocal
+from database import SessionLocal, get_db
 from models import SpotifyPlaylist, SpotifyTrack, SpotifyOverview, SpotifySuggestion
 from ai_config import ask_agent_async, extract_json
 
@@ -50,6 +50,18 @@ class ImportIn(BaseModel):
 
 class ImportLinkIn(BaseModel):
     url: str
+
+
+class PlaceIn(BaseModel):
+    title: str
+    artist: str = ""
+
+
+class AddTrackIn(BaseModel):
+    title: str
+    artist: str = ""
+    album: str = ""
+    spotify_url: str = ""
 
 
 # ── Helpers: parsing do import ───────────────────────────────────
@@ -731,7 +743,7 @@ async def analyze_playlist(playlist_id: int):
         db.close()
 
     prompt = _build_prompt(name, vibe, is_fav, tracks)
-    text = await ask_agent_async(prompt, timeout=180.0)
+    text = await ask_agent_async(prompt, timeout=180.0, feature="spotify")
     if not text:
         raise HTTPException(status_code=502, detail="IA indisponível")
     parsed = extract_json(text)
@@ -812,7 +824,7 @@ async def analyze_overview():
     duplicates = _find_duplicates(collected)
     index_map = _index_map(collected)
     prompt = _build_overview_prompt(collected, total_tracks, truncated)
-    text = await ask_agent_async(prompt, timeout=240.0)
+    text = await ask_agent_async(prompt, timeout=240.0, feature="spotify")
     if not text:
         raise HTTPException(status_code=502, detail="IA indisponível")
     parsed = extract_json(text)
@@ -839,3 +851,287 @@ async def analyze_overview():
     finally:
         db.close()
     return result
+
+
+@router.post("/dedupe")
+def dedupe_playlists():
+    """Remove cópias extra da mesma faixa dentro de cada playlist (fica a primeira)."""
+    db: Session = SessionLocal()
+    try:
+        removed = 0
+        for p in db.query(SpotifyPlaylist).all():
+            tracks = (
+                db.query(SpotifyTrack)
+                .filter(SpotifyTrack.playlist_id == p.id)
+                .order_by(SpotifyTrack.position, SpotifyTrack.id)
+                .all()
+            )
+            seen: set[tuple[str, str]] = set()
+            for t in tracks:
+                key = (_norm(t.title), _norm(t.artist))
+                if not key[0]:
+                    continue
+                if key in seen:
+                    db.delete(t)
+                    removed += 1
+                else:
+                    seen.add(key)
+        # a visão geral em cache ainda mostraria os duplicados antigos → limpa-os lá também
+        ov = db.query(SpotifyOverview).filter(SpotifyOverview.id == 1).first()
+        if ov and ov.last_analysis:
+            try:
+                data = json.loads(ov.last_analysis)
+                data["duplicates"] = []
+                ov.last_analysis = json.dumps(data, ensure_ascii=False)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        db.commit()
+        return {"removed": removed}
+    finally:
+        db.close()
+
+
+# ── Adicionar música: pesquisa + IA escolhe a(s) playlist(s) ─────
+# Sem API do Spotify (conta grátis), o autocomplete usa a Deezer (sem key) com
+# fallback iTunes. O link devolvido é o de pesquisa do Spotify.
+
+@router.get("/search")
+async def search_songs(q: str):
+    q = (q or "").strip()
+    if len(q) < 2:
+        return []
+    out: list[dict] = []
+
+    def _add(title: str, artist: str, album: str):
+        title, artist, album = title.strip(), artist.strip(), album.strip()
+        if not title:
+            return
+        key = (_norm(title), _norm(artist))
+        if any((_norm(o["title"]), _norm(o["artist"])) == key for o in out):
+            return
+        out.append({"title": title, "artist": artist, "album": album,
+                    "search_url": _search_url(title, artist)})
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            r = await client.get("https://api.deezer.com/search", params={"q": q, "limit": 10})
+            if r.status_code == 200:
+                for d in (r.json().get("data") or []):
+                    _add(d.get("title") or "", (d.get("artist") or {}).get("name") or "",
+                         (d.get("album") or {}).get("title") or "")
+        except (httpx.HTTPError, ValueError):
+            pass
+        if not out:
+            try:
+                r = await client.get("https://itunes.apple.com/search",
+                                     params={"term": q, "entity": "song", "limit": 10})
+                if r.status_code == 200:
+                    for d in (r.json().get("results") or []):
+                        _add(d.get("trackName") or "", d.get("artistName") or "",
+                             d.get("collectionName") or "")
+            except (httpx.HTTPError, ValueError):
+                pass
+    return out[:8]
+
+
+_PLACE_SAMPLE = 30   # faixas por playlist no prompt (chega para a IA apanhar a vibe)
+
+
+@router.post("/place")
+async def place_song(data: PlaceIn):
+    """A IA diz em que playlists EXISTENTES a música encaixa (0, 1 ou várias)."""
+    title = (data.title or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Título vazio")
+    artist = (data.artist or "").strip()
+
+    db: Session = SessionLocal()
+    try:
+        playlists = db.query(SpotifyPlaylist).order_by(SpotifyPlaylist.created_at).all()
+        candidates: list[dict] = []
+        for p in playlists:
+            if p.is_favorites:
+                continue
+            tracks = (
+                db.query(SpotifyTrack)
+                .filter(SpotifyTrack.playlist_id == p.id)
+                .order_by(SpotifyTrack.position, SpotifyTrack.id)
+                .limit(_PLACE_SAMPLE)
+                .all()
+            )
+            if not tracks:
+                continue
+            count = db.query(SpotifyTrack).filter(SpotifyTrack.playlist_id == p.id).count()
+            candidates.append({
+                "id": p.id, "name": p.name, "vibe": p.vibe, "count": count,
+                "sample": [(t.title, t.artist) for t in tracks],
+            })
+    finally:
+        db.close()
+
+    if not candidates:
+        raise HTTPException(status_code=400, detail="Não há playlists com faixas — importa primeiro.")
+
+    blocks = []
+    for i, c in enumerate(candidates):
+        vibe = (c["vibe"] or "").strip() or "(sem vibe definida)"
+        sample = "\n".join(f"  - {t} — {a}" if a else f"  - {t}" for t, a in c["sample"])
+        extra = f" (amostra de {c['count']})" if c["count"] > len(c["sample"]) else ""
+        blocks.append(f'{i + 1}. "{c["name"]}" — vibe: {vibe}{extra}\n{sample}')
+    song = f"{title} — {artist}" if artist else title
+
+    prompt = f"""És um curador musical exigente. Conheces bem música de todos os géneros (PT e internacional).
+
+Música nova: {song}
+
+Playlists existentes:
+{chr(10).join(blocks)}
+
+Tarefa: diz em que playlists esta música encaixa MESMO bem (pela vibe e pelas faixas que lá estão). Pode ser nenhuma, uma ou várias — sê criterioso, só onde encaixa naturalmente. Para cada match dá o número da playlist e uma razão curta e concreta.
+
+Responde APENAS com JSON válido, sem markdown à volta, neste formato exato:
+{{"matches": [{{"playlist": 2, "reason": "..."}}]}}"""
+
+    text = await ask_agent_async(prompt, timeout=120.0, feature="spotify")
+    if not text:
+        raise HTTPException(status_code=502, detail="IA indisponível")
+    parsed = extract_json(text)
+    if not isinstance(parsed, dict):
+        logger.warning("Spotify place sem JSON: %s", text[:300])
+        raise HTTPException(status_code=502, detail="Resposta da IA inválida")
+
+    matches = []
+    seen_ids: set[int] = set()
+    for m in parsed.get("matches") or []:
+        if not isinstance(m, dict):
+            continue
+        try:
+            i = int(m.get("playlist"))
+        except (TypeError, ValueError):
+            continue
+        if not (1 <= i <= len(candidates)):
+            continue
+        c = candidates[i - 1]
+        if c["id"] in seen_ids:
+            continue
+        seen_ids.add(c["id"])
+        matches.append({
+            "playlist_id": c["id"],
+            "playlist_name": c["name"],
+            "reason": (m.get("reason") or "").strip(),
+        })
+    return matches
+
+
+@router.post("/playlists/{playlist_id}/add-track")
+def add_track(playlist_id: int, data: AddTrackIn):
+    title = (data.title or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Título vazio")
+    db: Session = SessionLocal()
+    try:
+        p = db.query(SpotifyPlaylist).filter(SpotifyPlaylist.id == playlist_id).first()
+        if not p:
+            raise HTTPException(status_code=404, detail="Playlist não encontrada")
+        key = (_norm(title), _norm(data.artist))
+        existing = db.query(SpotifyTrack).filter(SpotifyTrack.playlist_id == playlist_id).all()
+        if any((_norm(t.title), _norm(t.artist)) == key for t in existing):
+            return {"ok": True, "already": True, "total": len(existing)}
+        db.add(SpotifyTrack(
+            playlist_id=playlist_id,
+            position=len(existing),
+            title=title[:500],
+            artist=(data.artist or "").strip()[:500],
+            album=(data.album or "").strip()[:500],
+            spotify_url=(data.spotify_url or "").strip()[:1000],
+        ))
+        db.commit()
+        return {"ok": True, "already": False, "total": len(existing) + 1}
+    finally:
+        db.close()
+
+
+# ── O que se ouve mesmo ───────────────────────────────────────────
+# As playlists são o que ele guardou; isto é o que tocou de facto, apanhado pelo
+# tracker mesmo com o Spotify em segundo plano.
+
+@router.get("/history")
+def listening_history(days: int = Query(30, ge=1, le=365), limit: int = Query(100, ge=1, le=500),
+                      db: Session = Depends(get_db)):
+    from models import SpotifyPlay
+    desde = date.today() - timedelta(days=days - 1)
+    linhas = (
+        db.query(SpotifyPlay)
+        .filter(SpotifyPlay.date >= desde, SpotifyPlay.seconds >= 20)
+        .order_by(SpotifyPlay.started_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {"id": p.id, "track": p.track, "artist": p.artist, "album": p.album,
+         "date": p.date.isoformat(), "started_at": p.started_at.isoformat(),
+         "seconds": p.seconds, "track_seconds": p.track_seconds}
+        for p in linhas
+    ]
+
+
+@router.get("/listening-stats")
+def listening_stats(days: int = Query(30, ge=1, le=365), db: Session = Depends(get_db)):
+    """Top real de artistas e músicas, e o que tocava enquanto ele fazia cada coisa."""
+    from models import SpotifyPlay, AppUsageSession
+    from routers.app_usage import _resolve_category
+
+    desde = date.today() - timedelta(days=days - 1)
+    plays = (
+        db.query(SpotifyPlay)
+        .filter(SpotifyPlay.date >= desde, SpotifyPlay.seconds >= 20)
+        .order_by(SpotifyPlay.started_at)
+        .all()
+    )
+    if not plays:
+        return {"days": days, "total_seconds": 0, "plays": 0, "artists": [], "tracks": [],
+                "by_hour": [], "by_activity": [], "since": desde.isoformat()}
+
+    artistas: dict[str, dict] = {}
+    faixas: dict[tuple, dict] = {}
+    horas = {h: 0 for h in range(24)}
+    for p in plays:
+        a = artistas.setdefault(p.artist or "?", {"artist": p.artist or "?", "seconds": 0, "plays": 0})
+        a["seconds"] += p.seconds or 0
+        a["plays"] += 1
+        chave = (p.track, p.artist)
+        t = faixas.setdefault(chave, {"track": p.track, "artist": p.artist, "seconds": 0, "plays": 0})
+        t["seconds"] += p.seconds or 0
+        t["plays"] += 1
+        horas[p.started_at.hour] += p.seconds or 0
+
+    # o que estava a fazer no Mac enquanto a música tocava
+    sessoes = (
+        db.query(AppUsageSession)
+        .filter(AppUsageSession.date >= desde)
+        .all()
+    )
+    por_actividade: dict[str, int] = {}
+    for p in plays:
+        fim = p.ended_at or p.started_at
+        for s in sessoes:
+            if not s.start_time or not s.end_time:
+                continue
+            sobrepoe = (min(s.end_time, fim) - max(s.start_time, p.started_at)).total_seconds()
+            if sobrepoe > 0:
+                c = _resolve_category(db, s)
+                por_actividade[c] = por_actividade.get(c, 0) + int(sobrepoe)
+
+    return {
+        "days": days,
+        "since": desde.isoformat(),
+        "plays": len(plays),
+        "total_seconds": sum(p.seconds or 0 for p in plays),
+        "artists": sorted(artistas.values(), key=lambda r: -r["seconds"])[:12],
+        "tracks": sorted(faixas.values(), key=lambda r: -r["seconds"])[:12],
+        "by_hour": [{"hour": h, "seconds": s} for h, s in sorted(horas.items())],
+        "by_activity": sorted(
+            ({"category": c, "seconds": s} for c, s in por_actividade.items()),
+            key=lambda r: -r["seconds"],
+        )[:8],
+    }

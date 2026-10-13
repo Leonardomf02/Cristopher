@@ -58,7 +58,7 @@ Texto:
 {text}
 \"\"\""""
 
-    full_text = await ask_agent_async(prompt)
+    full_text = await ask_agent_async(prompt, feature="captura")
     if not full_text:
         raise HTTPException(status_code=502, detail="AI indisponível")
 

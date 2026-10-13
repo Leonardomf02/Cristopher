@@ -23,6 +23,7 @@ from datetime import date
 from typing import Optional
 
 from cache import cached
+from database import DB_PATH
 from market_data import _fetch_yahoo_chart
 from macro_data import _fetch_fred_series
 
@@ -303,7 +304,7 @@ def format_regime_for_prompt(snap: dict) -> str:
     return "\n".join(out)
 
 
-def persist_daily_regime(snap: dict, db_path: str = "cristopher.db") -> None:
+def persist_daily_regime(snap: dict, db_path: str = DB_PATH) -> None:
     """Upsert today's regime snapshot into daily_regime table."""
     if not snap or not snap.get("available"):
         return
@@ -331,7 +332,7 @@ def persist_daily_regime(snap: dict, db_path: str = "cristopher.db") -> None:
         logger.warning(f"persist_daily_regime failed: {e}")
 
 
-def fetch_regime_history(days: int = 60, db_path: str = "cristopher.db") -> list[dict]:
+def fetch_regime_history(days: int = 60, db_path: str = DB_PATH) -> list[dict]:
     """Returns chronological list (oldest → newest) of past regime snapshots."""
     try:
         conn = sqlite3.connect(db_path)

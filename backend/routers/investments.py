@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
 from sqlalchemy.orm import Session
 from datetime import datetime, date, timedelta
 import csv
@@ -98,19 +98,9 @@ def list_transactions(db: Session = Depends(get_db)):
 
 @router.get("/summary")
 def get_summary(db: Session = Depends(get_db)):
-    all_positions = db.query(InvestmentPosition).all()
     summaries = db.query(InvestmentSummary).order_by(InvestmentSummary.statement_date.desc()).all()
     latest = summaries[0] if summaries else None
-
-    # Keep only the most recent snapshot per (instrument, source). Without this,
-    # monthly snapshots stack: e.g. BTC in 2026-04 and 2026-05 would be summed twice.
-    latest_per_key: dict[tuple[str, str], InvestmentPosition] = {}
-    for p in all_positions:
-        key = (p.instrument, p.source or "")
-        existing = latest_per_key.get(key)
-        if existing is None or (p.statement_date or "") > (existing.statement_date or ""):
-            latest_per_key[key] = p
-    positions = list(latest_per_key.values())
+    positions = _posicoes_actuais(db)
 
     total_value = sum(p.current_value_eur or 0 for p in positions)
     total_invested = sum(p.quantity * p.avg_price / (p.fx_rate if p.fx_rate and p.fx_rate != 0 else 1) for p in positions)
@@ -151,17 +141,15 @@ def tax_insight(db: Session = Depends(get_db)):
     today = date.today()
     all_positions = db.query(InvestmentPosition).all()
 
-    # 1ª aparição (proxy de compra) e snapshot mais recente, por (instrumento, fonte)
+    # 1ª aparição (proxy de compra) por (instrumento, fonte); a posição de agora
+    # vem do snapshot mais recente de cada corretora.
     first_month: dict[tuple, str] = {}
-    latest: dict[tuple, InvestmentPosition] = {}
     for p in all_positions:
         key = (p.instrument, p.source or "")
         sd = p.statement_date or ""
         if key not in first_month or sd < first_month[key]:
             first_month[key] = sd
-        cur = latest.get(key)
-        if cur is None or (p.statement_date or "") > (cur.statement_date or ""):
-            latest[key] = p
+    latest = {(p.instrument, p.source or ""): p for p in _posicoes_actuais(db)}
 
     rows, nudges = [], []
     gross_total = tax_total = 0.0
@@ -1665,3 +1653,180 @@ def get_suggestions(db: Session = Depends(get_db)):
 
 # Endpoint /ai-suggestions removido — a análise do plano vive agora em
 # /investments/signals/analyze-plan (mesma IA dos Sinais IA, mas restrita ao plano de alocação).
+
+
+# ── Aporte mensal: planeado vs feito ─────────────────────────────
+
+@router.get("/contributions")
+def monthly_contributions(months: int = Query(6, ge=1, le=24), db: Session = Depends(get_db)):
+    """Compara o que o plano do salário manda investir com o que entrou mesmo
+    nas contas de investimento (depósitos), mês a mês."""
+    from datetime import date as _date
+    from models import SalaryBucket, MonthlyIncome, InvestmentTransaction, InvestmentMonthlyPlan
+
+    hoje = _date.today()
+    lista = []
+    m, y = hoje.month, hoje.year
+    for _ in range(months):
+        lista.append((y, m))
+        m -= 1
+        if m == 0:
+            m, y = 12, y - 1
+    lista.reverse()
+
+    buckets = db.query(SalaryBucket).all()
+    pct_invest = sum(
+        b.percentage for b in buckets
+        if (b.kind == "save" or "invest" in (b.categories or "").lower())
+    )
+
+    rendimentos = {(r.year, r.month): r.amount for r in db.query(MonthlyIncome).all()}
+    ultimo_rendimento = max(rendimentos.values()) if rendimentos else 0
+
+    depositos = db.query(InvestmentTransaction).filter(InvestmentTransaction.type.ilike("%dep%")).all()
+    planos = {p.month: p.budget for p in db.query(InvestmentMonthlyPlan).all()}
+
+    out = []
+    for (yy, mm) in lista:
+        chave = f"{yy}-{mm:02d}"
+        salario = rendimentos.get((yy, mm), ultimo_rendimento)
+        planeado_pct = round(salario * pct_invest / 100, 2) if salario else 0
+        planeado = planos.get(chave) or planeado_pct
+        feito = round(sum(
+            t.amount for t in depositos
+            if t.time and t.time.year == yy and t.time.month == mm
+        ), 2)
+        out.append({
+            "month": chave,
+            "planned": round(planeado, 2),
+            "done": feito,
+            "diff": round(feito - planeado, 2),
+            "source": "plano do mês" if chave in planos else ("% do salário" if planeado_pct else "sem plano"),
+        })
+
+    feitos = [r["done"] for r in out]
+    return {
+        "invest_pct": pct_invest,
+        "months": out,
+        "avg_done": round(sum(feitos) / len(feitos), 2) if feitos else 0,
+        "total_done": round(sum(feitos), 2),
+        "total_planned": round(sum(r["planned"] for r in out), 2),
+    }
+
+
+# ── Preços de hoje ───────────────────────────────────────────────
+
+def _posicoes_actuais(db: Session) -> list[InvestmentPosition]:
+    """A carteira de agora: só as linhas do snapshot mais recente de cada corretora.
+
+    As posições empilham-se de mês para mês e somá-las contaria tudo várias vezes.
+    Filtra-se pelo snapshot mais recente **por corretora** e não pelo mais recente
+    de cada instrumento: cada leitura (extracto ou API) traz a carteira inteira,
+    por isso um instrumento que falte na última é um instrumento que ele vendeu —
+    ficar com a linha do mês anterior deixava posições fantasma a contar para o
+    valor da carteira."""
+    todas = db.query(InvestmentPosition).all()
+    ultimo_mes: dict[str, str] = {}
+    for p in todas:
+        fonte = p.source or ""
+        if (p.statement_date or "") > ultimo_mes.get(fonte, ""):
+            ultimo_mes[fonte] = p.statement_date or ""
+    return [p for p in todas if (p.statement_date or "") == ultimo_mes.get(p.source or "", "")]
+
+
+def _grava_snapshot(db: Session) -> None:
+    from models import PortfolioSnapshot
+    posicoes = _posicoes_actuais(db)
+    if not posicoes:
+        return
+    valor = sum(p.current_value_eur or 0 for p in posicoes)
+    investido = sum(
+        p.quantity * p.avg_price / (p.fx_rate if p.fx_rate and p.fx_rate != 0 else 1)
+        for p in posicoes
+    )
+    hoje = date.today()
+    snap = db.query(PortfolioSnapshot).filter(PortfolioSnapshot.date == hoje).first()
+    if not snap:
+        snap = PortfolioSnapshot(date=hoje)
+        db.add(snap)
+    snap.total_value_eur = round(valor, 2)
+    snap.total_invested_eur = round(investido, 2)
+    snap.return_eur = round(valor - investido, 2)
+    snap.positions = len(posicoes)
+    snap.priced_at = datetime.utcnow()
+    snap.source = "live"
+    db.commit()
+
+
+@router.post("/refresh-prices")
+def refresh_prices(db: Session = Depends(get_db)):
+    """Actualiza a cotação de tudo o que está em carteira. Sem isto, o valor
+    mostrado é o do último extracto — que aqui já tinha dois meses."""
+    import portfolio_prices as pp
+
+    actualizadas, falhadas = [], []
+    for pos in _posicoes_actuais(db):
+        r = pp.preco_atual(pos.instrument, pos.currency or "EUR")
+        if not r:
+            falhadas.append(pos.instrument)
+            continue
+        preco, fonte = r
+        fx_rate = pos.fx_rate if pos.fx_rate and pos.fx_rate != 0 else 1
+        pos.current_price = preco
+        pos.current_value_eur = round(pos.quantity * preco / fx_rate, 2)
+        pos.return_eur = round(pos.current_value_eur - (pos.quantity * pos.avg_price / fx_rate), 2)
+        pos.price_updated_at = datetime.utcnow()
+        actualizadas.append({
+            "instrument": pos.instrument, "price": preco, "currency": pos.currency,
+            "value_eur": pos.current_value_eur, "return_eur": pos.return_eur, "source": fonte,
+        })
+    db.commit()
+
+    if actualizadas:
+        _grava_snapshot(db)
+    return {"updated": actualizadas, "failed": falhadas, "at": datetime.utcnow().isoformat()}
+
+
+@router.get("/value-history")
+def value_history(days: int = Query(180, ge=7, le=1825), db: Session = Depends(get_db)):
+    from models import PortfolioSnapshot
+    inicio = date.today() - timedelta(days=days - 1)
+    linhas = (
+        db.query(PortfolioSnapshot)
+        .filter(PortfolioSnapshot.date >= inicio)
+        .order_by(PortfolioSnapshot.date)
+        .all()
+    )
+    pontos = [
+        {"date": s.date.isoformat(), "value": s.total_value_eur,
+         "invested": s.total_invested_eur, "return_eur": s.return_eur}
+        for s in linhas
+    ]
+    return {
+        "days": days,
+        "points": pontos,
+        "change_eur": round(pontos[-1]["value"] - pontos[0]["value"], 2) if len(pontos) > 1 else None,
+        "priced_at": linhas[-1].priced_at.isoformat() if linhas and linhas[-1].priced_at else None,
+    }
+
+
+# ── Trading 212 pela API ─────────────────────────────────────────
+# Substitui a importação do extracto mensal: as quantidades deixam de ficar
+# paradas no último PDF que ele se lembrou de carregar.
+
+@router.get("/t212/status")
+def t212_status(db: Session = Depends(get_db)):
+    import trading212
+    return trading212.estado(db)
+
+
+@router.post("/t212/sync")
+def t212_sync(full: bool = Query(False), db: Session = Depends(get_db)):
+    """Lê a carteira agora. `full=true` varre o histórico todo (primeira vez)."""
+    import trading212
+    if not trading212.configurado():
+        raise HTTPException(status_code=503, detail="Falta T212_API_KEY no backend/.env")
+    try:
+        return trading212.sincroniza(db, historico=full)
+    except trading212.T212Indisponivel as ex:
+        raise HTTPException(status_code=502, detail=str(ex))

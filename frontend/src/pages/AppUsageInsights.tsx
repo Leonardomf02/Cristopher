@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { format, parseISO, subDays } from 'date-fns';
 import { pt } from 'date-fns/locale';
-import { Plus, Trash2, X, Brain, Sparkles, GitBranch, Sunrise, Target, Award } from 'lucide-react';
+import { Plus, Trash2, X, Brain, Sparkles, GitBranch, Sunrise, Target, Award, Globe } from 'lucide-react';
 import {
-  appInsightsApi, appGoalsApi,
+  appInsightsApi, appGoalsApi, appUsageTitlesApi,
   FocusScoreDay, Correlation, TransitionRow, DeepWorkHour,
   AppGoalProgress,
 } from '../api';
@@ -325,6 +325,92 @@ function TransitionsCard({ transitions, windowDays }: { transitions: TransitionR
 
 // ── Goals tab ─────────────────────────────────────────────────────
 
+// Tempo de browser que ainda não sabemos o que é — com IA a propor regras.
+export function BrowserTitlesPanel() {
+  const [regras, setRegras] = useState<{ id: number; pattern: string; category: string; source: string }[]>([]);
+  const [opaco, setOpaco] = useState<{ titles: { title: string; seconds: number }[]; total_seconds: number; untitled_seconds: number } | null>(null);
+  const [aprendendo, setAprendendo] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const carregar = () => {
+    appUsageTitlesApi.rules().then(setRegras).catch(() => {});
+    appUsageTitlesApi.unclassified(60, 12).then(setOpaco).catch(() => {});
+  };
+  useEffect(() => { carregar(); }, []);
+
+  const aprender = async () => {
+    setAprendendo(true);
+    setMsg(null);
+    try {
+      const r = await appUsageTitlesApi.learn(60);
+      setMsg(r.learned ? `${r.learned} regras novas` : (r.reason || 'nada por classificar'));
+      carregar();
+    } catch (e: any) {
+      setMsg(e?.message || 'a IA não respondeu');
+    } finally { setAprendendo(false); }
+  };
+
+  const apagar = async (id: number) => { await appUsageTitlesApi.deleteRule(id); carregar(); };
+  const h = (s: number) => `${Math.round(s / 3600)}h`;
+
+  return (
+    <div className="bg-[#161616] border border-[#222] rounded-xl p-4 space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide flex items-center gap-2">
+            <Globe size={14} /> Tempo de browser por site
+          </h2>
+          <p className="text-xs text-gray-500 mt-1">
+            O título da janela diz o site. Sem isto, todo o browser conta como uma coisa só.
+          </p>
+        </div>
+        <button
+          onClick={aprender}
+          disabled={aprendendo}
+          className="shrink-0 text-xs px-3 py-1.5 rounded-lg bg-blue-500/15 text-blue-300 hover:bg-blue-500/25 disabled:opacity-40"
+        >
+          {aprendendo ? 'a classificar…' : 'classificar com IA'}
+        </button>
+      </div>
+
+      {msg && <p className="text-[11px] text-blue-300">{msg}</p>}
+
+      {opaco && (
+        <p className="text-[11px] text-gray-500">
+          Ainda sem categoria: <span className="text-gray-300">{h(opaco.total_seconds)}</span> com título
+          {opaco.untitled_seconds > 0 && (
+            <> · <span className="text-amber-400">{h(opaco.untitled_seconds)}</span> sem título (o tracker não o apanhou)</>
+          )}
+        </p>
+      )}
+
+      {regras.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {regras.map(r => (
+            <span key={r.id} className="group inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-lg bg-[#1a1a1a] text-gray-300">
+              {r.pattern}
+              <span className="text-gray-600">→ {r.category}</span>
+              <button onClick={() => apagar(r.id)} className="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-red-400">×</button>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {opaco && opaco.titles.length > 0 && (
+        <div className="space-y-1">
+          <p className="text-[10px] uppercase tracking-wider text-gray-600">Maiores desconhecidos</p>
+          {opaco.titles.slice(0, 5).map(t => (
+            <div key={t.title} className="flex items-center gap-2 text-[11px]">
+              <span className="w-12 shrink-0 text-gray-500">{(t.seconds / 3600).toFixed(1)}h</span>
+              <span className="flex-1 min-w-0 truncate text-gray-400">{t.title}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function GoalsTab() {
   const [progress, setProgress] = useState<{ date: string; goals: AppGoalProgress[] } | null>(null);
   const [showCreate, setShowCreate] = useState(false);
@@ -342,6 +428,8 @@ export function GoalsTab() {
 
   return (
     <div className="space-y-4">
+      <BrowserTitlesPanel />
+
       <div className="flex items-center justify-between bg-[#161616] border border-[#222] rounded-xl p-4">
         <div>
           <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide flex items-center gap-2">

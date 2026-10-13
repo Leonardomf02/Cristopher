@@ -2,17 +2,373 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { format, startOfWeek, startOfMonth, endOfMonth, subDays } from 'date-fns';
 import { pt } from 'date-fns/locale';
 import { X, Trophy, Skull, TrendingUp, RefreshCw, Settings, Search, ChevronLeft, ChevronRight, Star } from 'lucide-react';
-import { lolApi } from '../api';
+import { lolApi, LolChampionPool, LolFactor, LolStopSignal, LolPerformance, LolPick, LolPicks, LolCoach } from '../api';
+import JungleMetaTab from './JungleMetaTab';
+import DuelTab from './DuelTab';
+import TresJogosPorDia from '../components/TresJogosPorDia';
 import {
   LolGame, LolStats, RankInfo, LiveGame, LiveGameDetailed, LivePlayer,
   LiveTeamStats, LivePlayerTag, MatchupEntry, MatchupAnalysis,
   DuoDetection, ChampionPoolDepth, MentalState, RankTrajectory,
   HeadToHead, TeamCompAnalysis, WinProbability, StrategicTip,
   ChampionMastery, MatchTimeline, SummonerInfo, RankPosition,
-  ChampSelectStatus, ChampSelectSession, ChampSuggestion, TeamComp,
+  ChampSelectStatus, ChampSelectSession, TeamComp, EnemyVsMyChampion,
 } from '../types';
 
 type DateFilter = 'today' | 'week' | 'month' | 'all';
+
+// "Boa altura para jogar?" — cada factor sai do histórico do próprio utilizador.
+function AlturaParaJogar() {
+  const [d, setD] = useState<Awaited<ReturnType<typeof lolApi.readiness>> | null>(null);
+
+  useEffect(() => { lolApi.readiness().then(setD).catch(() => setD(null)); }, []);
+  if (!d || !d.enough_data) return null;
+
+  const cor = d.color === 'verde' ? 'emerald' : d.color === 'vermelho' ? 'red' : 'amber';
+  const classe = {
+    emerald: 'border-emerald-500/30 bg-emerald-500/[0.07] text-emerald-400',
+    red: 'border-red-500/30 bg-red-500/[0.07] text-red-400',
+    amber: 'border-amber-500/30 bg-amber-500/[0.07] text-amber-400',
+  }[cor];
+
+  return (
+    <div className={`rounded-2xl border p-4 ${classe.split(' ').slice(0, 2).join(' ')}`}>
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 mb-2">
+        <span className={`text-sm font-semibold ${classe.split(' ')[2]}`}>
+          {d.verdict === 'boa altura' ? '🟢' : d.verdict === 'má altura' ? '🔴' : '🟡'} {d.verdict.charAt(0).toUpperCase() + d.verdict.slice(1)} para jogar
+        </span>
+        <span className="text-2xl font-bold">{d.expected_wr}%</span>
+        <span className="text-[11px] text-gray-500">
+          winrate esperado · média {d.base_wr}% em {d.sample_size} jogos
+        </span>
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {d.factors.map(f => (
+          <span key={f.key} className="text-[11px] px-2 py-1 rounded-lg bg-[#1a1a1a] text-gray-400">
+            {f.label}
+            <span className={f.delta >= 0 ? 'text-emerald-400 ml-1' : 'text-red-400 ml-1'}>
+              {f.delta >= 0 ? '+' : ''}{f.delta}pp
+            </span>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+
+// O "Boa altura para jogar" fala antes de começar; isto fala durante. Duas
+// perguntas: as derrotas seguidas estragam a seguinte, e o dia estica-se demais?
+// Só se afirma o que passa num teste a 95% — quando não passa, diz-se isso, que
+// é mais honesto do que apresentar um número como se fosse uma conclusão.
+function QuandoParar() {
+  const [d, setD] = useState<LolStopSignal | null>(null);
+
+  useEffect(() => { lolApi.stopSignal(365).then(setD).catch(() => setD(null)); }, []);
+  if (!d || (!d.after_losses.length && !d.by_position.length)) return null;
+
+  const derrotasHoje = d.today.losing_streak;
+  const linhas = [...d.after_losses.map(a => ({
+    chave: `d${a.after_losses}`,
+    rotulo: `depois de ${a.after_losses} derrota${a.after_losses > 1 ? 's' : ''}`,
+    wr: a.winrate, n: a.games, z: a.z, proven: a.proven,
+    ref: a.baseline,
+  })), ...d.by_position.filter(p => p.position > 3).map(p => ({
+    chave: `p${p.position}`,
+    rotulo: `${p.position}º jogo do dia em diante`,
+    wr: p.winrate, n: p.games, z: p.z, proven: p.proven,
+    ref: null as number | null,
+  }))];
+
+  return (
+    <div className={`rounded-2xl border p-4 ${
+      d.should_stop ? 'border-red-500/30 bg-red-500/[0.07]' : 'border-[#222] bg-[#161616]'
+    }`}>
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 mb-2">
+        <h3 className="text-sm font-medium text-gray-300">Quando parar</h3>
+        {d.today.games > 0 && (
+          <span className="text-[11px] text-gray-500">
+            hoje {d.today.games} jogo{d.today.games > 1 ? 's' : ''} · {d.today.wins}V
+            {derrotasHoje > 0 && <span className="text-red-400"> · {derrotasHoje} derrota{derrotasHoje > 1 ? 's' : ''} seguida{derrotasHoje > 1 ? 's' : ''}</span>}
+          </span>
+        )}
+      </div>
+
+      {d.warnings.length > 0 ? (
+        <div className="space-y-1.5 mb-3">
+          {d.warnings.map(a => (
+            <p key={a.key} className={`text-xs ${d.should_stop ? 'text-red-200' : 'text-gray-300'}`}>
+              {d.should_stop ? '🛑' : '⚠️'} {a.text}
+            </p>
+          ))}
+        </div>
+      ) : (
+        <p className="text-[11px] text-gray-500 mb-3">
+          Nenhum destes padrões aguenta um teste a 95% — os números abaixo ainda podem ser acaso.
+        </p>
+      )}
+
+      <div className="space-y-1">
+        {linhas.map(l => (
+          <div key={l.chave} className="flex items-center gap-2 text-[11px]">
+            <span className="flex-1 min-w-0 truncate text-gray-500">{l.rotulo}</span>
+            <span className={l.proven ? (l.wr < (l.ref ?? 50) ? 'text-red-400' : 'text-emerald-400') : 'text-gray-400'}>
+              {l.wr}%
+            </span>
+            <span className="w-14 shrink-0 text-right text-gray-600">{l.n} jogos</span>
+            <span className={`w-16 shrink-0 text-right ${l.proven ? 'text-emerald-500' : 'text-gray-700'}`}>
+              {l.proven ? 'prova' : `z=${l.z ?? '—'}`}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+
+// O que muda mesmo o winrate. A tabela de winrates por campeão sozinha leva a
+// decidir com base em ruído: com 100 jogos, 5pp de diferença ainda é acaso. Aqui
+// cada linha passa por um teste e diz-se quantos jogos faltavam para ser prova.
+function PadroesDoWinrate() {
+  const [pool, setPool] = useState<LolChampionPool | null>(null);
+  const [fact, setFact] = useState<{ total: number; overall_wr: number; factors: LolFactor[]; proven: LolFactor[]; noise_count: number } | null>(null);
+  const [soProvados, setSoProvados] = useState(false);
+
+  useEffect(() => {
+    lolApi.championPool(8).then(setPool).catch(() => setPool(null));
+    lolApi.factors().then(setFact).catch(() => setFact(null));
+  }, []);
+  if (!fact || fact.total < 30) return null;
+
+  const linhas = soProvados ? fact.factors.filter(f => f.proven) : fact.factors;
+  const cor = (f: { proven: boolean; diff: number }) =>
+    !f.proven ? 'text-gray-500' : f.diff > 0 ? 'text-green-400' : 'text-red-400';
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-[#161616] rounded-2xl border border-[#222] p-4">
+        <div className="flex items-baseline justify-between gap-2 mb-1 flex-wrap">
+          <h3 className="text-sm font-medium text-gray-300">O que muda mesmo o teu winrate</h3>
+          <span className="text-[11px] text-gray-500">{fact.total} jogos · {fact.overall_wr}% no geral</span>
+        </div>
+        <p className="text-[11px] text-gray-500 mb-3">
+          {fact.proven.length === 0
+            ? 'Nada passou no teste: as diferenças que vês são ruído desta amostra.'
+            : `${fact.proven.length} ${fact.proven.length === 1 ? 'factor tem prova' : 'factores têm prova'}; os outros ${fact.noise_count} ainda são ruído.`}
+        </p>
+
+        {fact.proven.length > 0 && (
+          <div className="space-y-2 mb-4">
+            {fact.proven.map(f => (
+              <div key={`${f.dimension}-${f.value}`} className="bg-[#1a1a1a] rounded-xl px-3 py-2.5">
+                <p className="text-sm">
+                  <span className="font-medium">{f.value}</span>
+                  <span className={`ml-2 font-bold ${f.diff > 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {f.winrate}%
+                  </span>
+                  <span className="text-gray-500 text-xs"> vs {f.rest_winrate}% no resto</span>
+                </p>
+                <p className="text-[11px] text-gray-500 mt-0.5">
+                  {f.dimension_label} · {f.games} jogos · {f.diff > 0 ? '+' : ''}{f.diff}pp
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="flex items-center justify-between gap-2 mb-2">
+          <span className="text-[10px] uppercase tracking-wider text-gray-600">Todos os factores</span>
+          <button onClick={() => setSoProvados(v => !v)}
+            className="text-[11px] text-gray-500 hover:text-gray-300">
+            {soProvados ? 'mostrar tudo' : 'só os provados'}
+          </button>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-left text-[10px] uppercase tracking-wider text-gray-600 border-b border-[#222]">
+                <th className="py-1.5 pr-2 font-semibold">Factor</th>
+                <th className="py-1.5 px-2 font-semibold text-right">Jogos</th>
+                <th className="py-1.5 px-2 font-semibold text-right">WR</th>
+                <th className="py-1.5 px-2 font-semibold text-right">vs resto</th>
+                <th className="py-1.5 pl-2 font-semibold">Prova</th>
+              </tr>
+            </thead>
+            <tbody>
+              {linhas.map(f => (
+                <tr key={`${f.dimension}-${f.value}`} className="border-b border-[#1a1a1a] last:border-0">
+                  <td className="py-1.5 pr-2">
+                    <span className="text-gray-300">{f.value}</span>
+                    <span className="text-gray-600 text-[10px] ml-1.5">{f.dimension_label}</span>
+                  </td>
+                  <td className="py-1.5 px-2 text-right tabular-nums text-gray-500">{f.games}</td>
+                  <td className="py-1.5 px-2 text-right tabular-nums">{f.winrate}%</td>
+                  <td className={`py-1.5 px-2 text-right tabular-nums ${cor(f)}`}>
+                    {f.diff > 0 ? '+' : ''}{f.diff}pp
+                  </td>
+                  <td className="py-1.5 pl-2 text-[10px] text-gray-500">
+                    {f.proven
+                      ? <span className="text-green-400">sim</span>
+                      : f.games_needed ? `faltam ~${f.games_needed} jogos` : 'sem prova'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {pool && pool.champions.length > 0 && (
+        <div className="bg-[#161616] rounded-2xl border border-[#222] p-4">
+          <div className="flex items-baseline justify-between gap-2 mb-1 flex-wrap">
+            <h3 className="text-sm font-medium text-gray-300">Pool de campeões</h3>
+            <span className="text-[11px] text-gray-500">{pool.core_size} campeões fazem 80% dos jogos</span>
+          </div>
+          <p className="text-[11px] text-gray-500 mb-3">
+            A barra é o intervalo onde o winrate verdadeiro está — quanto menos jogos, mais larga.
+          </p>
+          <div className="space-y-2.5">
+            {pool.champions.filter(c => c.games >= 5).slice(0, 10).map(c => (
+              <div key={c.champion}>
+                <div className="flex items-center justify-between gap-2 text-xs mb-1">
+                  <span className="flex items-center gap-2 min-w-0">
+                    <span className="font-medium truncate">{c.champion}</span>
+                    <span className="text-gray-600 text-[10px]">{c.games} jogos · {c.share}%</span>
+                  </span>
+                  <span className="shrink-0 tabular-nums">
+                    <span className={c.winrate >= (pool.overall_wr || 50) ? 'text-green-400' : 'text-red-400'}>{c.winrate}%</span>
+                    <span className="text-gray-600 text-[10px] ml-1.5">últimos {c.recent_form}</span>
+                  </span>
+                </div>
+                <div className="h-1.5 bg-[#1a1a1a] rounded-full relative">
+                  <div className="absolute h-full bg-gray-600/50 rounded-full"
+                    style={{ left: `${c.ci_low}%`, width: `${Math.max(1, c.ci_high - c.ci_low)}%` }} />
+                  <div className="absolute h-full w-[3px] rounded-full bg-cyan-400"
+                    style={{ left: `${c.winrate}%` }} />
+                  <div className="absolute top-[-2px] h-[10px] w-[1px] bg-gray-500"
+                    style={{ left: `${pool.overall_wr || 50}%` }} title="a tua média" />
+                </div>
+              </div>
+            ))}
+          </div>
+          <p className="text-[10px] text-gray-600 mt-3">
+            A linha vertical é a tua média ({pool.overall_wr}%). Barras que a atravessam não provam nada.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// O winrate precisa de mais de um ano de jogos para provar seja o que for. CS por
+// minuto, ouro e dano são contínuos: cada jogo é uma medição em vez de uma moeda ao
+// ar, e ~30 jogos chegam. Mesma regra do resto da app — ou passa o teste ou não
+// aparece.
+function DesempenhoMedido() {
+  const [dados, setDados] = useState<LolPerformance | null>(null);
+  const [erro, setErro] = useState(false);
+
+  useEffect(() => {
+    lolApi.performance().then(setDados).catch(() => setErro(true));
+  }, []);
+
+  if (erro || !dados) return null;
+  if (dados.message) {
+    return (
+      <div className="bg-[#161616] rounded-2xl border border-[#222] p-4">
+        <h3 className="text-white font-semibold mb-1">Desempenho medido</h3>
+        <p className="text-xs text-gray-500">{dados.message}</p>
+      </div>
+    );
+  }
+
+  const base = Object.values(dados.baseline);
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-[#161616] rounded-2xl border border-[#222] p-4">
+        <div className="flex items-baseline justify-between gap-2 mb-1 flex-wrap">
+          <h3 className="text-white font-semibold">Desempenho medido</h3>
+          <span className="text-xs text-gray-500">{dados.games} jogos com métricas</span>
+        </div>
+        <p className="text-xs text-gray-500 mb-3">
+          O teu normal. A meio está a mediana; entre parêntesis, o teu quarto pior e o teu quarto melhor.
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+          {base.map(m => (
+            <div key={m.label} className="bg-[#1c1c1c] rounded-xl p-3 border border-[#252525]">
+              <div className="text-[11px] text-gray-500 truncate">{m.label}</div>
+              <div className="text-lg text-white font-semibold tabular-nums">{m.median}</div>
+              <div className="text-[11px] text-gray-600 tabular-nums">{m.p25} · {m.p75}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="bg-[#161616] rounded-2xl border border-[#222] p-4">
+        <div className="flex items-baseline justify-between gap-2 mb-1 flex-wrap">
+          <h3 className="text-white font-semibold">O que muda de verdade</h3>
+          <span className="text-xs text-gray-500">{dados.findings.length} com prova</span>
+        </div>
+        <p className="text-xs text-gray-500 mb-3">
+          Só aparece o que passa um teste (p ≤ 0,05). O que não passa fica de fora de propósito.
+        </p>
+
+        {dados.findings.length === 0 ? (
+          <p className="text-sm text-gray-500">Nada passou o teste ainda. Volta quando tiveres mais jogos.</p>
+        ) : (
+          <div className="overflow-x-auto -mx-4 px-4">
+            <table className="w-full text-sm min-w-[520px]">
+              <thead>
+                <tr className="text-[11px] text-gray-500 border-b border-[#222]">
+                  <th className="text-left font-normal py-1.5">Quando</th>
+                  <th className="text-left font-normal">Métrica</th>
+                  <th className="text-right font-normal">Tu</th>
+                  <th className="text-right font-normal">Resto</th>
+                  <th className="text-right font-normal">Dif.</th>
+                  <th className="text-right font-normal">p</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dados.findings.map((f, i) => (
+                  <tr key={i} className="border-b border-[#1c1c1c] last:border-0">
+                    <td className="py-1.5 text-gray-300">{f.group_a}</td>
+                    <td className="text-gray-400">{f.label}</td>
+                    <td className="text-right text-white tabular-nums">{f.median_a}</td>
+                    <td className="text-right text-gray-500 tabular-nums">{f.median_b}</td>
+                    <td className={`text-right tabular-nums font-medium ${f.better_in_a ? 'text-green-400' : 'text-red-400'}`}>
+                      {f.better_in_a ? '+' : '−'}{Math.abs(f.diff_pct ?? 0).toFixed(0)}%
+                    </td>
+                    <td className="text-right text-gray-600 tabular-nums text-xs">
+                      {f.p < 0.001 ? '<0,001' : f.p.toFixed(3).replace('.', ',')}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        <details className="mt-3">
+          <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-400">
+            O que foi testado e não deu nada
+          </summary>
+          <div className="mt-2 space-y-0.5">
+            {dados.tested.map((t, i) => (
+              <div key={i} className="text-[11px] text-gray-600 tabular-nums">
+                {t.a} ({t.n_a}) vs {t.b} ({t.n_b})
+              </div>
+            ))}
+          </div>
+        </details>
+      </div>
+    </div>
+  );
+}
+
+const TABS_LOL = ['main', 'stats', 'duel', 'meta', 'champselect'] as const;
+type TabLol = (typeof TABS_LOL)[number];
 
 export default function LolPage() {
   const [games, setGames] = useState<LolGame[]>([]);
@@ -27,6 +383,7 @@ export default function LolPage() {
   // New Riot API data
   const [rankInfo, setRankInfo] = useState<RankInfo | null>(null);
   const [liveGame, setLiveGame] = useState<LiveGame | null>(null);
+  const [coach, setCoach] = useState<LolCoach | null>(null);
   const [liveDetailed, setLiveDetailed] = useState<LiveGameDetailed | null>(null);
   const [liveWinprob, setLiveWinprob] = useState<any | null>(null);
   const [mastery, setMastery] = useState<ChampionMastery[]>([]);
@@ -40,6 +397,7 @@ export default function LolPage() {
   const wasInChampSelect = useRef(false);
   const csPolling = useRef<ReturnType<typeof setInterval> | null>(null);
   const livePolling = useRef<ReturnType<typeof setInterval> | null>(null);
+  const coachTimers = useRef<ReturnType<typeof setInterval> | null>(null);
   const wasInGame = useRef(false);
 
   // Date filter & ranking
@@ -73,8 +431,23 @@ export default function LolPage() {
   const [metaLoading, setMetaLoading] = useState(false);
   const [metaError, setMetaError] = useState(false);
 
-  // Tab state: 'main' | 'stats' | 'champselect'
-  const [activeTab, setActiveTab] = useState<'main' | 'stats' | 'champselect'>('main');
+  // Tab state: 'main' | 'stats' | 'duel' | 'meta' | 'champselect'
+  // A aba fica no endereço e em localStorage, como a vista do Dashboard: voltar
+  // à página do LoL abre onde se estava, e `?tab=duel` é um link directo.
+  const [activeTab, setActiveTab] = useState<TabLol>(() => {
+    const daUrl = new URLSearchParams(window.location.search).get('tab');
+    if (daUrl && TABS_LOL.includes(daUrl as TabLol)) return daUrl as TabLol;
+    const guardada = localStorage.getItem('lol_aba');
+    return guardada && TABS_LOL.includes(guardada as TabLol) ? (guardada as TabLol) : 'main';
+  });
+
+  useEffect(() => {
+    localStorage.setItem('lol_aba', activeTab);
+    const url = new URL(window.location.href);
+    if (activeTab === 'main') url.searchParams.delete('tab');
+    else url.searchParams.set('tab', activeTab);
+    window.history.replaceState(null, '', url.toString());
+  }, [activeTab]);
   const [detailedStats, setDetailedStats] = useState<any>(null);
 
   // Stats tab: champion search filter
@@ -205,7 +578,16 @@ export default function LolPage() {
       } catch { /* ignore */ }
     };
     livePolling.current = setInterval(pollLive, 30000);
-    return () => { if (livePolling.current) clearInterval(livePolling.current); };
+    // O treinador lê o cliente local, não a Riot — é barato e o estado muda de
+    // segundo a segundo (uma control ward comprada tem de calar o aviso já).
+    const pollCoach = () => lolApi.coach().then(setCoach).catch(() => setCoach(null));
+    pollCoach();
+    const coachTimer = setInterval(pollCoach, 15000);
+    coachTimers.current = coachTimer;
+    return () => {
+      if (livePolling.current) clearInterval(livePolling.current);
+      if (coachTimers.current) clearInterval(coachTimers.current);
+    };
   }, [activeTab, dateFilter]);
 
   async function loadData(filter?: DateFilter, seasonOverride?: number | undefined | 'unset') {
@@ -424,6 +806,37 @@ export default function LolPage() {
     <div>
 
       {/* Live Game Detailed Stats — Porofessor-style */}
+      {coach?.in_game && coach.alerts.length > 0 && (
+        <div className="mb-6 rounded-2xl border border-orange-500/40 bg-gradient-to-r from-[#1f1508] to-[#161616] overflow-hidden">
+          <div className="flex items-center gap-3 px-4 py-2.5 border-b border-orange-500/20 flex-wrap">
+            <span className="w-2.5 h-2.5 rounded-full bg-orange-500 animate-pulse" />
+            <span className="text-sm font-semibold text-white">Em jogo</span>
+            <span className="text-xs text-gray-400">
+              {coach.champion} · lado {coach.side}
+              {coach.game_time != null && ` · ${Math.floor(coach.game_time / 60)}:${String(coach.game_time % 60).padStart(2, '0')}`}
+              {coach.cs != null && ` · ${coach.cs} cs`}
+            </span>
+            <span className="ml-auto text-[10px] text-gray-600">
+              só o que passou um teste nos teus jogos
+            </span>
+          </div>
+          <div className="p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {coach.alerts.map((a) => (
+              <div key={a.key} className={`rounded-xl p-3 border ${
+                a.level === 'aviso'
+                  ? 'border-orange-500/30 bg-orange-500/5'
+                  : 'border-emerald-500/30 bg-emerald-500/5'
+              }`}>
+                <div className={`text-sm font-semibold ${
+                  a.level === 'aviso' ? 'text-orange-300' : 'text-emerald-300'
+                }`}>{a.title}</div>
+                <p className="text-xs text-gray-400 mt-1 leading-snug">{a.text}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {liveDetailed?.in_game && liveDetailed.my_team && liveDetailed.enemy_team && (
         <div className="mb-6 rounded-2xl border border-green-500/30 bg-gradient-to-b from-[#0a1a0a] to-[#111] overflow-hidden shadow-xl shadow-green-900/10">
           {/* Header */}
@@ -511,6 +924,9 @@ export default function LolPage() {
             myTeam={liveDetailed.my_team}
             ddVersion={ddVersion}
           />
+
+          {/* O jogador do outro lado contra o meu campeão */}
+          <AdversarioContraMimPanel dados={liveDetailed.enemy_vs_my_champion} ddVersion={ddVersion} />
 
           {/* Live in-game win probability (real game state, much stronger than pre-game) */}
           {liveWinprob && <LiveWinProbabilityBar w={liveWinprob} />}
@@ -608,6 +1024,18 @@ export default function LolPage() {
             }`}>
             <span className="hidden sm:inline">📊 </span>Estatísticas
           </button>
+          <button onClick={() => { setActiveTab('duel'); }}
+            className={`px-3 sm:px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${
+              activeTab === 'duel' ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-white'
+            }`}>
+            <span className="hidden sm:inline">⚔️ </span>Duelo
+          </button>
+          <button onClick={() => { setActiveTab('meta'); }}
+            className={`px-3 sm:px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${
+              activeTab === 'meta' ? 'bg-emerald-600 text-white' : 'text-gray-400 hover:text-white'
+            }`}>
+            <span className="hidden sm:inline">🌿 </span>Meta
+          </button>
           <button onClick={() => { setActiveTab('champselect'); }}
             className={`relative px-3 sm:px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${
               activeTab === 'champselect' ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-white'
@@ -643,6 +1071,10 @@ export default function LolPage() {
         const displayTotal = displayWins + displayLosses;
         const displayWinrate = useRiot ? (rankInfo!.winrate ?? stats.winrate) : stats.winrate;
         return (
+        <>
+        <div className="mb-4"><AlturaParaJogar /></div>
+        <div className="mb-4"><QuandoParar /></div>
+        <div className="mb-4"><TresJogosPorDia /></div>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
           <div className="bg-[#161616] rounded-2xl p-5 border border-[#222]">
             <p className="text-xs text-gray-500 mb-1">Total Games</p>
@@ -669,6 +1101,7 @@ export default function LolPage() {
             </p>
           </div>
         </div>
+        </>
         );
       })()}
 
@@ -849,6 +1282,9 @@ export default function LolPage() {
       {/* ══════════════ STATS TAB ══════════════ */}
       {activeTab === 'stats' && (
         <div className="space-y-6">
+
+          <PadroesDoWinrate />
+          <DesempenhoMedido />
 
           {/* Champion Search Filter */}
           <div className="bg-[#161616] rounded-2xl border border-[#222] p-4">
@@ -1689,6 +2125,11 @@ export default function LolPage() {
         </div>
       )}
 
+      {/* ═══════ META TAB ═══════ */}
+      {activeTab === 'duel' && <DuelTab />}
+
+      {activeTab === 'meta' && <JungleMetaTab />}
+
       {/* ═══════ CHAMP SELECT TAB ═══════ */}
       {activeTab === 'champselect' && (
         <div className="space-y-6">
@@ -1784,12 +2225,28 @@ export default function LolPage() {
                     </div>
                   )}
 
+                  {csSession.vs_enemy_jungler && (
+                    <VsJunglerPanel
+                      dados={csSession.vs_enemy_jungler}
+                      inferido={csSession.enemy_jungler_source === 'inferido'}
+                    />
+                  )}
+
+                  <p className="text-[10px] text-gray-600 leading-tight">
+                    Quem está do outro lado não se sabe aqui: o cliente manda a equipa inimiga
+                    sem nome e sem id, mesmo com os campeões já escolhidos. Assim que o jogo
+                    arranca, o painel do jogo ao vivo mostra o que esse jogador já fez contra
+                    o teu campeão.
+                  </p>
+
                   {/* Enemy Counters — shown BEFORE suggestions for prominence */}
                   {csSession.enemy_counters && Object.keys(csSession.enemy_counters).length > 0 && (
                     <div>
                       <p className="text-[10px] text-red-400 font-medium mb-2 uppercase tracking-wider">🎯 Os teus picks contra cada inimigo</p>
                       <div className="space-y-3">
-                        {Object.entries(csSession.enemy_counters).map(([enemy, picks]) => (
+                        {Object.entries(csSession.enemy_counters)
+                          .filter(([enemy]) => enemy !== csSession.vs_enemy_jungler?.enemy)
+                          .map(([enemy, picks]) => (
                           picks.length > 0 && (
                             <div key={enemy} className="bg-[#0d0d0d] rounded-lg p-3 border border-red-500/20">
                               <p className="text-xs text-red-300 font-semibold mb-2">vs {enemy}</p>
@@ -1815,45 +2272,64 @@ export default function LolPage() {
                   )}
 
                   {/* Pick Suggestions */}
-                  {csSession.suggestions && csSession.suggestions.length > 0 && (
-                    <div>
-                      <p className="text-[10px] text-purple-400 font-medium mb-2 uppercase tracking-wider">Sugestões de Pick</p>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
-                        {csSession.suggestions.slice(0, 8).map((s) => (
-                          <div key={s.champion} className={`bg-[#111] rounded-lg p-2 border ${
-                            s.score >= 70 ? 'border-green-500/30' : s.score >= 50 ? 'border-[#333]' : 'border-red-500/20'
-                          }`}>
-                            <div className="flex items-center justify-between mb-1">
-                              <span className="text-xs font-medium text-white truncate">{s.champion_name}</span>
-                              <span className={`text-[10px] font-bold ${
-                                s.score >= 70 ? 'text-green-400' : s.score >= 50 ? 'text-gray-400' : 'text-red-400'
-                              }`}>{s.score}</span>
-                            </div>
-                            <div className="flex items-center gap-1 mb-1">
-                              <span className={`text-[9px] px-1 py-0.5 rounded ${
-                                s.damage === 'AP' ? 'bg-purple-500/20 text-purple-300' :
-                                s.damage === 'AD' ? 'bg-orange-500/20 text-orange-300' :
-                                'bg-gray-500/20 text-gray-400'
-                              }`}>{s.damage}</span>
-                              <span className={`text-[9px] font-medium ${
-                                s.winrate >= 60 ? 'text-green-400' : s.winrate >= 50 ? 'text-gray-400' : 'text-red-400'
-                              }`}>{s.winrate}% ({s.games}g)</span>
-                              {s.meta_wr != null && (
-                                <span className={`text-[9px] font-medium ${
-                                  s.meta_wr >= 52 ? 'text-cyan-400' : s.meta_wr >= 50 ? 'text-gray-500' : 'text-red-400/60'
-                                }`}>🌍{s.meta_wr}%</span>
-                              )}
-                            </div>
-                            {s.reasons.length > 1 && (
-                              <div className="space-y-0.5">
-                                {s.reasons.slice(1, 3).map((r, i) => (
-                                  <p key={i} className="text-[9px] text-gray-500 leading-tight">{r}</p>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        ))}
+                  {csSession.side_note && (
+                    <div className={`rounded-xl border p-3 ${
+                      csSession.side_note.is_better_side
+                        ? 'border-emerald-500/30 bg-emerald-500/5'
+                        : 'border-orange-500/40 bg-orange-500/5'
+                    }`}>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className={`text-xs font-bold uppercase tracking-wider ${
+                          csSession.side_note.side === 'red' ? 'text-red-400' : 'text-blue-400'
+                        }`}>
+                          lado {csSession.side_note.side}
+                        </span>
+                        <span className="text-sm text-white font-semibold">
+                          ganhas {csSession.side_note.winrate}% deste lado
+                        </span>
+                        <span className="text-[11px] text-gray-500">
+                          contra {csSession.side_note.other_winrate}% do outro · {csSession.side_note.games} jogos
+                        </span>
                       </div>
+                      {csSession.side_note.top_cause && (
+                        <p className="text-[11px] text-gray-400 mt-1.5 leading-tight">
+                          {csSession.side_note.is_better_side
+                            ? 'É o teu lado bom. '
+                            : 'É o teu lado fraco. '}
+                          A maior diferença está em <span className="text-gray-200">
+                            {csSession.side_note.top_cause.label.toLowerCase()}
+                          </span>: de blue fazes {csSession.side_note.top_cause.blue.toFixed(2)} e de red
+                          {' '}{csSession.side_note.top_cause.red.toFixed(2)} em relação ao jungler adversário.
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {csSession.picks && (csSession.picks.pool.length > 0 || csSession.picks.meta.length > 0) && (
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                      <PickList
+                        titulo="O teu pool"
+                        nota="Campeões que já dominas. Aqui quem decide é o matchup."
+                        picks={csSession.picks.pool.slice(0, 6)}
+                        cor="emerald"
+                      />
+                      <PickList
+                        titulo="O que o meta diz"
+                        nota="Os melhores do patch para este draft, já com o custo de aprender descontado."
+                        picks={csSession.picks.meta.slice(0, 6)}
+                        cor="cyan"
+                      />
+                      <p className="lg:col-span-2 text-[10px] text-gray-600 leading-tight">
+                        Winrate esperado, em percentagem. Entre o primeiro e o quinto do teu pool
+                        vão {csSession.picks.spread?.toFixed(1) ?? '—'} pontos — o draft explica pouco
+                        do resultado, e nenhum modelo publicado passa dos 60% de acerto a prevê-lo só por aqui.
+                        {csSession.enemy_jungler
+                          ? ` Matchups contra ${csSession.enemy_jungler}${
+                              csSession.enemy_jungler_source === 'inferido'
+                                ? ' (o cliente não diz as posições do inimigo — é o único do draft deles que se joga de jungle).'
+                                : '.'}`
+                          : ' Sem jungler adversário conhecido — não há matchup nesta conta.'}
+                      </p>
                     </div>
                   )}
                 </div>
@@ -1864,6 +2340,140 @@ export default function LolPage() {
         </div>
       )}
 
+    </div>
+  );
+}
+
+// O histórico dele contra o jungler adversário. Estava tudo na base — 500 jogos
+// com o campeão de cada lado — e não aparecia em champ select, que é o único
+// momento em que serve para alguma coisa.
+function VsJunglerPanel({ dados, inferido }: {
+  dados: NonNullable<ChampSelectSession['vs_enemy_jungler']>;
+  inferido: boolean;
+}) {
+  const dia = (d: string) =>
+    new Date(d + 'T12:00:00').toLocaleDateString('pt-PT', { day: 'numeric', month: 'short' });
+  const pick = dados.by_champion.find(
+    c => dados.current_pick && c.champion.toLowerCase().replace(/[^a-z0-9]/g, '')
+      === dados.current_pick.toLowerCase().replace(/[^a-z0-9]/g, '')
+  );
+
+  return (
+    <div className="bg-[#0d0d0d] rounded-xl border border-purple-500/25 p-3">
+      <div className="flex items-center gap-2 flex-wrap mb-2">
+        <span className="text-xs font-bold text-purple-300">Os teus jogos contra {dados.enemy}</span>
+        <span className="text-[10px] text-gray-500">jungler adversário{inferido ? ' · deduzido do meta' : ''}</span>
+        <span className="ml-auto text-[11px] text-gray-300">
+          {dados.wins}V {dados.losses}D <span className="text-gray-500">({dados.winrate}%)</span>
+        </span>
+      </div>
+
+      {dados.current_pick && (
+        <div className="mb-2 rounded-lg bg-[#141414] border border-[#2a2a2a] px-2.5 py-2">
+          {dados.current_pick_games.length > 0 ? (
+            <>
+              <p className="text-[11px] text-white font-medium">
+                {dados.current_pick} contra {dados.enemy}:{' '}
+                <span className={pick && pick.winrate >= 50 ? 'text-green-400' : 'text-red-400'}>
+                  {pick?.wins ?? 0}V {pick?.losses ?? 0}D
+                </span>
+              </p>
+              <div className="mt-1 space-y-0.5">
+                {dados.current_pick_games.slice(0, 5).map((g, i) => (
+                  <div key={i} className="flex items-center gap-2 text-[10px]">
+                    <span className="text-gray-500 w-14">{dia(g.date)}</span>
+                    <span className={g.won ? 'text-green-400' : 'text-red-400'}>
+                      {g.won ? 'vitória' : 'derrota'}
+                    </span>
+                    {g.kda && <span className="text-gray-500">{g.kda}</span>}
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <p className="text-[11px] text-gray-400">
+              Primeira vez que jogas {dados.current_pick} contra {dados.enemy}.
+            </p>
+          )}
+        </div>
+      )}
+
+      <p className="text-[10px] text-gray-500 mb-1.5 uppercase tracking-wider">
+        Todos os teus campeões contra {dados.enemy}
+      </p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+        {dados.by_champion.map(c => (
+          <div key={c.champion} className={`flex items-center justify-between px-2 py-1 rounded ${
+            c.winrate >= 60 ? 'bg-green-500/10 border border-green-500/20' :
+            c.winrate >= 50 ? 'bg-gray-500/10 border border-[#333]' :
+            'bg-red-500/10 border border-red-500/20'
+          }`}>
+            <span className="text-[11px] font-medium text-white">{c.champion}</span>
+            <span className={`text-[10px] font-semibold ${
+              c.winrate >= 60 ? 'text-green-400' : c.winrate >= 50 ? 'text-gray-400' : 'text-red-400'
+            }`}>{c.winrate}% <span className="text-gray-500 font-normal">({c.wins}V {c.losses}D)</span></span>
+          </div>
+        ))}
+      </div>
+      <p className="text-[10px] text-gray-600 mt-1.5 leading-tight">
+        {dados.games} jogos. Com esta amostra nada disto passa um teste — é o que aconteceu,
+        não uma previsão.
+      </p>
+    </div>
+  );
+}
+
+function PickList({ titulo, nota, picks, cor }: {
+  titulo: string; nota: string; picks: LolPick[]; cor: 'emerald' | 'cyan';
+}) {
+  if (picks.length === 0) return null;
+  const borda = cor === 'emerald' ? 'border-emerald-500/25' : 'border-cyan-500/25';
+  const texto = cor === 'emerald' ? 'text-emerald-400' : 'text-cyan-400';
+  return (
+    <div>
+      <p className={`text-[10px] ${texto} font-medium mb-1 uppercase tracking-wider`}>{titulo}</p>
+      <p className="text-[10px] text-gray-600 mb-2 leading-tight">{nota}</p>
+      <div className="space-y-1.5">
+        {picks.map((p) => (
+          <div key={p.champion} className={`bg-[#111] rounded-lg p-2 border ${borda}`}>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-medium text-white truncate">{p.champion}</span>
+              <span className="text-xs font-bold text-white tabular-nums shrink-0">
+                {p.expected_wr.toFixed(1)}%
+              </span>
+            </div>
+            <div className="flex items-center gap-2 mt-1 flex-wrap text-[9px]">
+              <span className={`px-1 py-0.5 rounded ${
+                p.damage === 'AP' ? 'bg-purple-500/20 text-purple-300' :
+                p.damage === 'AD' ? 'bg-orange-500/20 text-orange-300' :
+                'bg-gray-500/20 text-gray-400'
+              }`}>{p.damage}</span>
+              <span className="text-gray-500">🌍 {p.meta_wr}%</span>
+              {p.matchup !== 0 && (
+                <span className={p.matchup > 0 ? 'text-green-400' : 'text-red-400'}>
+                  matchup {p.matchup > 0 ? '+' : ''}{p.matchup}
+                </span>
+              )}
+              {p.synergy !== 0 && (
+                <span className={p.synergy > 0 ? 'text-fuchsia-400' : 'text-red-400'}
+                  title={p.with?.map((w) => `${w.ally}: ${w.raw_effect > 0 ? '+' : ''}${w.raw_effect}pp em ${w.games} jogos`).join(' · ')}>
+                  com {p.with?.[0]?.ally ?? 'a equipa'} {p.synergy > 0 ? '+' : ''}{p.synergy}
+                </span>
+              )}
+              {p.comfort !== 0 && (
+                <span className={p.comfort > 0 ? 'text-green-400' : 'text-yellow-500'}>
+                  {p.comfort > 0 ? '+' : ''}{p.comfort} {p.comfort_label}
+                </span>
+              )}
+              {p.games > 0
+                ? <span className="text-gray-600">{p.my_wr}% em {p.games}g</span>
+                : p.mastery > 0
+                  ? <span className="text-gray-600">{Math.round(p.mastery / 1000)}k maestria</span>
+                  : null}
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -2275,6 +2885,97 @@ function TeamStatsBar({ stats, label, color }: { stats?: LiveTeamStats; label: s
           {stats.avg_vision_per_min} Vis/min
         </span>
       )}
+    </div>
+  );
+}
+
+/* ── O adversário directo contra o campeão que eu tenho ───────────
+   Em champ select isto não existe: o cliente manda a equipa inimiga sem nome
+   nem id. Com o jogo a decorrer há puuid, e a Riot dá os últimos jogos dele —
+   dá para ver o que já fez contra o meu campeão. A amostra é minúscula (a lista
+   são ~20 jogos), por isso os jogos aparecem um a um e diz-se sempre quantos
+   foram lidos: um winrate de um jogo não é um winrate. */
+function AdversarioContraMimPanel({ dados, ddVersion }: {
+  dados?: EnemyVsMyChampion;
+  ddVersion: string;
+}) {
+  if (!dados || !dados.scanned) return null;
+
+  const cor = (wr: number) => wr >= 60 ? 'text-green-400' : wr >= 50 ? 'text-blue-300' : 'text-red-400';
+  const linha = (l: { games: number; wins: number; losses: number; winrate: number }) => (
+    <>
+      <span className={`text-[11px] font-bold ${cor(l.winrate)}`}>{l.winrate}%</span>
+      <span className="text-[9px] text-gray-500">({l.wins}V {l.losses}D em {l.games})</span>
+    </>
+  );
+
+  return (
+    <div className="border-t border-[#1a1a1a]">
+      <div className="px-4 py-2.5 bg-[#0a0a0a] flex items-center gap-2 flex-wrap">
+        <span className="text-[10px] font-bold uppercase tracking-wider text-orange-400">
+          🔎 O adversário contra o teu {dados.my_champion}
+        </span>
+        <span className="text-[9px] text-gray-600">
+          {dados.player}{dados.rank ? ` · ${dados.rank.tier} ${dados.rank.rank}` : ''}
+          {dados.role ? ` · ${dados.role}` : ''}
+        </span>
+      </div>
+
+      <div className="px-4 py-3 space-y-2.5">
+        <div className="flex items-center gap-3 flex-wrap">
+          {dados.champion && (
+            <img
+              src={`https://ddragon.leagueoflegends.com/cdn/${ddVersion}/img/champion/${dados.champion}.png`}
+              className="w-7 h-7 rounded-lg border border-[#333]"
+              alt={dados.champion}
+              onError={(e) => { (e.target as HTMLImageElement).src = `https://ddragon.leagueoflegends.com/cdn/${ddVersion}/img/champion/Aatrox.png`; }}
+            />
+          )}
+          <div className="flex items-center gap-1.5">
+            <span className="text-[8px] text-gray-500">com {dados.champion}:</span>
+            {dados.with_current
+              ? linha(dados.with_current)
+              : <span className="text-[10px] text-gray-500 italic">nunca te apanhou com este campeão</span>}
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="text-[8px] text-gray-500">com todos:</span>
+            {dados.vs_all
+              ? linha(dados.vs_all)
+              : <span className="text-[10px] text-gray-500 italic">nunca apanhou {dados.my_champion}</span>}
+          </div>
+        </div>
+
+        {(dados.games?.length ?? 0) > 0 && (
+          <div className="space-y-1">
+            {dados.games!.map((g, i) => (
+              <div key={i} className="flex items-center gap-2 text-[10px] bg-[#0d0d0d] rounded px-2 py-1">
+                <span className={`font-bold w-3 ${g.won ? 'text-green-400' : 'text-red-400'}`}>
+                  {g.won ? 'V' : 'D'}
+                </span>
+                <span className="text-gray-300 w-24 truncate">{g.champion}</span>
+                {g.kda && <span className="text-gray-500 w-16">{g.kda}</span>}
+                {g.role && <span className="text-gray-600 w-14 uppercase text-[8px]">{g.role}</span>}
+                <span className="text-gray-600 ml-auto">{g.date}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {(dados.by_champion?.length ?? 0) > 1 && (
+          <div className="flex flex-wrap gap-1.5">
+            {dados.by_champion!.map(c => (
+              <span key={c.champion} className="text-[9px] px-1.5 py-0.5 rounded bg-[#111] text-gray-400">
+                {c.champion} {c.wins}V {c.losses}D
+              </span>
+            ))}
+          </div>
+        )}
+
+        <p className="text-[9px] text-gray-600 leading-tight">
+          Lidos os últimos {dados.scanned} ranked dele — é o que a Riot dá por jogador.
+          Com esta amostra a percentagem não prova nada; os jogos estão aí um a um.
+        </p>
+      </div>
     </div>
   );
 }
@@ -3062,8 +3763,13 @@ function deriveLaneEnemy(session: any): { enemy: string; role: CounterRole } | n
   const opp = (session.their_team || []).find(
     (p: any) => (p.position || '').toLowerCase() === myPos && p.champion_name
   );
-  if (!opp?.champion_name) return null;
-  return { enemy: opp.champion_name, role };
+  if (opp?.champion_name) return { enemy: opp.champion_name, role };
+  // Sem posições do lado inimigo (é o normal: o cliente não as manda), o
+  // adversário directo dele é o jungler que o backend deduziu do meta.
+  if (role === 'jungle' && session.enemy_jungler) {
+    return { enemy: session.enemy_jungler, role };
+  }
+  return null;
 }
 
 function CounterPickPanel({ ddVersion, session }: { ddVersion: string; session?: any }) {
@@ -3072,6 +3778,7 @@ function CounterPickPanel({ ddVersion, session }: { ddVersion: string; session?:
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<{ personal: any[]; counters: any[]; strong_against: any[] } | null>(null);
+  const [picks, setPicks] = useState<LolPicks | null>(null);
   const [champions, setChampions] = useState<{ ddragon_key: string; name: string }[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [autoFilled, setAutoFilled] = useState(false);
@@ -3110,9 +3817,23 @@ function CounterPickPanel({ ddVersion, session }: { ddVersion: string; session?:
     setShowSuggestions(false);
     setLoading(true);
     setError(null);
+    setPicks(null);
+    // Os campeões já escolhidos e banidos saem das sugestões — um campeão só
+    // entra numa partida uma vez.
+    const fora: string[] = [
+      ...(session?.my_team || []).map((p: any) => p.champion_name),
+      ...(session?.their_team || []).map((p: any) => p.champion_name),
+      ...(session?.my_bans || []), ...(session?.their_bans || []),
+    ].filter(Boolean);
     try {
-      const res = await lolApi.counterPick(q, r);
+      const [res, rec] = await Promise.all([
+        lolApi.counterPick(q, r),
+        lolApi.picks([q], r, fora, (session?.my_team || [])
+          .filter((p: any) => p.champion_name && !p.is_local_player)
+          .map((p: any) => p.champion_name)).catch(() => null),
+      ]);
       setData({ personal: res.personal || [], counters: res.counters || [], strong_against: res.strong_against || [] });
+      setPicks(rec);
     } catch (e: any) {
       setError(e?.message || 'Erro');
     } finally {
@@ -3199,6 +3920,38 @@ function CounterPickPanel({ ddVersion, session }: { ddVersion: string; session?:
       </div>
 
       {error && <p className="text-xs text-red-400 mt-2">{error}</p>}
+
+      {picks && (picks.pool.length > 0 || picks.meta.length > 0) && (
+        <div className="mt-4 pt-4 border-t border-[#222]">
+          <div className="flex items-baseline gap-2 mb-3 flex-wrap">
+            <h4 className="text-sm font-bold text-white">O que escolher contra {enemy}</h4>
+            <span className="text-[11px] text-gray-500">
+              winrate esperado, já com o teu histórico e o meta do patch
+            </span>
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <PickList
+              titulo="O teu pool"
+              nota="Campeões que já dominas. Aqui quem decide é o matchup."
+              picks={picks.pool.slice(0, 6)}
+              cor="emerald"
+            />
+            <PickList
+              titulo="O que o meta diz"
+              nota="Os melhores do patch para este matchup, já com o custo de aprender descontado."
+              picks={picks.meta.slice(0, 6)}
+              cor="cyan"
+            />
+          </div>
+          <p className="text-[10px] text-gray-600 leading-tight mt-3">
+            Entre o primeiro e o quinto do teu pool vão {picks.spread?.toFixed(1) ?? '—'} pontos.
+            O draft explica pouco do resultado — nenhum modelo publicado passa dos 60% de acerto
+            a prevê-lo só por aqui.
+            {picks.enemies_without_matchup?.length > 0 &&
+              ` Sem dados de matchup para ${picks.enemies_without_matchup.join(', ')} nesta posição.`}
+          </p>
+        </div>
+      )}
 
       {data && (() => {
         const extRow = (p: any) => {

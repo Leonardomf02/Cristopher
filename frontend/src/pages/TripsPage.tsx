@@ -6,6 +6,48 @@ import { useNavigate } from 'react-router-dom';
 import { tripsApi } from '../api';
 import { Trip, TripCreate } from '../types';
 
+// Despesas que caem nas datas de uma viagem mas ainda não estão ligadas a ela.
+function DespesasPorLigar({ onLinked }: { onLinked: () => void }) {
+  const [preview, setPreview] = useState<Awaited<ReturnType<typeof tripsApi.linkExpenses>> | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const carregar = () => { tripsApi.linkExpenses(false).then(setPreview).catch(() => setPreview(null)); };
+  useEffect(() => { carregar(); }, []);
+  if (!preview || preview.linked === 0) return null;
+
+  const ligar = async () => {
+    setBusy(true);
+    try { await tripsApi.linkExpenses(true); setPreview(null); onLinked(); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="mb-6 rounded-2xl border border-cyan-500/25 bg-cyan-500/[0.07] p-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <Plane size={15} className="text-cyan-400 shrink-0" />
+        <span className="text-sm text-gray-300">
+          {preview.linked} despesa{preview.linked > 1 ? 's' : ''} nas datas das tuas viagens ainda por ligar
+        </span>
+        <button
+          onClick={ligar}
+          disabled={busy}
+          className="ml-auto text-xs px-3 py-1.5 rounded-lg bg-cyan-500/20 text-cyan-300 hover:bg-cyan-500/30 disabled:opacity-40"
+        >
+          {busy ? 'a ligar...' : 'ligar às viagens'}
+        </button>
+      </div>
+      <div className="mt-2 space-y-1">
+        {preview.by_trip.map(t => (
+          <p key={t.trip_id} className="text-[11px] text-gray-500">
+            {t.destination}: {t.count} despesa{t.count > 1 ? 's' : ''} · €{t.amount.toFixed(2)}
+            {t.sample.length > 0 && ` — ${t.sample.slice(0, 2).join(', ')}`}
+          </p>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function TripsPage() {
   const [trips, setTrips] = useState<Trip[]>([]);
   const [showModal, setShowModal] = useState(false);
@@ -54,23 +96,28 @@ export default function TripsPage() {
     loadTrips();
   }
 
+  // As idas fora de casa saem das despesas. A app sabe onde ele viveu em cada
+  // mês, por isso viver na Polónia deixou de contar como uma viagem à Polónia.
   async function handleAutoDetect() {
     setDetecting(true);
     setDetectResult(null);
     try {
-      const result = await tripsApi.autoDetect();
-      if (result.trips_created === 0 && result.expenses_assigned === 0) {
-        setDetectResult('Nenhuma viagem detetada nas despesas');
+      const r = await tripsApi.detect(true);
+      if (!r.trips_created && !r.expenses_linked) {
+        setDetectResult('Nada de novo — as viagens já estão todas.');
       } else {
-        const tripNames = result.trips.map((t: any) => t.destination).join(', ');
-        setDetectResult(`${result.trips_created} viagem(ns) criada(s), ${result.expenses_assigned} despesas associadas: ${tripNames}`);
+        const novas = r.trips.filter(t => !t.existing).map(t => t.destination);
+        setDetectResult(
+          `${r.trips_created} viagem(ns) nova(s)${novas.length ? ': ' + novas.join(', ') : ''}`
+          + ` · ${r.expenses_linked} despesas ligadas`
+        );
       }
       loadTrips();
     } catch {
       setDetectResult('Erro ao detetar viagens');
     } finally {
       setDetecting(false);
-      setTimeout(() => setDetectResult(null), 6000);
+      setTimeout(() => setDetectResult(null), 8000);
     }
   }
 
@@ -79,6 +126,8 @@ export default function TripsPage() {
 
   return (
     <div>
+      <DespesasPorLigar onLinked={loadTrips} />
+
       {/* Header */}
       <div className="flex items-center justify-between mb-8">
         <div>

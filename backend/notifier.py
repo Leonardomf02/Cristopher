@@ -85,6 +85,46 @@ def send_macos(title: str, message: str) -> bool:
         return False
 
 
+def send_push(title: str, message: str, *, url: str = "/", db=None) -> tuple[int, int]:
+    """Manda o aviso para os telemóveis inscritos. Devolve (enviados, falhados).
+
+    É isto que faz a app falar contigo quando não estás à frente do Mac — o
+    balão do macOS só aparece com o ecrã desbloqueado."""
+    import json as _json
+    from database import SessionLocal
+    from models import PushDevice
+    import push as _push
+    from datetime import datetime as _dt
+
+    proprio = db is None
+    sessao = db or SessionLocal()
+    enviados = falhas = 0
+    try:
+        for d in sessao.query(PushDevice).filter(PushDevice.active == True).all():  # noqa: E712
+            try:
+                sub = _json.loads(d.subscription)
+            except (TypeError, ValueError):
+                continue
+            ok, motivo = _push.envia(sub, title, message, url)
+            if ok:
+                d.last_sent_at = _dt.utcnow()
+                d.last_error = ""
+                enviados += 1
+            else:
+                d.last_error = motivo[:200]
+                falhas += 1
+                # o dispositivo desapareceu (app desinstalada / subscrição revogada)
+                if motivo.startswith("404") or motivo.startswith("410"):
+                    d.active = False
+        sessao.commit()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"push falhou: {e}")
+    finally:
+        if proprio:
+            sessao.close()
+    return enviados, falhas
+
+
 def notify(title: str, message: str, *, severity: str = "info", markdown: bool = True) -> dict:
     """Send via all available channels. Returns delivery status per channel.
 
@@ -94,7 +134,9 @@ def notify(title: str, message: str, *, severity: str = "info", markdown: bool =
 
     full_text = f"{prefix} *{title}*\n\n{message}" if markdown else f"{prefix} {title}\n\n{message}"
 
+    enviados, _ = send_push(f"{prefix} {title}", message)
     return {
         "telegram": send_telegram(full_text, parse_mode="Markdown" if markdown else None),
         "macos": send_macos(f"{prefix} {title}", message),
+        "push": enviados,
     }

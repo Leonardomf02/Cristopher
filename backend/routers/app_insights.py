@@ -11,21 +11,67 @@ from models import (
     AppUsageSession, AppCategoryOverride, FlowSession,
     MoodEntry, SleepEntry, LolGame, HabitCompletion, Habit,
 )
-from app_categories import categorize, CATEGORY_COLORS, CATEGORY_LABELS
+from app_categories import categorize, CATEGORY_COLORS, CATEGORY_LABELS, categorize_browser_title, is_browser
 
 router = APIRouter(prefix="/api/app-insights", tags=["App Insights"])
 
 
 # ── helpers ───────────────────────────────────────────────────────
 
+_RULES_CACHE: dict = {"at": 0.0, "map": {}}
+
+
+def _learned_rules(db: Session) -> dict[str, str]:
+    """Regras título→categoria aprendidas (IA/utilizador), com cache de 60s."""
+    import time as _t
+    from models import BrowserTitleRule
+    if _t.time() - _RULES_CACHE["at"] < 60:
+        return _RULES_CACHE["map"]
+    try:
+        m = {r.pattern: r.category for r in db.query(BrowserTitleRule).all()}
+    except Exception:
+        m = {}
+    _RULES_CACHE.update({"at": _t.time(), "map": m})
+    return m
+
+
+_OVERRIDES_CACHE: dict = {"at": 0.0, "bundles": {}, "apps": {}}
+
+
+def _overrides(db: Session) -> tuple[dict, dict]:
+    """Categorias definidas à mão, em memória (60s).
+
+    Antes era uma consulta à base por cada sessão: 16 mil sessões davam 32 mil
+    consultas e três segundos de espera só para desenhar um gráfico."""
+    import time as _t
+    if _t.time() - _OVERRIDES_CACHE["at"] < 60:
+        return _OVERRIDES_CACHE["bundles"], _OVERRIDES_CACHE["apps"]
+    bundles: dict[str, str] = {}
+    apps: dict[str, str] = {}
+    try:
+        for o in db.query(AppCategoryOverride).all():
+            if o.bundle_id:
+                bundles[o.bundle_id] = o.category
+            if o.app_name:
+                apps[o.app_name] = o.category
+    except Exception:
+        pass
+    _OVERRIDES_CACHE.update({"at": _t.time(), "bundles": bundles, "apps": apps})
+    return bundles, apps
+
+
 def _category_for(db: Session, session: AppUsageSession) -> str:
-    override = None
-    if session.bundle_id:
-        override = db.query(AppCategoryOverride).filter(AppCategoryOverride.bundle_id == session.bundle_id).first()
-    if not override and session.app_name:
-        override = db.query(AppCategoryOverride).filter(AppCategoryOverride.app_name == session.app_name).first()
-    if override:
-        return override.category
+    bundles, apps = _overrides(db)
+    if session.bundle_id and session.bundle_id in bundles:
+        return bundles[session.bundle_id]
+    if session.app_name and session.app_name in apps:
+        return apps[session.app_name]
+    # Browser: 183h/mês caíam todas em "browser". O título diz o site, e o site
+    # diz se aquilo era trabalho, redes ou streaming.
+    if is_browser(session.bundle_id, session.app_name):
+        pelo_titulo = categorize_browser_title(getattr(session, "window_title", None), _learned_rules(db), getattr(session, "domain", None))
+        if pelo_titulo:
+            return pelo_titulo
     return categorize(session.bundle_id, session.app_name)
 
 

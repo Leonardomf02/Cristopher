@@ -4,7 +4,8 @@ import { format } from 'date-fns';
 import { pt } from 'date-fns/locale';
 import { ArrowLeft, Check, Plus, X, ExternalLink, Trash2, Star } from 'lucide-react';
 import { tripsApi, expensesApi } from '../api';
-import { Trip, TripPlace, Expense, TripPlaceCreate, ExpenseCreate, EXPENSE_CATEGORIES,
+import { useCategorias, infoCategoria } from '../expenseCategories';
+import { Trip, TripPlace, Expense, TripPlaceCreate, ExpenseCreate,
   TripRating, TripRatingCreate, TripRatingCategory, TRIP_RATING_CATEGORIES } from '../types';
 
 const COUNTRY_FLAGS: Record<string, string> = {
@@ -18,8 +19,46 @@ const COUNTRY_FLAGS: Record<string, string> = {
   'Brasil': '🇧🇷', 'Marrocos': '🇲🇦', 'Tailândia': '🇹🇭',
 };
 
+// Custo real da viagem: campos fixos + despesas ligadas, e quanto isso dá por dia.
+function CustoDaViagem({ tripId, refreshKey }: { tripId: number; refreshKey: number }) {
+  const [c, setC] = useState<Awaited<ReturnType<typeof tripsApi.cost>> | null>(null);
+
+  useEffect(() => { tripsApi.cost(tripId).then(setC).catch(() => setC(null)); }, [tripId, refreshKey]);
+  if (!c || c.total === 0) return null;
+
+  return (
+    <div className="bg-[#161616] rounded-2xl border border-[#222] p-5 mb-6">
+      <h3 className="text-sm font-medium text-gray-300 mb-3">Custo real</h3>
+      <div className="flex flex-wrap items-baseline gap-x-6 gap-y-2 mb-3">
+        <div>
+          <p className="text-2xl font-bold">€{c.total.toFixed(2)}</p>
+          <p className="text-[11px] text-gray-500">{c.days} dia{c.days > 1 ? 's' : ''}</p>
+        </div>
+        <div>
+          <p className="text-lg font-bold text-cyan-400">€{c.per_day.toFixed(2)}</p>
+          <p className="text-[11px] text-gray-500">por dia</p>
+        </div>
+        <div className="text-[11px] text-gray-500">
+          €{c.expenses_total.toFixed(2)} em {c.expenses_count} despesa{c.expenses_count === 1 ? '' : 's'}
+          {c.fixed_total > 0 && ` · €${c.fixed_total.toFixed(2)} em voos/estadia/outros`}
+        </div>
+      </div>
+      {c.by_category.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {c.by_category.map(cat => (
+            <span key={cat.category} className="text-[11px] px-2 py-1 rounded-lg bg-[#1a1a1a] text-gray-400">
+              {cat.category} €{cat.amount.toFixed(0)}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function TripDetail() {
   const { id } = useParams<{ id: string }>();
+  const categorias = useCategorias();
   const navigate = useNavigate();
   const [trip, setTrip] = useState<Trip | null>(null);
   const [places, setPlaces] = useState<TripPlace[]>([]);
@@ -212,6 +251,8 @@ export default function TripDetail() {
           </div>
         </div>
 
+        <CustoDaViagem tripId={Number(id)} refreshKey={expenses.length} />
+
         {/* Trip expenses */}
         <div className="space-y-4">
           <div className="bg-[#161616] rounded-2xl border border-[#222] overflow-hidden">
@@ -238,7 +279,7 @@ export default function TripDetail() {
                 <div className="p-6 text-center text-gray-600 text-sm">Sem gastos registados</div>
               ) : (
                 expenses.map(exp => {
-                  const catInfo = EXPENSE_CATEGORIES.find(c => c.value === exp.category);
+                  const catInfo = infoCategoria(exp.category);
                   return (
                     <div key={exp.id} className="flex items-center gap-3 p-3 hover:bg-white/5">
                       <span className="text-lg">{catInfo?.emoji || '📦'}</span>
@@ -376,7 +417,7 @@ export default function TripDetail() {
                   className="flex-1 bg-[#222] border border-[#333] rounded-xl px-4 py-2 text-sm" />
               </div>
               <div className="flex flex-wrap gap-2">
-                {EXPENSE_CATEGORIES.map(cat => (
+                {categorias.map(cat => (
                   <button key={cat.value} onClick={() => setExpenseForm(f => ({ ...f, category: cat.value }))}
                     className={`px-2.5 py-1 rounded-lg text-xs ${
                       expenseForm.category === cat.value ? 'bg-cyan-600 text-white' : 'bg-[#222] text-gray-400'

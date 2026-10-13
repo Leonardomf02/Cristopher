@@ -2,10 +2,13 @@ import { useEffect, useRef, useState } from 'react';
 import {
   Music, Sparkles, ArrowLeft, Trash2, AlertCircle, ExternalLink, Loader2,
   Plus, Upload, Heart, Check, Pencil, Link2, Layers, Copy, ArrowRight,
-  X, ChevronDown, ChevronUp,
+  X, ChevronDown, ChevronUp, Search,
 } from 'lucide-react';
 import { format } from 'date-fns';
-import { spotifyApi, SpotifyPlaylist, SpotifyTrack, SpotifyAnalysis, SpotifyOverview, SpotifySuggestion } from '../api';
+import {
+  spotifyApi, SpotifyPlaylist, SpotifyTrack, SpotifyAnalysis, SpotifyOverview,
+  SpotifySuggestion, SpotifySearchResult, SpotifyPlacement, SpotifyListening,
+} from '../api';
 
 const SPOTIFY = '#1DB954';
 
@@ -13,6 +16,127 @@ const VIBE_PRESETS = [
   'triste / melancólica', 'chill', 'rock + hype', 'vibe de verão',
   'portuguesas conhecidas', 'treino / gym', 'foco / estudo',
 ];
+
+
+// O que tocou mesmo. As playlists são o que ele guardou; isto vem do tracker, que
+// pergunta ao Spotify de 15 em 15 segundos mesmo com ele em segundo plano.
+function OQueOuves() {
+  const [dias, setDias] = useState(30);
+  const [d, setD] = useState<SpotifyListening | null>(null);
+  const [recentes, setRecentes] = useState<Awaited<ReturnType<typeof spotifyApi.history>>>([]);
+
+  useEffect(() => {
+    spotifyApi.listeningStats(dias).then(setD).catch(() => setD(null));
+    spotifyApi.history(dias, 12).then(setRecentes).catch(() => setRecentes([]));
+  }, [dias]);
+
+  if (!d) return null;
+  const hm = (s: number) => (s >= 3600 ? `${Math.floor(s / 3600)}h${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}` : `${Math.round(s / 60)}min`);
+  const CAT: Record<string, string> = {
+    development: 'a programar', productivity: 'a trabalhar', gaming: 'a jogar',
+    social: 'em redes sociais', entertainment: 'a ver coisas', communication: 'a falar com gente',
+    browser: 'no browser', system: 'no sistema', other: 'noutras coisas',
+    finance: 'em contas', shopping: 'em compras',
+  };
+  const maxHora = Math.max(1, ...d.by_hour.map(h => h.seconds));
+
+  return (
+    <div className="bg-[#161616] rounded-2xl border border-[#222] p-4 sm:p-5 mb-4">
+      <div className="flex items-center justify-between gap-3 mb-1 flex-wrap">
+        <div className="flex items-center gap-2 text-sm font-semibold">
+          <Music size={16} style={{ color: SPOTIFY }} /> O que ouves mesmo
+        </div>
+        <div className="flex gap-1">
+          {[7, 30, 90].map(n => (
+            <button key={n} onClick={() => setDias(n)}
+              className={`text-[11px] px-2 py-0.5 rounded-lg ${dias === n ? 'bg-white/10 text-gray-200' : 'text-gray-500 hover:text-gray-300'}`}>
+              {n}d
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {d.plays === 0 ? (
+        <p className="text-xs text-gray-500">
+          Ainda sem histórico. A app começa a registar assim que puseres música — não é preciso ter o Spotify à frente.
+        </p>
+      ) : (
+        <>
+          <p className="text-xs text-gray-500 mb-3">
+            {hm(d.total_seconds)} de música em {d.plays} passagens desde {new Date(d.since).toLocaleDateString('pt-PT', { day: 'numeric', month: 'short' })}
+          </p>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <p className="text-[10px] uppercase tracking-wider text-gray-600 mb-1.5">Artistas</p>
+              <div className="space-y-1">
+                {d.artists.slice(0, 6).map(a => (
+                  <div key={a.artist} className="flex items-center gap-2 text-xs">
+                    <span className="flex-1 truncate">{a.artist}</span>
+                    <span className="text-gray-600">{a.plays}x</span>
+                    <span className="text-gray-400 w-12 text-right">{hm(a.seconds)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div>
+              <p className="text-[10px] uppercase tracking-wider text-gray-600 mb-1.5">Músicas</p>
+              <div className="space-y-1">
+                {d.tracks.slice(0, 6).map(t => (
+                  <div key={`${t.track}-${t.artist}`} className="flex items-center gap-2 text-xs">
+                    <span className="flex-1 truncate">{t.track} <span className="text-gray-600">· {t.artist}</span></span>
+                    <span className="text-gray-400 w-12 text-right">{hm(t.seconds)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {d.by_activity.length > 0 && (
+            <div className="mt-4">
+              <p className="text-[10px] uppercase tracking-wider text-gray-600 mb-1.5">Música enquanto estavas…</p>
+              <div className="flex flex-wrap gap-1.5">
+                {d.by_activity.map(a => (
+                  <span key={a.category} className="text-[11px] px-2 py-1 rounded-lg bg-[#1a1a1a] text-gray-400">
+                    {CAT[a.category] || a.category} · {hm(a.seconds)}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="mt-4">
+            <p className="text-[10px] uppercase tracking-wider text-gray-600 mb-1.5">A que horas ouves</p>
+            <div className="flex items-end gap-[3px] h-10">
+              {d.by_hour.map(h => (
+                <div key={h.hour} className="flex-1 rounded-t" title={`${String(h.hour).padStart(2, '0')}h · ${hm(h.seconds)}`}
+                  style={{ height: `${Math.max(4, (h.seconds / maxHora) * 100)}%`, backgroundColor: h.seconds ? SPOTIFY : '#222' }} />
+              ))}
+            </div>
+            <div className="flex justify-between text-[9px] text-gray-600 mt-0.5">
+              <span>00h</span><span>06h</span><span>12h</span><span>18h</span><span>23h</span>
+            </div>
+          </div>
+
+          {recentes.length > 0 && (
+            <details className="mt-3">
+              <summary className="text-[11px] text-gray-500 cursor-pointer hover:text-gray-300">últimas passagens</summary>
+              <div className="mt-2 space-y-1">
+                {recentes.map(r => (
+                  <div key={r.id} className="flex items-center gap-2 text-[11px] text-gray-500">
+                    <span className="w-24 shrink-0">{new Date(r.started_at).toLocaleString('pt-PT', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
+                    <span className="flex-1 truncate text-gray-400">{r.track} · {r.artist}</span>
+                    <span>{hm(r.seconds)}</span>
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
 
 export default function SpotifyPage() {
   const [items, setItems] = useState<SpotifyPlaylist[]>([]);
@@ -38,6 +162,17 @@ export default function SpotifyPage() {
   const [groupSugs, setGroupSugs] = useState<Record<string, SpotifySuggestion[]>>({});
   const [groupModal, setGroupModal] = useState<SpotifyOverview['groups'][number] | null>(null);
   const [showRecs, setShowRecs] = useState(false);
+  const [deduping, setDeduping] = useState(false);
+
+  // adicionar música (pesquisa → IA escolhe a(s) playlist(s) → aprovo)
+  type PlacementRow = SpotifyPlacement & { status: 'pending' | 'added' | 'already' | 'rejected' };
+  const [songQuery, setSongQuery] = useState('');
+  const [songResults, setSongResults] = useState<SpotifySearchResult[]>([]);
+  const [songSearching, setSongSearching] = useState(false);
+  const [songSel, setSongSel] = useState<SpotifySearchResult | null>(null);
+  const [placing, setPlacing] = useState(false);
+  const [placements, setPlacements] = useState<PlacementRow[]>([]);
+  const [placeMsg, setPlaceMsg] = useState<string | null>(null);
 
   // detalhe
   const [current, setCurrent] = useState<SpotifyPlaylist | null>(null);
@@ -54,6 +189,69 @@ export default function SpotifyPage() {
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { loadList(); loadOverview(); loadGroupSugs(); }, []);
+
+  // autocomplete com debounce
+  useEffect(() => {
+    if (songSel) return;
+    const q = songQuery.trim();
+    if (q.length < 2) { setSongResults([]); setSongSearching(false); return; }
+    setSongSearching(true);
+    const t = setTimeout(async () => {
+      try { setSongResults(await spotifyApi.search(q)); }
+      catch { setSongResults([]); }
+      finally { setSongSearching(false); }
+    }, 350);
+    return () => clearTimeout(t);
+  }, [songQuery, songSel]);
+
+  async function pickSong(r: SpotifySearchResult) {
+    setSongSel(r);
+    setSongQuery(r.artist ? `${r.title} — ${r.artist}` : r.title);
+    setSongResults([]);
+    setPlacements([]);
+    setPlaceMsg(null);
+    setPlacing(true);
+    try {
+      const ps = await spotifyApi.place(r.title, r.artist);
+      setPlacements(ps.map(p => ({ ...p, status: 'pending' as const })));
+      if (ps.length === 0) setPlaceMsg('A IA não encontrou nenhuma playlist onde esta música encaixe.');
+    } catch (e: any) {
+      setPlaceMsg(e?.message || 'Erro a pedir sugestões à IA (pode estar em espera).');
+    } finally { setPlacing(false); }
+  }
+
+  function resetSong() {
+    setSongSel(null); setSongQuery(''); setSongResults([]);
+    setPlacements([]); setPlaceMsg(null);
+  }
+
+  async function approvePlacement(p: PlacementRow) {
+    if (!songSel) return;
+    try {
+      const res = await spotifyApi.addTrack(p.playlist_id, {
+        title: songSel.title, artist: songSel.artist, album: songSel.album, spotify_url: songSel.search_url,
+      });
+      setPlacements(ps => ps.map(x => (x.playlist_id === p.playlist_id ? { ...x, status: res.already ? 'already' : 'added' } : x)));
+      if (!res.already) setItems(it => it.map(x => (x.id === p.playlist_id ? { ...x, track_count: res.total } : x)));
+    } catch (e: any) {
+      setPlaceMsg(e?.message || 'Erro a adicionar à playlist.');
+    }
+  }
+
+  function rejectPlacement(p: PlacementRow) {
+    setPlacements(ps => ps.map(x => (x.playlist_id === p.playlist_id ? { ...x, status: 'rejected' } : x)));
+  }
+
+  async function removeDuplicates() {
+    if (deduping) return;
+    setDeduping(true);
+    try {
+      await spotifyApi.dedupe();
+      setOverview(ov => (ov ? { ...ov, duplicates: [] } : ov));
+      loadList();
+    } catch { /* silent */ }
+    finally { setDeduping(false); }
+  }
 
   async function loadGroupSugs() {
     try { setGroupSugs(await spotifyApi.groupSuggestions()); }
@@ -486,6 +684,8 @@ export default function SpotifyPage() {
         Cola o link de uma playlist <strong className="text-gray-400">pública</strong> e a app puxa as faixas. Depois dizes a vibe e a IA marca o que não encaixa e sugere músicas novas.
       </p>
 
+      <OQueOuves />
+
       {/* visão geral (transversal a todas as playlists) */}
       {items.length > 0 && (
         <div className="bg-[#161616] rounded-2xl border border-[#222] p-4 sm:p-5 mb-4">
@@ -526,9 +726,16 @@ export default function SpotifyPage() {
 
               {overview.duplicates.length > 0 && (
                 <div>
-                  <h4 className="text-xs uppercase tracking-wide text-amber-400 mb-2 flex items-center gap-1.5">
-                    <Copy size={13} /> Repetidas na mesma playlist ({overview.duplicates.length})
-                  </h4>
+                  <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
+                    <h4 className="text-xs uppercase tracking-wide text-amber-400 flex items-center gap-1.5">
+                      <Copy size={13} /> Repetidas na mesma playlist ({overview.duplicates.length})
+                    </h4>
+                    <button onClick={removeDuplicates} disabled={deduping}
+                      className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-amber-500/30 text-amber-300 hover:bg-amber-500/10 disabled:opacity-50 transition">
+                      {deduping ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                      Remover duplicados (fica 1 de cada)
+                    </button>
+                  </div>
                   <div className="space-y-2">
                     {overview.duplicates.map((d, i) => (
                       <div key={i} className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-2.5 flex items-start justify-between gap-2">
@@ -597,6 +804,96 @@ export default function SpotifyPage() {
                   </div>
                 </div>
               )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* adicionar música: pesquisa → IA escolhe a(s) playlist(s) → aprovas */}
+      {items.length > 0 && (
+        <div className="bg-[#161616] rounded-2xl border border-[#222] p-4 sm:p-5 mb-4">
+          <div className="flex items-center gap-2 mb-1.5 text-sm font-semibold">
+            <Search size={16} style={{ color: SPOTIFY }} /> Adicionar música
+          </div>
+          <p className="text-xs text-gray-500 mb-3">
+            Escreve o título, escolhe a música nas sugestões, e a IA diz em que playlists tuas ela encaixa — aprovas uma a uma.
+          </p>
+
+          <div className="relative">
+            <div className="flex items-center gap-2">
+              <input value={songQuery}
+                onChange={e => { setSongQuery(e.target.value); if (songSel) { setSongSel(null); setPlacements([]); setPlaceMsg(null); } }}
+                placeholder="ex: teenage…"
+                className="flex-1 bg-[#0f0f0f] border border-[#222] rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-[#1DB954] placeholder:text-gray-600" />
+              {(songQuery || songSel) && (
+                <button onClick={resetSong} className="p-2 text-gray-500 hover:text-white" title="Limpar">
+                  <X size={16} />
+                </button>
+              )}
+            </div>
+
+            {!songSel && (songSearching || songResults.length > 0) && (
+              <div className="absolute left-0 right-0 top-full mt-1 z-20 bg-[#0f0f0f] border border-[#222] rounded-xl overflow-hidden shadow-xl">
+                {songSearching && songResults.length === 0 ? (
+                  <div className="flex items-center gap-2 px-3 py-2.5 text-xs text-gray-500">
+                    <Loader2 size={13} className="animate-spin" /> A procurar…
+                  </div>
+                ) : songResults.map((r, i) => (
+                  <button key={i} onClick={() => pickSong(r)}
+                    className="w-full text-left px-3 py-2.5 hover:bg-[#1c1c1c] transition border-b border-[#1a1a1a] last:border-0">
+                    <p className="text-sm text-white truncate">{r.title}{r.artist && <span className="text-gray-400"> — {r.artist}</span>}</p>
+                    {r.album && <p className="text-[11px] text-gray-600 truncate">{r.album}</p>}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {placing && (
+            <div className="flex items-center gap-2 mt-3 text-sm text-gray-400">
+              <Loader2 size={15} className="animate-spin" /> A IA está a ver em que playlists encaixa…
+            </div>
+          )}
+
+          {placeMsg && !placing && (
+            <p className="text-xs text-amber-300/90 mt-3">{placeMsg}</p>
+          )}
+
+          {placements.length > 0 && !placing && (
+            <div className="mt-3 space-y-2">
+              {placements.map(p => (
+                <div key={p.playlist_id}
+                  className={`rounded-xl border p-3 flex items-start justify-between gap-3 transition ${
+                    p.status === 'added' ? 'bg-[#1DB954]/10 border-[#1DB954]/40'
+                    : p.status === 'rejected' ? 'bg-[#0f0f0f] border-[#222] opacity-45'
+                    : 'bg-[#0f0f0f] border-[#222]'}`}>
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-white truncate">{p.playlist_name}</p>
+                    {p.reason && <p className="text-xs text-gray-500 mt-0.5">{p.reason}</p>}
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {p.status === 'pending' ? (
+                      <>
+                        <button onClick={() => approvePlacement(p)}
+                          className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg bg-[#1DB954] text-black font-semibold hover:brightness-110 transition">
+                          <Check size={13} /> Sim
+                        </button>
+                        <button onClick={() => rejectPlacement(p)}
+                          className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg border border-[#2a2a2a] text-gray-400 hover:text-white transition">
+                          <X size={13} /> Não
+                        </button>
+                      </>
+                    ) : (
+                      <span className={`text-[11px] px-2 py-1 rounded-full ${
+                        p.status === 'added' ? 'bg-[#1DB954]/15 text-[#1DB954]'
+                        : p.status === 'already' ? 'bg-blue-500/15 text-blue-300'
+                        : 'bg-[#1c1c1c] text-gray-500'}`}>
+                        {p.status === 'added' ? 'Adicionada ✓' : p.status === 'already' ? 'Já lá estava' : 'Rejeitada'}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </div>

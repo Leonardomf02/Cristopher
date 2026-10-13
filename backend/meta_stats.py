@@ -534,12 +534,25 @@ async def _fetch_leagueofgraphs() -> dict[str, dict] | None:
     return result
 
 
+def _canon_name(name: str) -> str:
+    """Nome canónico (forma lolalytics) de um campeão, venha de que fonte vier.
+
+    As fontes não concordam no slug de alguns campeões — op.gg/LoG usam o id interno
+    da Riot ("monkeyking") e o lolalytics usa o nome público ("wukong"). Sem isto o
+    mesmo campeão entrava duas vezes no merge, com stats partidas entre as duas."""
+    return normalize_name(_to_ddragon_key(name))
+
+
 def _merge_sources_multi(sources: dict[str, dict[str, dict]]) -> dict[str, dict]:
     """
     Merge data from multiple sources. WR is weighted by game count when available,
     otherwise simple averaged. PR/BR/tier taken from the best source.
     """
     is_single_source = len(sources) == 1
+    sources = {
+        src: {_canon_name(name): entry for name, entry in data.items()}
+        for src, data in sources.items()
+    }
 
     # Collect all champion names across sources
     all_names: set[str] = set()
@@ -932,8 +945,8 @@ def _prefer_name(a: str, b: str) -> str:
 
 
 async def fetch_external_counters(champion_name: str, role: str = "jungle") -> dict:
-    """Counters for `champion_name` in `role`, merged from op.gg (EUW Master+) and
-    u.gg (global Master+) — the same Master views the user sees on both sites. Returns:
+    """Counters for `champion_name` in `role`, merged from lolalytics and u.gg
+    (both global Master+) — the same Master views the user sees on both sites. Returns:
       - counters: champions that beat it. winrate = their WR vs it (>50), hardest first.
       - strong_against: champions it beats. winrate = its WR vs them (>50), biggest first.
     Per opponent the queried champion's WR is averaged across sources weighted by games;
@@ -945,13 +958,18 @@ async def fetch_external_counters(champion_name: str, role: str = "jungle") -> d
     if cached and now - cached[0] < COUNTER_CACHE_TTL:
         return cached[1]
 
-    opgg_rows, ugg_rows = await asyncio.gather(
-        _fetch_opgg_matchups(slug, role),
+    # `_fetch_opgg_matchups` deixou de existir e ninguém deu por isso: o NameError
+    # rebentava na avaliação do argumento, antes do gather, por isso o
+    # `return_exceptions` não o apanhava — a função inteira falhava e quem chama
+    # engolia a excepção e mostrava listas vazias. A lolalytics é, das duas, a que
+    # traz a tabela completa (66 matchups contra os 10 da u.gg).
+    lola_rows, ugg_rows = await asyncio.gather(
+        _fetch_lolalytics_matchups(slug, role),
         _fetch_ugg_matchups(slug, role),
         return_exceptions=True,
     )
     rows: list[dict] = []
-    for r, src in ((opgg_rows, "op.gg"), (ugg_rows, "u.gg")):
+    for r, src in ((lola_rows, "lolalytics"), (ugg_rows, "u.gg")):
         if isinstance(r, list):
             for e in r:
                 rows.append({**e, "source": src})
@@ -999,3 +1017,269 @@ async def fetch_external_counters(champion_name: str, role: str = "jungle") -> d
     result = {"counters": counters, "strong_against": strong}
     _counter_cache[cache_key] = (now, result)
     return result
+
+
+# ── Efeito do matchup, limpo ─────────────────────────────────────
+# A lolalytics manda três números por matchup e só um serve. Medido em 21 pares
+# de junglers, quanto é que X(A vs B) + X(B vs A) se afasta de zero — um efeito
+# de matchup a sério é antissimétrico, o que A ganha B perde:
+#
+#   vsWr (winrate cru)  → +5,20pp de viés   (a média deles é 52,59%, não 50%)
+#   d1                  → +10,09pp de viés  (só desconta o oponente, não o próprio)
+#   d2                  → +0,68pp           ← ruído, é este
+#
+# Por isso o `d2`, e por isso se pode consultar o *inimigo* e inverter o sinal em
+# vez de consultar os 68 candidatos: cinco pedidos em vez de sessenta e oito, o
+# que é a diferença entre caber num champ select e não caber.
+
+async def efeitos_de_matchup(inimigo: str, role: str = "jungle") -> dict[str, dict]:
+    """Quanto cada campeão ganha (ou perde) contra `inimigo`, em pontos percentuais.
+
+    Devolve {slug: {"effect": pp, "games": n}} — `effect` positivo é bom para
+    quem enfrenta o inimigo. Vazio quando a fonte falha; quem chama continua sem
+    o termo do matchup em vez de ficar sem recomendação nenhuma."""
+    slug = await _resolve_slug(inimigo)
+    chave = ("efeitos", slug, role)
+    agora = time.time()
+    guardado = _counter_cache.get(chave)
+    if guardado and agora - guardado[0] < COUNTER_CACHE_TTL:
+        return guardado[1]
+
+    champ = normalize_name(_to_ddragon_key(slug))
+    lane = _LOLA_LANES.get(role, role)
+    resp = await _browser_get(LOLALYTICS_COUNTER_TPL.format(champ=champ, lane=lane))
+    if resp is None or resp.status_code != 200:
+        return {}
+    try:
+        linhas = json.loads(resp.text).get("counters") or []
+    except (json.JSONDecodeError, ValueError):
+        logger.warning(f"lolalytics: JSON mau nos matchups de {champ}/{lane}")
+        return {}
+
+    await _ensure_slug_map()
+    out: dict[str, dict] = {}
+    for r in linhas:
+        nome, cand_slug = _cid_map.get(int(r.get("cid", 0)), (None, None))
+        jogos = int(r.get("n", 0))
+        d2 = r.get("d2")
+        if nome is None or d2 is None or jogos < COUNTER_MIN_GAMES:
+            continue
+        out[canon_slug(cand_slug) or cand_slug] = {
+            "champion_key": nome,
+            # A linha diz o que o inimigo ganha contra o candidato; para o
+            # candidato o sinal é ao contrário.
+            "effect": round(-float(d2), 2),
+            "games": jogos,
+        }
+    if out:
+        _counter_cache[chave] = (agora, out)
+    return out
+
+
+# ── Synergy: os pares que jogam bem juntos ───────────────────────
+# A lolalytics mostra synergy no site mas não a expõe: o `ep=counter` devolve
+# sempre counters, mesmo com `vslane` de um aliado (com Jarvan IV, a Orianna dá
+# +0,09 — se fosse a synergy dos dois seria das maiores do jogo). Quem a expõe é
+# a u.gg, num JSON estático que a página da duo tier list carrega.
+#
+# Cada linha é [champA, roleA, vitóriasA, jogosA, champB, roleB, vitóriasB,
+# jogosB, vitórias juntos, jogos juntos, …], e a synergy é a definição que os
+# dois sites usam: **winrate juntos menos a média dos winrates de cada um**.
+#
+# Vale a pena confiar nisto: os pares medidos em Diamond+ e em Esmeralda+
+# concordam com correlação **+0,865** e desacordo de 0,65pp — dois elos
+# independentes a dizer o mesmo. (Os matchups, para comparação, dão 0,60-0,76.)
+# Metade do que se vê continua a ser ruído (variância 1,72pp² contra 0,87 de
+# ruído), por isso encolhe-se como tudo o resto.
+UGG_DUOS_TPL = ("https://stats2.u.gg/lol/1.5/duos/world/{patch}/ranked_solo_5x5/"
+                "{tier}/1.5.0.json")
+# Só estes dois elos respondem; master_plus e overall dão 403.
+UGG_DUOS_TIERS = ("diamond_plus", "emerald_plus")
+SYNERGY_CACHE_TTL = 12 * 3600
+_synergy_cache: tuple[float, dict] | None = None
+
+# Pares de posições em que o jungler entra.
+_GRUPOS_DE_JUNGLE = ("mid_jungle", "top_jungle", "jungle_supp")
+
+
+async def _patch_da_ugg() -> str:
+    """A u.gg identifica o patch como "16_16"; tira-se do DDragon."""
+    await _ensure_ddragon_keys()
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            v = (await client.get(DDRAGON_VERSIONS_URL)).json()[0]
+        maior, menor = v.split(".")[:2]
+        return f"{maior}_{menor}"
+    except Exception:
+        return "16_16"
+
+
+async def synergias(role: str = "jungle") -> dict[str, dict]:
+    """{slug do parceiro: {"effect": pp, "games": n, "with": slug}} para `role`.
+
+    `effect` é o ganho de winrate de jogar com esse campeão, já encolhido pela
+    amostra do par. Vazio quando a fonte falha — quem chama fica sem o termo, não
+    sem recomendação."""
+    global _synergy_cache
+    agora = time.time()
+    if _synergy_cache and agora - _synergy_cache[0] < SYNERGY_CACHE_TTL:
+        return _synergy_cache[1]
+    if role != "jungle":
+        return {}
+
+    patch = await _patch_da_ugg()
+    dados = None
+    for i, tier in enumerate(UGG_DUOS_TIERS):
+        # A Cloudflare da u.gg responde 403 a pedidos seguidos; com uma pausa
+        # entre elos passa. São dois pedidos por dia, a cache dura doze horas.
+        if i:
+            await asyncio.sleep(3)
+        resp = await _browser_get(UGG_DUOS_TPL.format(patch=patch, tier=tier), timeout=30.0)
+        if resp is None or resp.status_code != 200:
+            continue
+        try:
+            bruto = json.loads(resp.text)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        dados = {}
+        for bloco in bruto:
+            if isinstance(bloco, dict):
+                dados.update(bloco)
+        break
+    if not dados:
+        logger.warning("u.gg: sem dados de duos")
+        return {}
+
+    await _ensure_slug_map()
+    out: dict[str, dict] = {}
+    for grupo in _GRUPOS_DE_JUNGLE:
+        for linha in dados.get(grupo, []):
+            try:
+                a, _, va, na, b, _, vb, nb, vj, nj = linha[:10]
+            except (ValueError, TypeError):
+                continue
+            if not (na and nb and nj):
+                continue
+            # Qual dos dois é o jungler: nos três grupos é sempre o que não é da
+            # outra lane, e o nome do grupo diz onde ele está.
+            jg, par = (b, a) if grupo in ("mid_jungle", "top_jungle") else (a, b)
+            v_jg, n_jg, v_par, n_par = ((vb, nb, va, na) if jg == b else (va, na, vb, nb))
+            bruto_efeito = 100 * vj / nj - (100 * v_jg / n_jg + 100 * v_par / n_par) / 2
+            nome_jg = _cid_map.get(int(jg), (None, None))[1]
+            nome_par = _cid_map.get(int(par), (None, None))[1]
+            if not nome_jg or not nome_par:
+                continue
+            out.setdefault(canon_slug(nome_jg) or nome_jg, {})[canon_slug(nome_par) or nome_par] = {
+                "effect": round(bruto_efeito, 2),
+                "games": nj,
+                "partner_role": grupo.replace("_jungle", "").replace("jungle_", ""),
+            }
+    _synergy_cache = (agora, out)
+    return out
+
+
+# ── Em que lane se joga cada campeão ─────────────────────────────
+# O champ select do LCU não diz a posição de nenhum inimigo — `assignedPosition`
+# vem vazio para os cinco — e sem saber quem é o jungler não há matchup nenhum
+# nem histórico pessoal para mostrar. A distribuição de lanes resolve isso sem
+# adivinhar: a Kindred joga-se só de jungle, o Sylas joga-se metade mid e metade
+# jungle, e o Ryze não aparece na tier list de jungle de todo.
+_LANES = ("top", "jungle", "middle", "bottom", "support")
+LANE_TIERLIST_TPL = "https://lolalytics.com/lol/tierlist/?lane={lane}&tier=master&region=euw"
+LANE_SHARE_TTL = 12 * 3600
+
+_lane_cache: dict[str, dict[str, float]] = {}
+_lane_cache_ts: float = 0
+_lane_lock = asyncio.Lock()
+
+
+async def lane_shares(force: bool = False) -> dict[str, dict[str, float]]:
+    """Fatia dos jogos de cada campeão por lane, em Master EUW.
+
+    `{"kindred": {"jungle": 0.97, "bottom": 0.03}, …}` — chave em minúsculas,
+    como o resto do meta. Cinco pedidos, guardados 12 horas: a distribuição de
+    lanes de um patch não muda de hora a hora.
+    """
+    global _lane_cache_ts
+    async with _lane_lock:
+        if _lane_cache and not force and time.time() - _lane_cache_ts < LANE_SHARE_TTL:
+            return _lane_cache
+
+        respostas = await asyncio.gather(
+            *(_browser_get(LANE_TIERLIST_TPL.format(lane=l)) for l in _LANES),
+            return_exceptions=True,
+        )
+        jogos: dict[str, dict[str, float]] = {}
+        for lane, resp in zip(_LANES, respostas):
+            if isinstance(resp, BaseException) or resp is None or resp.status_code != 200:
+                logger.warning(f"lane_shares: {lane} sem dados ({resp})")
+                continue
+            dados = _parse_ssr_state(resp.text) or {}
+            for nome, stats in dados.items():
+                n = stats.get("games") or 0
+                if n:
+                    jogos.setdefault(nome, {})[lane] = float(n)
+
+        if not jogos:
+            return _lane_cache  # fica-se com o que houver em vez de esvaziar
+
+        _lane_cache.clear()
+        for nome, por_lane in jogos.items():
+            total = sum(por_lane.values())
+            if total:
+                _lane_cache[nome] = {l: round(n / total, 3) for l, n in por_lane.items()}
+        _lane_cache_ts = time.time()
+        return _lane_cache
+
+
+async def lane_provavel(nomes: list[str], lane: str = "jungle") -> str | None:
+    """Qual destes campeões é o que está a jogar `lane`, pela fatia de jogos.
+
+    Devolve None quando nenhum deles se joga ali de forma apreciável — dizer que
+    não se sabe é melhor do que apontar o menos improvável de cinco.
+    """
+    fatias = await lane_shares()
+    if not fatias:
+        return None
+    melhor, melhor_fatia = None, 0.0
+    for nome in nomes:
+        fatia = fatias.get(normalize_name(nome), {}).get(lane, 0.0)
+        if fatia > melhor_fatia:
+            melhor, melhor_fatia = nome, fatia
+    return melhor if melhor_fatia >= 0.15 else None
+
+
+_lane_warm_task: "asyncio.Task | None" = None
+
+
+def lane_shares_cached() -> dict[str, dict[str, float]]:
+    """O que já está em cache, sem ir à rede. Vazio se ainda não foi buscado."""
+    return _lane_cache
+
+
+def aquece_lane_shares() -> None:
+    """Manda buscar a distribuição de lanes em segundo plano.
+
+    O champ select tem trinta segundos e não pode ficar preso à espera de cinco
+    páginas: quem chama usa a cache, e na passagem seguinte do polling ela já lá
+    está. É o mesmo trato do meta."""
+    global _lane_warm_task
+    if _lane_cache and time.time() - _lane_cache_ts < LANE_SHARE_TTL:
+        return
+    if _lane_warm_task and not _lane_warm_task.done():
+        return
+    try:
+        _lane_warm_task = asyncio.create_task(lane_shares())
+    except RuntimeError:
+        pass  # sem loop a correr (scripts, testes)
+
+
+def lane_provavel_cached(nomes: list[str], lane: str = "jungle") -> str | None:
+    """`lane_provavel` sem ir à rede: responde do que estiver em cache."""
+    fatias = lane_shares_cached()
+    melhor, melhor_fatia = None, 0.0
+    for nome in nomes:
+        fatia = fatias.get(normalize_name(nome), {}).get(lane, 0.0)
+        if fatia > melhor_fatia:
+            melhor, melhor_fatia = nome, fatia
+    return melhor if melhor_fatia >= 0.15 else None

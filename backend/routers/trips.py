@@ -7,6 +7,7 @@ from collections import defaultdict
 import logging
 
 from database import get_db
+import expense_kind as ek
 from models import Trip, TripPlace, Expense, TripRating, TripGaja, DayType
 from schemas import (
     TripCreate, TripUpdate, TripOut,
@@ -612,4 +613,192 @@ def auto_detect_trips(db: Session = Depends(get_db)):
         "trips_created": len([t for t in created_trips if not t.get("existing")]),
         "expenses_assigned": total_assigned,
         "trips": created_trips,
+    }
+
+
+# ── Viagens a partir de onde ele gastou ──────────────────────────
+# O detector acima compara com Portugal. Ele vive na Polónia desde Fevereiro, por
+# isso isso dava uma viagem "Polónia" por mês e o Erasmus inteiro como viagem.
+# Este parte da CASA de cada mês (`home_base.py`) e só cria as saídas de lá.
+
+def _custos_da_viagem(db: Session, trip: Trip) -> None:
+    """Reparte o custo da viagem pelas rubricas, a partir do que lhe está ligado."""
+    todas = db.query(Expense).filter(Expense.trip_id == trip.id, Expense.kind == ek.GASTO).all()
+
+    def com(palavras) -> float:
+        return sum(
+            e.amount for e in todas
+            if any(p in f"{e.description} {e.notes or ''}".lower() for p in palavras)
+        )
+
+    voos = com(["ryanair", "wizz", "tap", "easyjet", "vueling", "flight", "aero"])
+    dormida = com(["booking", "hotel", "hostel", "airbnb", "alojamento"])
+    comida = sum(e.amount for e in todas if e.category in ("food", "groceries"))
+    trip.flights_cost = round(voos, 2)
+    trip.accommodation_cost = round(dormida, 2)
+    trip.food_budget = round(comida, 2)
+    trip.other_costs = round(max(0.0, sum(e.amount for e in todas) - voos - dormida - comida), 2)
+
+
+@router.post("/detect")
+def detectar_viagens(apply: bool = Query(False), db: Session = Depends(get_db)):
+    """As idas fora de casa, a partir das despesas. Sem `apply` só mostra."""
+    import home_base as hb
+
+    despesas = db.query(Expense).filter(Expense.kind.in_([ek.GASTO, ek.ENTRADA])).all()
+    encontradas = hb.viagens(despesas)
+    casas = hb.base_por_mes(despesas)
+
+    saida, criadas, ligadas = [], 0, 0
+    for v in encontradas:
+        destino = hb.nome_do_pais(v["country"])
+        existente = (
+            db.query(Trip)
+            .filter(Trip.destination == destino,
+                    Trip.start_date <= v["end"], Trip.end_date >= v["start"])
+            .first()
+        )
+        item = {
+            "destination": destino, "country": v["country"],
+            "start_date": v["start"].isoformat(), "end_date": v["end"].isoformat(),
+            "cities": v["cities"], "expenses": len(v["expenses"]),
+            "total": v["total"], "existing": bool(existente),
+        }
+        saida.append(item)
+        if not apply:
+            continue
+
+        viagem = existente
+        if viagem is None:
+            viagem = Trip(
+                destination=destino,
+                country=destino,
+                start_date=v["start"],
+                end_date=v["end"],
+                notes=f"Detectada a partir de {len(v['expenses'])} despesas"
+                      + (f" em {', '.join(v['cities'][:4])}" if v["cities"] else ""),
+            )
+            db.add(viagem)
+            db.flush()
+            criadas += 1
+            item["id"] = viagem.id
+        else:
+            # Uma viagem que já existe pode ter crescido (mais dias de despesas).
+            viagem.start_date = min(viagem.start_date or v["start"], v["start"])
+            viagem.end_date = max(viagem.end_date or v["end"], v["end"])
+            item["id"] = viagem.id
+
+        for e in v["expenses"]:
+            if e.trip_id != viagem.id:
+                e.trip_id = viagem.id
+                ligadas += 1
+        db.flush()
+        _custos_da_viagem(db, viagem)
+
+    if apply:
+        db.commit()
+
+    # Viagens antigas que afinal são a casa dele: o detector antigo comparava com
+    # Portugal, por isso o Erasmus inteiro entrou como "viagem à Polónia".
+    parecem_casa = []
+    for t in db.query(Trip).all():
+        if not t.start_date:
+            continue
+        casa = casas.get(f"{t.start_date.year}-{t.start_date.month:02d}")
+        if casa and t.destination == hb.nome_do_pais(casa):
+            parecem_casa.append({
+                "id": t.id, "destination": t.destination,
+                "start_date": t.start_date.isoformat(),
+                "end_date": t.end_date.isoformat() if t.end_date else None,
+            })
+
+    return {
+        "applied": apply, "trips_created": criadas, "expenses_linked": ligadas,
+        "home_by_month": {m: hb.nome_do_pais(c) for m, c in sorted(casas.items()) if c},
+        "looks_like_home": parecem_casa,
+        "trips": saida,
+    }
+
+
+# ── Ligar despesas às viagens ────────────────────────────────────
+
+@router.post("/link-expenses")
+def link_expenses(apply: bool = Query(False), db: Session = Depends(get_db)):
+    """Liga despesas soltas às viagens, por data + país (ou categoria travel).
+    Sem `apply` devolve só a pré-visualização."""
+    trips = db.query(Trip).order_by(Trip.start_date).all()
+    if not trips:
+        return {"applied": apply, "linked": 0, "by_trip": []}
+
+    soltas = db.query(Expense).filter(Expense.trip_id.is_(None)).all()
+    por_viagem: dict[int, list] = {t.id: [] for t in trips}
+
+    for e in soltas:
+        if not e.date:
+            continue
+        for t in trips:
+            if not t.start_date or not t.end_date:
+                continue
+            if not (t.start_date <= e.date <= t.end_date):
+                continue
+            pais_desp = COUNTRY_NORMALIZE.get((e.merchant_country or "").strip().upper(),
+                                              (e.merchant_country or "").strip().upper())
+            pais_viagem = (t.country or "").strip()
+            # Nome do país da viagem → código, para poder comparar
+            codigo_viagem = next((k for k, v in COUNTRY_NAMES.items() if v == pais_viagem and len(k) == 3), None)
+            combina_pais = bool(pais_desp and codigo_viagem and pais_desp == codigo_viagem)
+            if combina_pais or (e.category or "") == "travel":
+                por_viagem[t.id].append(e)
+                break
+
+    resultado = []
+    total = 0
+    for t in trips:
+        lista = por_viagem.get(t.id) or []
+        if not lista:
+            continue
+        total += len(lista)
+        resultado.append({
+            "trip_id": t.id,
+            "destination": t.destination,
+            "count": len(lista),
+            "amount": round(sum(x.amount for x in lista), 2),
+            "sample": [x.description for x in lista[:3]],
+        })
+        if apply:
+            for x in lista:
+                x.trip_id = t.id
+    if apply and total:
+        db.commit()
+    return {"applied": apply, "linked": total, "by_trip": resultado}
+
+
+@router.get("/{trip_id}/cost")
+def trip_cost(trip_id: int, db: Session = Depends(get_db)):
+    """Custo real da viagem: o que está lançado nos campos + despesas ligadas."""
+    t = db.query(Trip).filter(Trip.id == trip_id).first()
+    if not t:
+        raise HTTPException(status_code=404, detail="Viagem não encontrada")
+
+    despesas = db.query(Expense).filter(Expense.trip_id == trip_id).all()
+    gasto = round(sum(e.amount for e in despesas if e.amount > 0), 2)
+    fixos = round((t.flights_cost or 0) + (t.accommodation_cost or 0) + (t.other_costs or 0), 2)
+    dias = ((t.end_date - t.start_date).days + 1) if (t.start_date and t.end_date) else 1
+
+    por_cat: dict[str, float] = {}
+    for e in despesas:
+        if e.amount > 0:
+            por_cat[e.category or "other"] = round(por_cat.get(e.category or "other", 0) + e.amount, 2)
+
+    total = round(gasto + fixos, 2)
+    return {
+        "trip_id": trip_id,
+        "destination": t.destination,
+        "days": dias,
+        "expenses_total": gasto,
+        "expenses_count": len(despesas),
+        "fixed_total": fixos,
+        "total": total,
+        "per_day": round(total / dias, 2) if dias else total,
+        "by_category": [{"category": k, "amount": v} for k, v in sorted(por_cat.items(), key=lambda kv: kv[1], reverse=True)],
     }

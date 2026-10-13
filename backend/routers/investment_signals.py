@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import re
 import ssl
+
+from ai import pergunta_async as ai_pergunta_async
 import json
 import hashlib
 import logging
@@ -21,9 +23,8 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 import httpx
 import feedparser
-import aiohttp
 
-from database import get_db
+from database import DB_PATH, get_db
 from models import (
     InvestmentSignal, InvestmentPosition, InvestmentTransaction,
     InvestmentAllocation, InvestmentMonthlyPlan, PlanAnalysisLatest,
@@ -656,108 +657,20 @@ def _score_extra_ideas(
     return out
 
 
-class AgentTransientError(Exception):
-    """Retryable failure: rate limit, network blip, server error."""
+# A cascata agente → reserva → modelo local vive toda no `ai.py`. Havia aqui uma
+# cópia inteira dela, e a cópia tratava um 404 como fatal em vez de passar ao
+# motor seguinte: quando o agente principal foi apagado do lado do iaedu, os
+# sinais saíram doze dias seguidos "sem narração IA" enquanto o resto da app
+# continuava a funcionar pela reserva.
+from ai import parse_agent_stream                       # noqa: F401  (usado nos testes)
 
 
-async def _call_agent_once(system: str, user: str) -> str:
-    """Single attempt. Raises AgentTransientError on retryable failures."""
-    message = f"{system}\n\n---\n\n{user}"
-
-    form = aiohttp.FormData()
-    form.add_field("channel_id", AI_CHANNEL_ID)
-    form.add_field("thread_id", f"cristopher-signal-{datetime.now().strftime('%Y%m%d%H%M%S')}")
-    form.add_field("user_info", "{}")
-    form.add_field("message", message)
-
-    ssl_ctx = ssl.create_default_context()
-    ssl_ctx.check_hostname = False
-    ssl_ctx.verify_mode = ssl.CERT_NONE
-    connector = aiohttp.TCPConnector(ssl=ssl_ctx)
-
-    full = ""
-    async with aiohttp.ClientSession(connector=connector) as session:
-        async with session.post(
-            AI_API_URL,
-            data=form,
-            headers={"x-api-key": AI_API_KEY},
-            timeout=aiohttp.ClientTimeout(total=180),
-        ) as resp:
-            if resp.status in (429, 500, 502, 503, 504):
-                err = await resp.text()
-                logger.warning(f"AI transient {resp.status}: {err[:200]}")
-                raise AgentTransientError(f"{resp.status}")
-            if resp.status != 200:
-                err = await resp.text()
-                logger.error(f"AI API error {resp.status}: {err[:300]}")
-                raise HTTPException(status_code=502, detail=f"Agente IA devolveu {resp.status}")
-            async for chunk in resp.content:
-                full += chunk.decode("utf-8", errors="ignore")
-
-    # Stream is JSON-lines: {"type":"token","content":"..."} per line
-    cleaned = ""
-    error_message = None
-    for line in full.split("\n"):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-        except json.JSONDecodeError:
-            if line.startswith("data:"):
-                payload = line[5:].strip()
-                if payload and payload != "[DONE]":
-                    try:
-                        obj = json.loads(payload)
-                    except json.JSONDecodeError:
-                        continue
-                else:
-                    continue
-            else:
-                continue
-        if not isinstance(obj, dict):
-            continue
-        msg_type = obj.get("type", "")
-        content = obj.get("content", "")
-        if msg_type == "token" and content:
-            cleaned += content
-        elif msg_type == "error":
-            error_message = content or "erro desconhecido no agente"
-        elif msg_type in ("end", "done"):
-            break
-
-    if not cleaned and error_message:
-        # "Rate limit reached" comes through here on the in-stream error frame
-        if "rate limit" in error_message.lower() or "429" in error_message:
-            raise AgentTransientError(error_message)
-        raise HTTPException(status_code=502, detail=f"Agente IA: {error_message}")
-    if not cleaned:
-        raise AgentTransientError("empty response")
-    return cleaned.strip()
-
-
-async def _call_agent(system: str, user: str, max_retries: int = 3) -> str:
-    """Call iaedu.pt with exponential backoff on rate-limit / 5xx / empty frames."""
-    delay = 5.0
-    last_err: Exception | None = None
-    for attempt in range(1, max_retries + 1):
-        try:
-            return await _call_agent_once(system, user)
-        except AgentTransientError as e:
-            last_err = e
-            if attempt < max_retries:
-                logger.info(f"Agent retry {attempt}/{max_retries} in {delay:.0f}s ({e})")
-                await asyncio.sleep(delay)
-                delay = min(delay * 3, 60.0)
-            else:
-                logger.error(f"Agent gave up after {max_retries} attempts: {e}")
-        except HTTPException:
-            raise
-        except Exception as e:
-            last_err = e
-            logger.error(f"Agent unexpected error: {e}")
-            break
-    raise HTTPException(status_code=502, detail=f"Agente IA falhou após {max_retries} tentativas: {last_err}")
+async def _call_agent(system: str, user: str) -> str:
+    texto = await ai_pergunta_async(f"{system}\n\n---\n\n{user}",
+                                    timeout=180.0, feature="sinais")
+    if not texto:
+        raise HTTPException(status_code=502, detail="Nenhum motor de IA respondeu")
+    return texto
 
 
 def _repair_truncated_json(s: str) -> Optional[str]:
@@ -2192,7 +2105,7 @@ def calibration_by_context(db: Session = Depends(get_db)):
     # Pull all 3 history tables at once
     import sqlite3
     try:
-        conn = sqlite3.connect("cristopher.db")
+        conn = sqlite3.connect(DB_PATH)
         regime_by_date = {
             r[0]: {"p_risk_off": r[1], "classification": r[2]}
             for r in conn.execute(

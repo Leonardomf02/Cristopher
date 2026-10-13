@@ -20,7 +20,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import WakaProjectDay, WakaDayMetrics, WakaProjectDayMetrics
+from models import WakaProjectDay, WakaDayMetrics, WakaProjectDayMetrics, WakaHourDay
 
 router = APIRouter(prefix="/api/wakatime", tags=["WakaTime"])
 logger = logging.getLogger(__name__)
@@ -75,6 +75,31 @@ def _agent_lines_total(value) -> int:
     return int(value or 0)
 
 
+# O WakaTime passou a contar por MODELO em vez de por agente (`ai_agent_*` →
+# `ai_model_*`) e os campos antigos deixaram de vir. O custo da IA aparecia a
+# zero desde Julho por causa disto. Aceitam-se os dois nomes: os dias antigos
+# ainda trazem os campos velhos.
+_CAMPOS_CUSTO = ("ai_model_total_cost", "ai_agent_total_cost")
+_CAMPOS_LINHAS = ("ai_model_line_changes", "ai_agent_line_changes")
+
+
+def _primeiro(d: dict, campos: tuple[str, ...]):
+    for c in campos:
+        v = d.get(c)
+        if v:
+            return v
+    return None
+
+
+def _custo_ia(d: dict) -> float:
+    return float(_primeiro(d, _CAMPOS_CUSTO) or 0)
+
+
+def _linhas_por_modelo(d: dict) -> dict:
+    v = _primeiro(d, _CAMPOS_LINHAS)
+    return v if isinstance(v, dict) else ({} if v is None else {"Desconhecido": int(v)})
+
+
 def _upsert_day(db: Session, day: date_type, entry: dict) -> None:
     """Replace cached rows for `day` with the freshly fetched breakdowns + AI metrics."""
     db.query(WakaProjectDay).filter(WakaProjectDay.day == day).delete()
@@ -90,7 +115,7 @@ def _upsert_day(db: Session, day: date_type, entry: dict) -> None:
 
     # Per-agent line changes (kind="agent"): the `seconds` column holds the line
     # count here, not seconds — it's the only integer value slot we have.
-    for agent, lines in (gt.get("ai_agent_line_changes") or {}).items():
+    for agent, lines in _linhas_por_modelo(gt).items():
         n = int(lines or 0)
         if n <= 0:
             continue
@@ -108,13 +133,13 @@ def _upsert_day(db: Session, day: date_type, entry: dict) -> None:
             ai_deletions=int(p.get("ai_deletions", 0) or 0),
             human_additions=int(p.get("human_additions", 0) or 0),
             human_deletions=int(p.get("human_deletions", 0) or 0),
-            ai_lines=_agent_lines_total(p.get("ai_agent_line_changes")),
+            ai_lines=_agent_lines_total(_linhas_por_modelo(p)),
             ai_input_tokens=int(p.get("ai_input_tokens", 0) or 0),
             ai_output_tokens=int(p.get("ai_output_tokens", 0) or 0),
             ai_prompt_events=int(p.get("ai_prompt_events_total", 0) or 0),
             ai_prompt_length_sum=int(p.get("ai_prompt_length_sum", 0) or 0),
             ai_sessions=int(p.get("ai_sessions", 0) or 0),
-            ai_cost=float(p.get("ai_agent_total_cost", 0) or 0),
+            ai_cost=_custo_ia(p),
         ))
 
     ai_seconds = 0
@@ -122,7 +147,7 @@ def _upsert_day(db: Session, day: date_type, entry: dict) -> None:
         if (c.get("name") or "").lower() == "ai coding":
             ai_seconds = int(round(c.get("total_seconds", 0) or 0))
             break
-    agent_lines_total = _agent_lines_total(gt.get("ai_agent_line_changes"))
+    agent_lines_total = _agent_lines_total(_linhas_por_modelo(gt))
 
     db.query(WakaDayMetrics).filter(WakaDayMetrics.day == day).delete()
     db.add(WakaDayMetrics(
@@ -138,8 +163,40 @@ def _upsert_day(db: Session, day: date_type, entry: dict) -> None:
         ai_output_tokens=int(gt.get("ai_output_tokens", 0) or 0),
         ai_sessions=int(gt.get("ai_sessions", 0) or 0),
         ai_prompt_events=int(gt.get("ai_prompt_events_total", 0) or 0),
-        ai_cost=float(gt.get("ai_agent_total_cost", 0) or 0),
+        ai_cost=_custo_ia(gt),
     ))
+
+
+def _fetch_durations(day: date_type) -> Optional[list[dict]]:
+    """Segmentos de código de um dia (para saber a hora-do-dia de cada bocado)."""
+    url = f"{WAKATIME_API_URL}/users/current/durations"
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            r = client.get(url, params={"date": day.isoformat()}, headers=_auth_header())
+            if r.status_code != 200:
+                return None
+            return r.json().get("data", [])
+    except (httpx.HTTPError, ValueError):
+        return None
+
+
+def _upsert_hours(db: Session, day: date_type) -> None:
+    """Reconstrói os segundos por hora-do-dia para `day` a partir das durations."""
+    data = _fetch_durations(day)
+    if data is None:
+        return
+    buckets: dict[int, int] = {}
+    for seg in data:
+        start = seg.get("time")
+        dur = int(round(seg.get("duration", 0) or 0))
+        if not start or dur <= 0:
+            continue
+        h = datetime.fromtimestamp(start).hour  # hora local
+        buckets[h] = buckets.get(h, 0) + dur
+    db.query(WakaHourDay).filter(WakaHourDay.day == day).delete()
+    for h, secs in buckets.items():
+        if secs > 0:
+            db.add(WakaHourDay(day=day, hour=h, seconds=secs))
 
 
 def sync_recent(db: Session, days: int = MAX_FETCH_DAYS) -> int:
@@ -160,6 +217,10 @@ def sync_recent(db: Session, days: int = MAX_FETCH_DAYS) -> int:
         except ValueError:
             continue
         _upsert_day(db, d, entry)
+        # Horas-do-dia: sempre para hoje (muda), e para dias antigos sem dados ainda.
+        has_hours = db.query(WakaHourDay.id).filter(WakaHourDay.day == d).first() is not None
+        if d == end or not has_hours:
+            _upsert_hours(db, d)
         touched += 1
     db.commit()
     return touched
@@ -235,6 +296,21 @@ _RANGE_LABELS = {
     "all_time": "Desde sempre",
 }
 
+_PT_MONTHS = [
+    "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+    "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro",
+]
+
+
+def _month_bounds(year: int, month: int) -> tuple[date_type, date_type]:
+    """First/last day of a month, capped at today for the current/past months."""
+    today = date_type.today()
+    start = date_type(year, month, 1)
+    nxt = date_type(year + 1, 1, 1) if month == 12 else date_type(year, month + 1, 1)
+    month_end = nxt - timedelta(days=1)
+    end = min(month_end, today) if start <= today else month_end
+    return start, end
+
 
 def _range_bounds(range_key: str) -> tuple[date_type, date_type]:
     """Map a named range to (start, end) inclusive local dates. Weeks start Monday."""
@@ -270,10 +346,157 @@ def _cost_text(c: float) -> str:
     return f"${c:.4f}"
 
 
+def _resolve_range(range_param: str, days: Optional[int], month: Optional[str],
+                   year: Optional[int], db: Session) -> tuple[date_type, date_type]:
+    """Mesma lógica de intervalo do /summary, reutilizada pelo /hours."""
+    today = date_type.today()
+    if days is not None:
+        return today - timedelta(days=days - 1), today
+    if month:
+        y, mo = int(month[:4]), int(month[5:7])
+        return _month_bounds(y, mo)
+    if year is not None:
+        start = date_type(year, 1, 1)
+        year_end = date_type(year, 12, 31)
+        return start, (min(year_end, today) if start <= today else year_end)
+    if range_param == "all_time":
+        earliest = db.query(func.min(WakaProjectDay.day)).scalar()
+        return (earliest or today), today
+    key = range_param if range_param in _RANGE_LABELS else "last_7_days"
+    return _range_bounds(key)
+
+
+@router.get("/hours")
+def hours(
+    range_param: str = Query("last_30_days", alias="range"),
+    days: Optional[int] = Query(None, ge=1, le=365),
+    month: Optional[str] = Query(None),
+    year: Optional[int] = Query(None, ge=2000, le=2100),
+    db: Session = Depends(get_db),
+):
+    """Distribuição do tempo de código por hora-do-dia (0-23), para ver a que horas
+    trabalho mais e menos."""
+    if not _is_configured():
+        return {"configured": False, "hours": [], "total_seconds": 0, "peak_hour": None, "quiet_hour": None}
+
+    _maybe_sync(db)
+    start, end = _resolve_range(range_param, days, month, year, db)
+    rows = db.query(WakaHourDay).filter(WakaHourDay.day >= start, WakaHourDay.day <= end).all()
+
+    per_hour = [0] * 24
+    for r in rows:
+        if 0 <= r.hour < 24:
+            per_hour[r.hour] += r.seconds
+
+    total = sum(per_hour)
+    buckets = [{"hour": h, "seconds": per_hour[h], "text": _fmt(per_hour[h])} for h in range(24)]
+    active = [(h, s) for h, s in enumerate(per_hour) if s > 0]
+    peak_hour = max(active, key=lambda x: x[1])[0] if active else None
+    quiet_hour = min(active, key=lambda x: x[1])[0] if active else None
+    return {"configured": True, "hours": buckets, "total_seconds": total,
+            "peak_hour": peak_hour, "quiet_hour": quiet_hour}
+
+
+@router.get("/ai-trend")
+def ai_trend(months: int = Query(6, ge=1, le=36), db: Session = Depends(get_db)):
+    """Custo e peso da IA no código, mês a mês e por projecto.
+    Os dados já eram recolhidos — faltava poder olhar para eles ao longo do tempo."""
+    from datetime import date as _d
+    first = _d.today().replace(day=1)
+    for _ in range(months - 1):
+        first = (first - timedelta(days=1)).replace(day=1)
+    start = first.isoformat()
+
+    rows = (
+        db.query(
+            func.substr(WakaDayMetrics.day, 1, 7).label("mes"),
+            func.sum(WakaDayMetrics.ai_cost),
+            func.sum(WakaDayMetrics.ai_additions + WakaDayMetrics.ai_deletions),
+            func.sum(WakaDayMetrics.human_additions + WakaDayMetrics.human_deletions),
+            func.sum(WakaDayMetrics.ai_sessions),
+            func.sum(WakaDayMetrics.ai_prompt_events),
+            func.sum(WakaDayMetrics.total_seconds),
+        )
+        .filter(WakaDayMetrics.day >= start)
+        .group_by("mes")
+        .order_by("mes")
+        .all()
+    )
+    meses = []
+    for mes, cost, ai_lines, human_lines, sessions, prompts, seconds in rows:
+        ai_lines = int(ai_lines or 0)
+        human_lines = int(human_lines or 0)
+        total_lines = ai_lines + human_lines
+        meses.append({
+            "month": mes,
+            "cost": round(float(cost or 0), 2),
+            "ai_lines": ai_lines,
+            "human_lines": human_lines,
+            "ai_pct": round(ai_lines / total_lines * 100) if total_lines else 0,
+            "sessions": int(sessions or 0),
+            "prompts": int(prompts or 0),
+            "seconds": int(seconds or 0),
+        })
+
+    prows = (
+        db.query(
+            WakaProjectDayMetrics.project,
+            func.sum(WakaProjectDayMetrics.ai_cost),
+            func.sum(WakaProjectDayMetrics.ai_additions + WakaProjectDayMetrics.ai_deletions),
+            func.sum(WakaProjectDayMetrics.human_additions + WakaProjectDayMetrics.human_deletions),
+            func.sum(WakaProjectDayMetrics.seconds),
+        )
+        .filter(WakaProjectDayMetrics.day >= start)
+        .group_by(WakaProjectDayMetrics.project)
+        .all()
+    )
+    projectos = []
+    for name, cost, ai_lines, human_lines, seconds in prows:
+        ai_lines = int(ai_lines or 0)
+        human_lines = int(human_lines or 0)
+        total_lines = ai_lines + human_lines
+        secs = int(seconds or 0)
+        projectos.append({
+            "name": name,
+            "cost": round(float(cost or 0), 2),
+            "ai_lines": ai_lines,
+            "human_lines": human_lines,
+            "ai_pct": round(ai_lines / total_lines * 100) if total_lines else 0,
+            "seconds": secs,
+            "cost_per_hour": round(float(cost or 0) / (secs / 3600), 2) if secs >= 600 else None,
+        })
+    projectos.sort(key=lambda p: p["cost"], reverse=True)
+
+    total_cost = round(sum(m["cost"] for m in meses), 2)
+    total_ai = sum(m["ai_lines"] for m in meses)
+    total_human = sum(m["human_lines"] for m in meses)
+    return {
+        "since": start,
+        "months": meses,
+        "projects": projectos[:10],
+        "total_cost": total_cost,
+        "total_ai_lines": total_ai,
+        "total_human_lines": total_human,
+        "ai_pct": round(total_ai / (total_ai + total_human) * 100) if (total_ai + total_human) else 0,
+    }
+
+
+@router.get("/periods")
+def periods(db: Session = Depends(get_db)):
+    """Meses e anos com dados de código guardados, para os selectores do frontend."""
+    rows = db.query(WakaProjectDay.day).filter(WakaProjectDay.kind == "project").distinct().all()
+    days = [r[0] for r in rows if r[0]]
+    months = sorted({f"{d.year:04d}-{d.month:02d}" for d in days}, reverse=True)
+    years = sorted({d.year for d in days}, reverse=True)
+    return {"months": months, "years": years}
+
+
 @router.get("/summary")
 def summary(
     range_param: str = Query("last_7_days", alias="range"),
     days: Optional[int] = Query(None, ge=1, le=365),
+    month: Optional[str] = Query(None, description="Mês específico no formato YYYY-MM"),
+    year: Optional[int] = Query(None, ge=2000, le=2100),
     db: Session = Depends(get_db),
 ):
     """Coding time for the selected range from the local cache (refreshed from
@@ -281,7 +504,8 @@ def summary(
     detailed per-project AI metrics, plus totals, daily average and best day.
 
     `range` is one of: today, last_7_days, last_14_days, last_30_days,
-    this_week, last_week, this_month, last_month. `days` (legacy) overrides it."""
+    this_week, last_week, this_month, last_month. `month` (YYYY-MM) selects a
+    specific month and `year` a whole year. `days` (legacy) overrides them."""
     if not _is_configured():
         return {
             "configured": False, "days": [], "projects": [], "languages": [], "editors": [],
@@ -298,6 +522,20 @@ def summary(
         start, end = today - timedelta(days=days - 1), today
         range_key = f"last_{days}_days"
         range_label = f"Últimos {days} dias"
+    elif month:
+        try:
+            y, mo = int(month[:4]), int(month[5:7])
+            start, end = _month_bounds(y, mo)
+        except (ValueError, IndexError):
+            raise HTTPException(status_code=400, detail="month inválido (usa YYYY-MM)")
+        range_key = f"{y:04d}-{mo:02d}"
+        range_label = f"{_PT_MONTHS[mo - 1]} {y}"
+    elif year is not None:
+        start = date_type(year, 1, 1)
+        year_end = date_type(year, 12, 31)
+        end = min(year_end, today) if start <= today else year_end
+        range_key = f"{year:04d}"
+        range_label = str(year)
     elif range_param == "all_time":
         range_key = "all_time"
         range_label = _RANGE_LABELS["all_time"]

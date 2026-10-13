@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { TrendingUp, TrendingDown, RefreshCw, FileText, FileSpreadsheet, ChevronLeft, ChevronRight, ChevronDown, Coins, Pencil, Check, X, Camera, Trophy, BarChart3, Plus, Trash2, AlertTriangle, Lightbulb, Target, Search, Loader, PieChart, Euro, Calendar, Newspaper, Sparkles, ExternalLink } from 'lucide-react';
 import { LineChart, Line, ResponsiveContainer, XAxis, YAxis, Tooltip, ReferenceLine } from 'recharts';
-import { investmentsApi } from '../api';
+import { investmentsApi, T212Status } from '../api';
 
 interface Position {
   id: number;
@@ -62,11 +62,105 @@ interface Summary {
 type Tab = 'overview' | 'trades' | 'transactions' | 'stats' | 'planner' | 'signals';
 type SourceFilter = 'all' | 'finst' | 'trading212';
 
+// Aporte mensal: o plano do salário manda X, entrou Y nas contas de investimento.
+function AporteMensal() {
+  const [d, setD] = useState<Awaited<ReturnType<typeof investmentsApi.contributions>> | null>(null);
+
+  useEffect(() => { investmentsApi.contributions(6).then(setD).catch(() => setD(null)); }, []);
+  if (!d || d.months.length === 0) return null;
+
+  const esteMes = d.months[d.months.length - 1];
+  const falta = Math.max(0, esteMes.planned - esteMes.done);
+  const max = Math.max(1, ...d.months.map(m => Math.max(m.planned, m.done)));
+
+  return (
+    <div className="rounded-xl border border-[#222] bg-[#161616] p-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-2 mb-3">
+        <h2 className="text-sm font-semibold text-white">Aporte mensal</h2>
+        <span className="text-[11px] text-gray-500">
+          plano: {d.invest_pct}% do salário · média feita {d.avg_done.toFixed(0)}€/mês
+        </span>
+      </div>
+
+      <div className="flex items-end gap-2 mb-3">
+        {d.months.map(m => (
+          <div key={m.month} className="flex-1 flex flex-col items-center gap-1 min-w-0 group">
+            <div className="w-full h-20 flex items-end gap-0.5">
+              <div className="flex-1 bg-gray-600/40 rounded-t" style={{ height: `${(m.planned / max) * 100}%` }}
+                title={`planeado ${m.planned}€ (${m.source})`} />
+              <div className={`flex-1 rounded-t ${m.done >= m.planned ? 'bg-emerald-500/70' : 'bg-amber-500/70'}`}
+                style={{ height: `${(m.done / max) * 100}%` }} title={`investido ${m.done}€`} />
+            </div>
+            <span className="text-[9px] text-gray-600">{m.month.slice(5)}</span>
+          </div>
+        ))}
+      </div>
+
+      <p className={`text-xs ${falta > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
+        {falta > 0
+          ? `Este mês faltam ${falta.toFixed(0)}€ para cumprir o plano (${esteMes.done.toFixed(0)}€ de ${esteMes.planned.toFixed(0)}€).`
+          : `Este mês já investiste ${esteMes.done.toFixed(0)}€ — plano cumprido.`}
+      </p>
+      <div className="flex items-center gap-3 mt-1.5 text-[10px] text-gray-600">
+        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-gray-600/60" /> planeado</span>
+        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-emerald-500/70" /> investido</span>
+      </div>
+    </div>
+  );
+}
+
+
+// Série do valor da carteira. Os extractos só dão fotografias soltas de mês a
+// mês; isto é a linha, guardada a cada actualização de preços.
+function ValorDaCarteira({ dados }: { dados: Awaited<ReturnType<typeof investmentsApi.valueHistory>> | null }) {
+  if (!dados || dados.points.length < 2) {
+    return dados && dados.points.length === 1 ? (
+      <div className="bg-[#161616] rounded-2xl border border-[#222] p-4">
+        <p className="text-xs text-gray-500">
+          Primeiro registo do valor da carteira guardado hoje (€{dados.points[0].value.toFixed(0)}).
+          A linha aparece quando houver mais dias — os preços actualizam-se sozinhos todas as tardes.
+        </p>
+      </div>
+    ) : null;
+  }
+
+  const pts = dados.points;
+  const vals = pts.flatMap(p => [p.value, p.invested]);
+  const min = Math.min(...vals) * 0.98, max = Math.max(...vals) * 1.02;
+  const W = 600, H = 140;
+  const x = (i: number) => (i / Math.max(1, pts.length - 1)) * W;
+  const y = (v: number) => H - ((v - min) / Math.max(1, max - min)) * H;
+  const linha = (campo: 'value' | 'invested') =>
+    pts.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p[campo]).toFixed(1)}`).join(' ');
+  const ultimo = pts[pts.length - 1];
+  const ganho = ultimo.value - ultimo.invested;
+
+  return (
+    <div className="bg-[#161616] rounded-2xl border border-[#222] p-4">
+      <div className="flex items-baseline justify-between gap-2 mb-3 flex-wrap">
+        <h3 className="text-sm font-medium text-gray-300">Valor da carteira</h3>
+        <span className="text-[11px] text-gray-500">
+          {pts.length} dias · agora €{ultimo.value.toFixed(0)}
+          <span className={ganho >= 0 ? 'text-emerald-400' : 'text-red-400'}> ({ganho >= 0 ? '+' : ''}{ganho.toFixed(0)}€)</span>
+        </span>
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 140 }}>
+        <path d={linha('invested')} fill="none" stroke="#555" strokeWidth={1.5} strokeDasharray="4 3" />
+        <path d={linha('value')} fill="none" stroke={ganho >= 0 ? '#10B981' : '#EF4444'} strokeWidth={2} />
+      </svg>
+      <p className="text-[10px] text-gray-600 mt-1">Linha cheia = valor; tracejado = o que meteste lá dentro.</p>
+    </div>
+  );
+}
+
 export default function InvestmentsPage() {
   const [positions, setPositions] = useState<Position[]>([]);
   const [trades, setTrades] = useState<Trade[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
+  const [aActualizar, setAActualizar] = useState(false);
+  const [precosEm, setPrecosEm] = useState<string | null>(null);
+  const [historicoValor, setHistoricoValor] = useState<Awaited<ReturnType<typeof investmentsApi.valueHistory>> | null>(null);
   const [taxInsight, setTaxInsight] = useState<{ gross_return_eur: number; tax_estimate_eur: number; after_tax_eur: number; positions: any[]; nudges: string[]; note: string } | null>(null);
   const [tab, setTab] = useState<Tab>('overview');
   const [importing, setImporting] = useState(false);
@@ -86,8 +180,11 @@ export default function InvestmentsPage() {
   const [t212DropdownOpen, setT212DropdownOpen] = useState(false);
   const t212DropdownRef = useRef<HTMLDivElement>(null);
   const [t212ImportMonth, setT212ImportMonth] = useState<string>('');  // vazio = detetar do PDF
+  const [t212, setT212] = useState<T212Status | null>(null);
+  const [aSincronizar, setASincronizar] = useState(false);
 
   useEffect(() => { loadData(); }, []);
+  useEffect(() => { investmentsApi.t212Status().then(setT212).catch(() => {}); }, []);
 
   // Close crypto dropdown on outside click
   useEffect(() => {
@@ -136,24 +233,22 @@ export default function InvestmentsPage() {
     return ['all', ...Array.from(months).sort().reverse()];
   }, [filteredPositionsBySource, filteredTradesBySource, filteredTransactionsBySource]);
 
-  // Filter positions by month: show snapshot for selected month, or latest per instrument for "all"
+  // Filter positions by month: show the selected month's snapshot, or the most
+  // recent snapshot of each broker for "all".
   const filteredPositions = useMemo(() => {
     if (filterMonth === 'all') {
-      // Show latest snapshot per instrument (highest statement_date), plus Finst (no date)
-      const latest = new Map<string, Position>();
+      // O mais recente POR CORRETORA, não por instrumento: cada leitura traz a
+      // carteira toda, por isso o que falta na última é o que ele vendeu — ficar
+      // com a linha do mês anterior deixava posições fantasma a somar.
+      const ultimoMes = new Map<string, string>();
       for (const p of filteredPositionsBySource) {
-        if (!p.statement_date) {
-          // Finst positions: always show
-          latest.set(`finst:${p.instrument}`, p);
-        } else {
-          const key = `${p.source}:${p.instrument}`;
-          const existing = latest.get(key);
-          if (!existing || !existing.statement_date || p.statement_date > existing.statement_date) {
-            latest.set(key, p);
-          }
-        }
+        if (!p.statement_date) continue;
+        const atual = ultimoMes.get(p.source) || '';
+        if (p.statement_date > atual) ultimoMes.set(p.source, p.statement_date);
       }
-      return Array.from(latest.values());
+      return filteredPositionsBySource.filter(p =>
+        !p.statement_date || p.statement_date === ultimoMes.get(p.source)
+      );
     }
     // Show positions from this month's snapshot + Finst (always visible)
     return filteredPositionsBySource.filter(p =>
@@ -208,6 +303,22 @@ export default function InvestmentsPage() {
     setTransactions(txn);
     setSummary(sum);
     investmentsApi.taxInsight().then(setTaxInsight).catch(() => {});
+    investmentsApi.valueHistory(180)
+      .then(h => { setHistoricoValor(h); setPrecosEm(h.priced_at); })
+      .catch(() => {});
+  }
+
+  // Cotações de agora para o que está em carteira: sem isto o valor é o do
+  // último extracto, que aqui já tinha dois meses.
+  async function actualizarPrecos() {
+    setAActualizar(true);
+    try {
+      const r = await investmentsApi.refreshPrices();
+      setPrecosEm(r.at);
+      await loadData();
+    } finally {
+      setAActualizar(false);
+    }
   }
 
   async function handleImport(file: File, type: 'pdf' | 'finst-csv') {
@@ -225,6 +336,32 @@ export default function InvestmentsPage() {
       setImporting(false);
       if (t212Ref.current) t212Ref.current.value = '';
       if (finstRef.current) finstRef.current.value = '';
+    }
+  }
+
+  // Carteira pela API do Trading 212. Antes disto as quantidades eram as do
+  // último extracto em PDF que ele se lembrou de carregar.
+  async function sincronizaT212(completo: boolean) {
+    setASincronizar(true);
+    setImportResult(null);
+    try {
+      const r = await investmentsApi.t212Sync(completo);
+      setImportResult({
+        t212: true,
+        texto: [
+          `${r.positions} posições`,
+          r.trades ? `${r.trades} ordens` : '',
+          r.transactions ? `${r.transactions} movimentos` : '',
+          r.dividends ? `${r.dividends} dividendos` : '',
+        ].filter(Boolean).join(' · '),
+        erros: r.errors,
+      });
+      await loadData();
+      investmentsApi.t212Status().then(setT212).catch(() => {});
+    } catch (e: any) {
+      setImportResult({ error: e.message });
+    } finally {
+      setASincronizar(false);
     }
   }
 
@@ -273,12 +410,30 @@ export default function InvestmentsPage() {
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold text-white">Investimentos</h1>
           <p className="text-sm text-gray-500 mt-1">
-            {summary?.latest_statement
-              ? `Último extrato: ${summary.latest_statement}`
-              : 'Importa dados para começar'}
+            {precosEm
+              ? <>Preços de {new Date(precosEm).toLocaleString('pt-PT', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</>
+              : summary?.latest_statement
+                ? `Último extrato: ${summary.latest_statement}`
+                : 'Importa dados para começar'}
+            {precosEm && (
+              t212?.last_sync && t212.positions > 0
+                ? <span className="text-gray-600"> · posições lidas do Trading 212 em {new Date(t212.last_sync).toLocaleDateString('pt-PT', { day: '2-digit', month: '2-digit' })}</span>
+                : summary?.latest_statement
+                  ? <span className="text-gray-600"> · posições do extracto de {summary.latest_statement}</span>
+                  : null
+            )}
           </p>
         </div>
         <div className="flex gap-2 items-center flex-wrap">
+          <button
+            onClick={actualizarPrecos}
+            disabled={aActualizar}
+            className="flex items-center gap-2 px-3 py-2 bg-emerald-600/15 border border-emerald-500/30 text-emerald-300 rounded-xl hover:bg-emerald-600/25 disabled:opacity-40 transition-colors"
+            title="Ir buscar as cotações de agora"
+          >
+            <TrendingUp size={16} className={aActualizar ? 'animate-pulse' : ''} />
+            <span className="text-sm">{aActualizar ? 'a cotar…' : 'Preços de hoje'}</span>
+          </button>
           <button
             onClick={() => loadData()}
             className="flex items-center gap-2 px-3 py-2 bg-[#1a1a1a] border border-[#333] rounded-xl text-gray-300 hover:bg-[#222] transition-colors"
@@ -353,7 +508,53 @@ export default function InvestmentsPage() {
               <ChevronDown size={14} className={`transition-transform ${t212DropdownOpen ? 'rotate-180' : ''}`} />
             </button>
             {t212DropdownOpen && (
-              <div className="absolute right-0 mt-2 w-64 bg-[#1a1a1a] border border-[#333] rounded-xl shadow-xl z-50 overflow-hidden">
+              <div className="absolute right-0 mt-2 w-72 bg-[#1a1a1a] border border-[#333] rounded-xl shadow-xl z-50 overflow-hidden">
+                {t212?.configured ? (
+                  <>
+                    <div className="px-4 pt-3 pb-2 border-b border-[#222]">
+                      <p className="text-[11px] text-gray-500">
+                        {t212.last_sync
+                          ? <>Última leitura {new Date(t212.last_sync).toLocaleString('pt-PT', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}{t212.ok === false && <span className="text-red-400"> · falhou</span>}</>
+                          : 'Ainda não leu a conta'}
+                      </p>
+                      {t212.positions > 0 && (
+                        <p className="text-[11px] text-gray-400 mt-0.5">
+                          {t212.positions} posições · {eur(t212.value_eur || 0)}
+                        </p>
+                      )}
+                      {t212.ok === false && t212.detail && (
+                        <p className="text-[10px] text-red-400/80 mt-1 line-clamp-2">{t212.detail}</p>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => { sincronizaT212(false); setT212DropdownOpen(false); }}
+                      disabled={aSincronizar}
+                      className="w-full flex items-center gap-3 px-4 py-3 text-sm text-gray-200 hover:bg-white/5 transition-colors disabled:opacity-40"
+                    >
+                      <RefreshCw size={16} className={`text-blue-400 ${aSincronizar ? 'animate-spin' : ''}`} />
+                      {aSincronizar ? 'A ler a conta…' : 'Sincronizar agora'}
+                    </button>
+                    <button
+                      onClick={() => { sincronizaT212(true); setT212DropdownOpen(false); }}
+                      disabled={aSincronizar}
+                      className="w-full flex items-center gap-3 px-4 py-3 text-sm text-gray-400 hover:bg-white/5 transition-colors disabled:opacity-40"
+                      title="Varre o histórico todo de ordens, dividendos e movimentos (demora ~1 min)"
+                    >
+                      <FileSpreadsheet size={16} className="text-gray-500" />
+                      Trazer histórico completo
+                    </button>
+                  </>
+                ) : (
+                  <div className="px-4 pt-3 pb-3 border-b border-[#222]">
+                    <p className="text-[11px] text-gray-400 font-medium">Ligação por API desligada</p>
+                    <p className="text-[10px] text-gray-600 mt-1 leading-relaxed">
+                      Gera a chave em Definições → API no Trading 212 e põe
+                      <span className="text-gray-400"> T212_API_KEY=chave:segredo </span>
+                      no backend/.env. Com ela, as posições deixam de depender do extracto.
+                    </p>
+                  </div>
+                )}
+                <div className="border-t border-[#333]" />
                 <div className="px-4 pt-3 pb-2 border-b border-[#222]">
                   <label className="text-[11px] text-gray-500 block mb-1">Mês do extrato (opcional)</label>
                   <input
@@ -382,7 +583,9 @@ export default function InvestmentsPage() {
         <div className={`p-4 rounded-xl border ${importResult.error ? 'bg-red-500/10 border-red-500/30 text-red-400' : 'bg-green-500/10 border-green-500/30 text-green-400'}`}>
           {importResult.error
             ? `Erro: ${importResult.error}`
-            : importResult.screenshot
+            : importResult.t212
+              ? `Trading 212 — ${importResult.texto}${importResult.erros?.length ? ` (${importResult.erros.join('; ')})` : ''}`
+              : importResult.screenshot
               ? `Screenshot ${importResult.month || ''} — ${importResult.count} crypto${importResult.count > 1 ? 's' : ''}: ${importResult.updated?.map((u: any) => `${u.instrument} @ ${u.current_price.toLocaleString('pt-PT', { minimumFractionDigits: 2 })}€`).join(', ')}`
               : `Importado com sucesso — ${importResult.positions_updated} posições, ${importResult.trades_added} trades, ${importResult.transactions_added} transações`}
           <button onClick={() => setImportResult(null)} className="ml-3 text-xs underline">fechar</button>
@@ -416,6 +619,10 @@ export default function InvestmentsPage() {
           );
         })}
       </div>
+
+      <ValorDaCarteira dados={historicoValor} />
+
+      <AporteMensal />
 
       {/* Summary Cards */}
       {summary && (
@@ -1683,6 +1890,11 @@ function PlannerPanel({ positions, transactions, eur }: {
   transactions: Transaction[];
   eur: (v: number) => string;
 }) {
+  // Histórico de acerto por nível de convicção, para o pôr ao lado de cada
+  // sugestão em vez de o deixar escondido atrás do botão "Ver stats".
+  const [calibration, setCalibration] = useState<any>(null);
+  useEffect(() => { investmentsApi.signalsCalibration().then(setCalibration).catch(() => setCalibration(null)); }, []);
+
   const INSTRUMENT_NAMES: Record<string, string> = {
     'VUAA': 'Vanguard S&P 500', 'BTC': 'Bitcoin', 'CNDX': 'iShares Nasdaq 100',
     'NVDA': 'NVIDIA', 'ETH': 'Ethereum', 'SSLN': 'iShares Semiconductors',
@@ -2665,6 +2877,30 @@ function PlannerPanel({ positions, transactions, eur }: {
             {planAnalysis.market_summary && (
               <p className="text-xs text-gray-400 leading-relaxed">{planAnalysis.market_summary}</p>
             )}
+
+            {/* O boletim do próprio motor, à frente das sugestões e não escondido
+                atrás de um botão: é a informação que decide se vale a pena segui-las. */}
+            {calibration?.overall?.n >= 20 && (
+              <div className={`rounded-lg border px-3 py-2 text-[11px] leading-relaxed ${
+                calibration.overall.hit_rate_pct >= 50
+                  ? 'border-emerald-500/30 bg-emerald-500/[0.06] text-emerald-200'
+                  : 'border-amber-500/30 bg-amber-500/[0.06] text-amber-200'
+              }`}>
+                <span className="font-medium">Como este motor se tem portado:</span>{' '}
+                acertou {calibration.overall.hit_rate_pct}% das {calibration.overall.n} sugestões já resolvidas,
+                com retorno médio de {calibration.overall.avg_return_pct > 0 ? '+' : ''}{calibration.overall.avg_return_pct}%.
+                {calibration.by_conviction && (
+                  <>
+                    {' '}Por convicção:{' '}
+                    {(['high', 'medium', 'low'] as const)
+                      .filter(k => calibration.by_conviction[k]?.n)
+                      .map(k => `${k === 'high' ? 'alta' : k === 'medium' ? 'média' : 'baixa'} ${calibration.by_conviction[k].actual_hit_rate_pct}% (${calibration.by_conviction[k].n})`)
+                      .join(' · ')}.
+                  </>
+                )}
+                <span className="text-gray-400"> Trata as sugestões como pistas, não como ordens.</span>
+              </div>
+            )}
             {(() => {
               const all: any[] = Array.isArray(planAnalysis.suggestions) ? planAnalysis.suggestions : [];
               const planSugs = all.filter(s => s.is_plan_asset !== false);
@@ -2702,6 +2938,12 @@ function PlannerPanel({ positions, transactions, eur }: {
                   : `Convicção: ${sug.conviction || '?'}`;
                 const gates: { gate: string; reason: string }[] = sug.gates_triggered || [];
                 const hasGates = gates.length > 0;
+                // O que este nível de convicção acertou de facto no passado. O
+                // motor já media isto, mas estava escondido atrás de "Ver stats":
+                // as sugestões de convicção baixa acertam 1 em 7.
+                const histNivel = calibration?.by_conviction?.[(sug.conviction || 'medium').toLowerCase()];
+                const acerto: number | null = histNivel?.actual_hit_rate_pct ?? null;
+                const nHist: number = histNivel?.n ?? 0;
                 return (
                   <div key={idx} className={`rounded-lg border p-3 ${style.bg} ${sug.auto_filled ? 'opacity-70' : ''}`}>
                     <div className="flex items-center justify-between gap-2 mb-1.5 flex-wrap">
@@ -2714,6 +2956,18 @@ function PlannerPanel({ positions, transactions, eur }: {
                         )}
                         {sug.auto_critique && (
                           <span className="text-[10px] uppercase tracking-wide text-purple-300 px-1.5 py-0.5 bg-purple-900/30 border border-purple-800/40 rounded" title="Risk officer corrida automaticamente — confidence baixa">critique</span>
+                        )}
+                        {acerto !== null && nHist >= 10 && (
+                          <span
+                            title={`Historicamente, as sugestões de convicção ${sug.conviction} acertaram ${acerto}% das vezes (${nHist} sugestões já resolvidas).`}
+                            className={`text-[10px] px-1.5 py-0.5 rounded border ${
+                              acerto >= 55 ? 'bg-green-500/15 text-green-300 border-green-500/30'
+                                : acerto >= 40 ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                                : 'bg-red-500/15 text-red-300 border-red-500/30'
+                            }`}
+                          >
+                            histórico {acerto}% ({nHist})
+                          </span>
                         )}
                       </div>
                       <div className="flex items-center gap-2">
@@ -3970,7 +4224,7 @@ function MiniLineChart({ data, dataKey, stroke, refY }: { data: any[]; dataKey: 
           <XAxis dataKey="date" hide />
           <YAxis hide domain={['auto', 'auto']} />
           <Tooltip
-            contentStyle={{ background: '#0e0e0e', border: '1px solid #333', borderRadius: 6, fontSize: 11 }}
+            contentStyle={{ background: 'var(--app-surface)', color: 'var(--app-text)', border: '1px solid var(--app-border-strong)', borderRadius: 6, fontSize: 11 }}
             labelStyle={{ color: '#888' }}
             formatter={(v: any) => (typeof v === 'number' ? v.toFixed(3) : v)}
           />
@@ -4218,7 +4472,7 @@ function DecayCard({ data }: { data: any }) {
                 <XAxis dataKey="horizon" tick={{ fill: '#666', fontSize: 11 }} axisLine={{ stroke: '#333' }} />
                 <YAxis tick={{ fill: '#666', fontSize: 11 }} axisLine={{ stroke: '#333' }} domain={['auto', 'auto']} />
                 <Tooltip
-                  contentStyle={{ background: '#0e0e0e', border: '1px solid #333', borderRadius: 6, fontSize: 11 }}
+                  contentStyle={{ background: 'var(--app-surface)', color: 'var(--app-text)', border: '1px solid var(--app-border-strong)', borderRadius: 6, fontSize: 11 }}
                   labelStyle={{ color: '#888' }}
                   formatter={(v: any, n: any) => [n === 'avg' ? `${v}%` : v, n === 'avg' ? 'avg return' : 'n']}
                 />

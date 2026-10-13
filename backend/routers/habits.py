@@ -1,14 +1,18 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from datetime import date, timedelta
 from typing import Optional
 
 from database import get_db
-from models import Habit, HabitCompletion, DayType
+from models import (
+    Habit, HabitCompletion, DayType, WakaProjectDay, AppUsageSession,
+    ScreenTimeDailyApp, Event,
+)
 from schemas import HabitCreate, HabitUpdate, HabitOut, HabitCompletionCreate, HabitCompletionOut
 
 # Day type names that protect habit streaks (habits optional, don't break streak)
-STREAK_PROTECTED_TYPES = {"Férias", "Aulas", "Doente", "Viagem"}
+STREAK_PROTECTED_TYPES = {"Férias"}
 
 router = APIRouter(prefix="/api/habits", tags=["Habits"])
 
@@ -177,6 +181,55 @@ def habits_today(db: Session = Depends(get_db)):
     return result
 
 
+def _to_minutes(hhmm: str) -> int | None:
+    """'07:30' → 450. None se a hora não for válida."""
+    try:
+        h, m = (int(x) for x in str(hhmm).split(":")[:2])
+    except (ValueError, AttributeError):
+        return None
+    return h * 60 + m if 0 <= h < 24 and 0 <= m < 60 else None
+
+
+def _time_stats(entries: list[dict]) -> dict | None:
+    """Estatísticas da hora a que um hábito é feito.
+
+    A média é circular (trata 23:50 e 00:10 como próximos, não como 12h de distância),
+    senão hábitos nocturnos davam médias absurdas a meio da tarde."""
+    import math
+
+    mins = [e["minutes"] for e in entries if e["minutes"] is not None]
+    if not mins:
+        return None
+
+    angles = [m / 1440 * 2 * math.pi for m in mins]
+    avg_angle = math.atan2(
+        sum(math.sin(a) for a in angles) / len(angles),
+        sum(math.cos(a) for a in angles) / len(angles),
+    )
+    avg_min = int(round(avg_angle / (2 * math.pi) * 1440)) % 1440
+
+    # Dispersão: 0 = sempre à mesma hora, 1 = completamente espalhado.
+    r = math.hypot(
+        sum(math.sin(a) for a in angles) / len(angles),
+        sum(math.cos(a) for a in angles) / len(angles),
+    )
+
+    by_hour = [0] * 24
+    for m in mins:
+        by_hour[m // 60] += 1
+
+    ordered = sorted(mins)
+    return {
+        "count": len(mins),
+        "avg": f"{avg_min // 60:02d}:{avg_min % 60:02d}",
+        "earliest": f"{ordered[0] // 60:02d}:{ordered[0] % 60:02d}",
+        "latest": f"{ordered[-1] // 60:02d}:{ordered[-1] % 60:02d}",
+        "median": f"{ordered[len(ordered) // 2] // 60:02d}:{ordered[len(ordered) // 2] % 60:02d}",
+        "consistency": round(r * 100),
+        "by_hour": by_hour,
+    }
+
+
 def _is_scheduled(days: str, weekday: int) -> bool:
     """Check if a habit is scheduled for a given weekday (0=Mon..6=Sun)."""
     if days == "daily":
@@ -219,8 +272,15 @@ def habit_analytics(
 
     # Group completions by habit
     comp_by_habit: dict[int, set[str]] = {}
+    times_by_habit: dict[int, list[dict]] = {}
     for c in all_completions:
         comp_by_habit.setdefault(c.habit_id, set()).add(str(c.date))
+        times_by_habit.setdefault(c.habit_id, []).append({
+            "date": str(c.date),
+            "time": c.completed_at,
+            "minutes": _to_minutes(c.completed_at),
+            "notes": c.notes or "",
+        })
 
     # Heatmap: all dates with count of completions
     heatmap: dict[str, int] = {}
@@ -231,6 +291,8 @@ def habit_analytics(
     habit_details = []
     for h in habits:
         dates_completed = comp_by_habit.get(h.id, set())
+        entries = times_by_habit.get(h.id, [])
+        time_by_date = {e["date"]: e["time"] for e in entries}
 
         # Count scheduled days and completions
         scheduled = 0
@@ -299,6 +361,8 @@ def habit_analytics(
             "name": h.name,
             "icon": h.icon,
             "color": h.color,
+            "days": h.days,
+            "fixed_time": h.fixed_time,
             "scheduled": scheduled,
             "completed": completed,
             "rate": rate,
@@ -306,6 +370,19 @@ def habit_analytics(
             "best_streak": best_streak,
             "by_weekday": weekday_rates,
             "dates_completed": sorted(dates_completed),
+            # Mapa de actividade só deste hábito: feito / falhado / não estava marcado.
+            "heatmap": [
+                {
+                    "date": str(d),
+                    "done": str(d) in dates_completed,
+                    "scheduled": _is_scheduled(h.days, d.weekday()),
+                    "protected": str(d) in protected_dates,
+                    "time": time_by_date.get(str(d)),
+                }
+                for d in (cutoff + timedelta(days=i) for i in range((today - cutoff).days + 1))
+            ],
+            "times": sorted(entries, key=lambda e: e["date"], reverse=True),
+            "time_stats": _time_stats(entries),
         })
 
     # Global heatmap for last N days
@@ -323,3 +400,106 @@ def habit_analytics(
         "habits": habit_details,
         "heatmap": heatmap_list,
     }
+
+
+# ── Detecção automática ──────────────────────────────────────────
+#
+# Marcar hábitos à mão não pega. Aqui a app olha para o que já sabe do dia
+# (tempo de código, apps usadas, ecrã, eventos do calendário) e propõe o
+# check — falta só confirmar.
+
+_KEYWORDS = {
+    "codigo": ["pesquisa", "estud", "código", "codigo", "program", "trabalh", "tese", "projecto", "projeto"],
+    "treino": ["gym", "ginásio", "ginasio", "treino", "corr", "muscula", "desporto", "bike", "nata"],
+    "leitura": ["ler", "leitura", "livro"],
+}
+
+
+def _kind(name: str) -> Optional[str]:
+    low = (name or "").lower()
+    for kind, words in _KEYWORDS.items():
+        if any(w in low for w in words):
+            return kind
+    return None
+
+
+def _hm(seconds: float) -> str:
+    m = int(seconds // 60)
+    return f"{m // 60}h{m % 60:02d}" if m >= 60 else f"{m}min"
+
+
+@router.get("/suggestions")
+def habit_suggestions(day: Optional[date] = Query(None), db: Session = Depends(get_db)):
+    """Hábitos de hoje que a app acha que já fizeste, com a razão."""
+    d = day or date.today()
+    weekday = d.weekday()
+    habits = db.query(Habit).filter(Habit.active == True).all()
+    done = {c.habit_id for c in db.query(HabitCompletion).filter(HabitCompletion.date == d).all()}
+
+    code_seconds = float(
+        db.query(func.coalesce(func.sum(WakaProjectDay.seconds), 0))
+        .filter(WakaProjectDay.day == d, WakaProjectDay.kind == "project")
+        .scalar() or 0
+    )
+    dev_seconds = float(
+        db.query(func.coalesce(func.sum(AppUsageSession.duration_seconds), 0))
+        .filter(AppUsageSession.date == d)
+        .filter(func.lower(AppUsageSession.app_name).like("%code%"))
+        .scalar() or 0
+    )
+    reading_seconds = float(
+        db.query(func.coalesce(func.sum(ScreenTimeDailyApp.seconds), 0))
+        .filter(ScreenTimeDailyApp.date == d, ScreenTimeDailyApp.category == "Information & Reading")
+        .scalar() or 0
+    )
+    eventos = db.query(Event).filter(Event.date == d).all()
+
+    # Maior intervalo longe do computador entre as 7h e as 23h — serve de sinal
+    # para hábitos fora do PC (gym, corrida...).
+    sessions = (
+        db.query(AppUsageSession)
+        .filter(AppUsageSession.date == d)
+        .order_by(AppUsageSession.start_time)
+        .all()
+    )
+    def _to_min(t) -> int:
+        s = str(t)[:5]
+        try:
+            h, m = s.split(":")
+            return int(h) * 60 + int(m)
+        except Exception:
+            return 0
+    marcos = [(_to_min(s.start_time), _to_min(s.end_time or s.start_time)) for s in sessions if s.start_time]
+    marcos.sort()
+    maior_gap, gap_inicio = 0, None
+    limite_inicio, limite_fim = 7 * 60, 23 * 60
+    anterior = limite_inicio
+    for ini, fim in marcos:
+        if ini > anterior and anterior >= limite_inicio and ini <= limite_fim:
+            if ini - anterior > maior_gap:
+                maior_gap, gap_inicio = ini - anterior, anterior
+        anterior = max(anterior, fim)
+
+    out = []
+    for h in habits:
+        if h.id in done or not _is_scheduled(h.days, weekday):
+            continue
+        kind = _kind(h.name)
+        razao = None
+        if kind == "codigo":
+            if code_seconds >= 1800:
+                razao = f"{_hm(code_seconds)} de código hoje"
+            elif dev_seconds >= 1800:
+                razao = f"{_hm(dev_seconds)} no editor hoje"
+        elif kind == "treino":
+            ev = next((e for e in eventos if _kind(e.title or "") == "treino"), None)
+            if ev:
+                razao = f"tens '{ev.title}' no calendário"
+            elif maior_gap >= 60 and gap_inicio is not None:
+                razao = f"{_hm(maior_gap * 60)} longe do PC a partir das {gap_inicio // 60:02d}:{gap_inicio % 60:02d}"
+        elif kind == "leitura" and reading_seconds >= 900:
+            razao = f"{_hm(reading_seconds)} a ler no telemóvel"
+
+        if razao:
+            out.append({"habit_id": h.id, "name": h.name, "icon": h.icon, "reason": razao})
+    return out

@@ -1,0 +1,22 @@
+{
+  "name": "Cristopher",
+  "short_name": "Cristopher",
+  "description": "Gestor de vida pessoal — dinheiro, código, sono, jogos e planos.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0d0d0d",
+  "theme_color": "#0d0d0d",
+  "lang": "pt-PT",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "O Dia", "url": "/day", "description": "A linha do tempo de hoje" },
+    { "name": "Planear Dia", "url": "/planner" },
+    { "name": "Gastos", "url": "/expenses" }
+  ]
+}

@@ -7,7 +7,9 @@ summary of which files were edited in which projects.
 No git required — VS Code stores a snapshot on every save automatically."""
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from pydantic import BaseModel
 from datetime import date as date_type, datetime, timedelta
 from pathlib import Path
@@ -24,7 +26,7 @@ import logging
 
 from database import get_db
 from models import CodeProjectTodo, CodeProjectNote, CodeFileSnapshot, CodeProjectFavorite
-from ai_config import ask_agent_async
+from ai_config import ask_agent_async, extract_json
 import hashlib
 
 router = APIRouter(prefix="/api/code-activity", tags=["CodeActivity"])
@@ -365,6 +367,9 @@ class NoteIn(BaseModel):
     content: str
     note_date: Optional[date_type] = None
 
+class NotePatch(BaseModel):
+    content: str
+
 class NoteOut(BaseModel):
     id: int
     project_path: str
@@ -391,7 +396,7 @@ def _decode_path(project_path: str) -> str:
     return unquote(project_path)
 
 
-@router.get("/projects/{project_path:path}/todos", response_model=list[TodoOut])
+@router.get("/project/todos", response_model=list[TodoOut])
 def list_todos(project_path: str, db: Session = Depends(get_db)):
     pp = _decode_path(project_path)
     return (
@@ -402,7 +407,7 @@ def list_todos(project_path: str, db: Session = Depends(get_db)):
     )
 
 
-@router.post("/projects/{project_path:path}/todos", response_model=TodoOut)
+@router.post("/project/todos", response_model=TodoOut)
 def create_todo(project_path: str, data: TodoIn, db: Session = Depends(get_db)):
     pp = _decode_path(project_path)
     content = (data.content or "").strip()
@@ -440,7 +445,7 @@ def delete_todo(todo_id: int, db: Session = Depends(get_db)):
     return {"deleted": n}
 
 
-@router.get("/projects/{project_path:path}/notes", response_model=list[NoteOut])
+@router.get("/project/notes", response_model=list[NoteOut])
 def list_notes(project_path: str, db: Session = Depends(get_db)):
     pp = _decode_path(project_path)
     return (
@@ -451,7 +456,7 @@ def list_notes(project_path: str, db: Session = Depends(get_db)):
     )
 
 
-@router.post("/projects/{project_path:path}/notes", response_model=NoteOut)
+@router.post("/project/notes", response_model=NoteOut)
 def create_note(project_path: str, data: NoteIn, db: Session = Depends(get_db)):
     pp = _decode_path(project_path)
     content = (data.content or "").strip()
@@ -464,6 +469,293 @@ def create_note(project_path: str, data: NoteIn, db: Session = Depends(get_db)):
         note_date=data.note_date,
     )
     db.add(note)
+    db.commit()
+    db.refresh(note)
+    return note
+
+
+@router.get("/weekly-summary")
+async def weekly_summary(
+    weeks_back: int = Query(0, ge=0, le=52),
+    refresh: bool = False,
+    db: Session = Depends(get_db),
+):
+    """Resumo da semana de programação: horas por projecto + o que foi feito, escrito
+    pela IA a partir das notas da semana. Fica em cache para não repetir o pedido."""
+    from cache import cache_get, cache_set
+    from models import WakaProjectDay
+
+    today = date_type.today()
+    monday = today - timedelta(days=today.weekday() + 7 * weeks_back)
+    sunday = monday + timedelta(days=6)
+
+    cache_key = f"code:weekly-summary:{monday.isoformat()}"
+    if not refresh:
+        hit = cache_get(cache_key)
+        if hit:
+            return hit
+
+    rows = (
+        db.query(WakaProjectDay.project, func.sum(WakaProjectDay.seconds))
+        .filter(WakaProjectDay.kind == "project", WakaProjectDay.day >= monday, WakaProjectDay.day <= sunday)
+        .group_by(WakaProjectDay.project)
+        .order_by(func.sum(WakaProjectDay.seconds).desc())
+        .all()
+    )
+    projects = [{"name": p, "seconds": int(sec or 0)} for p, sec in rows if (sec or 0) > 0]
+    total_seconds = sum(p["seconds"] for p in projects)
+
+    notes = (
+        db.query(CodeProjectNote)
+        .filter(CodeProjectNote.created_at >= datetime.combine(monday, datetime.min.time()))
+        .filter(CodeProjectNote.created_at < datetime.combine(sunday + timedelta(days=1), datetime.min.time()))
+        .order_by(CodeProjectNote.created_at.asc())
+        .all()
+    )
+    todos_done = (
+        db.query(CodeProjectTodo)
+        .filter(CodeProjectTodo.done == True, CodeProjectTodo.done_at.isnot(None))
+        .filter(CodeProjectTodo.done_at >= datetime.combine(monday, datetime.min.time()))
+        .filter(CodeProjectTodo.done_at < datetime.combine(sunday + timedelta(days=1), datetime.min.time()))
+        .count()
+    )
+
+    out = {
+        "week_start": monday.isoformat(),
+        "week_end": sunday.isoformat(),
+        "total_seconds": total_seconds,
+        "projects": projects[:8],
+        "note_count": len(notes),
+        "todos_done": todos_done,
+        "bullets": [],
+        "generated": False,
+    }
+
+    if notes and total_seconds > 0:
+        blob = "\n".join(f"[{(n.note_date or n.created_at.date()).isoformat()}] {n.content.strip()}" for n in notes)[:16000]
+        horas = ", ".join(f"{p['name']} {p['seconds'] // 3600}h{(p['seconds'] % 3600) // 60:02d}" for p in projects[:5])
+        prompt = f"""Resume a minha semana de programação em português de Portugal.
+
+Semana: {monday.isoformat()} a {sunday.isoformat()}
+Tempo por projecto: {horas}
+
+Notas do que fiz:
+{blob}
+
+Devolve SÓ um JSON: {{"bullets": ["...", "..."]}}
+Regras: 3 a 5 bullets, cada um sobre UMA coisa visível para quem usa a app, máximo 18 palavras.
+Nada de nomes de ficheiros, funções ou detalhes técnicos. Directo, sem enchimento."""
+        try:
+            answer = await ask_agent_async(prompt, timeout=120.0, feature="code")
+            data = extract_json(answer) or {}
+            bullets = [str(b).strip() for b in (data.get("bullets") or []) if str(b).strip()][:5]
+            if bullets:
+                out["bullets"] = bullets
+                out["generated"] = True
+        except Exception as ex:
+            logger.warning(f"weekly-summary: IA indisponível ({ex})")
+
+    # 12h de cache: chega para não repetir o pedido no mesmo dia.
+    cache_set(cache_key, out, 12 * 3600)
+    return out
+
+
+@router.post("/project/notes/report")
+async def notes_report_pdf(
+    project_path: str,
+    days: int = Query(30, ge=1, le=730),
+    db: Session = Depends(get_db),
+):
+    """Relatório PDF do projecto: a IA organiza as notas do período em secções."""
+    pp = _decode_path(project_path)
+    name = pp.rstrip("/").split("/")[-1] or pp
+    end = date_type.today()
+    start = end - timedelta(days=days - 1)
+
+    notes = (
+        db.query(CodeProjectNote)
+        .filter(CodeProjectNote.project_path == pp)
+        .filter(CodeProjectNote.created_at >= datetime.combine(start, datetime.min.time()))
+        .order_by(CodeProjectNote.created_at.asc())
+        .all()
+    )
+    if not notes:
+        raise HTTPException(status_code=404, detail="Sem notas neste período")
+
+    todos = (
+        db.query(CodeProjectTodo)
+        .filter(CodeProjectTodo.project_path == pp)
+        .order_by(CodeProjectTodo.created_at.asc())
+        .all()
+    )
+    open_todos = [t.content for t in todos if not t.done]
+
+    lines = []
+    for n in notes:
+        when = (n.note_date or n.created_at.date()).isoformat()
+        origem = "IA" if n.source == "ai" else "minha"
+        lines.append(f"[{when} · {origem}] {n.content.strip()}")
+    notes_blob = "\n\n".join(lines)[:24000]
+
+    prompt = f"""Vais organizar, em português de Portugal, um relatório do que se passou num projecto pessoal meu.
+
+Projecto: {name}
+Período: {start.isoformat()} a {end.isoformat()}
+
+Estas são as notas que fui escrevendo (as marcadas "IA" são resumos automáticos do que mexi no código, as "minha" são notas escritas por mim, muitas vezes ideias ou bugs):
+
+{notes_blob}
+
+TODOs ainda por fazer:
+{chr(10).join('- ' + t for t in open_todos[:40]) or '- (nenhuma)'}
+
+Devolve SÓ um JSON com esta forma, sem texto à volta:
+{{
+  "resumo": "2 a 4 frases sobre o que foi feito no período, em linguagem de utilizador",
+  "seccoes": [
+    {{"titulo": "Feito", "bullets": ["..."]}},
+    {{"titulo": "Bugs e problemas", "bullets": ["..."]}},
+    {{"titulo": "Ideias e próximos passos", "bullets": ["..."]}}
+  ]
+}}
+
+Regras:
+- Agrupa e junta notas repetidas em vez de as copiar uma a uma.
+- Cada bullet descreve UMA coisa visível para quem usa a app, no máximo ~20 palavras.
+- Nada de nomes de ficheiros, funções, endpoints ou detalhes de implementação.
+- Secções vazias não aparecem. No máximo 5 secções e 10 bullets por secção.
+- Escreve como eu falo: directo, sem enchimento e sem elogios."""
+
+    try:
+        answer = await ask_agent_async(prompt, timeout=180.0, feature="code")
+    except Exception as ex:
+        raise HTTPException(status_code=502, detail=f"IA indisponível: {ex}")
+
+    data = extract_json(answer) or {}
+    resumo = (data.get("resumo") or "").strip()
+    seccoes = data.get("seccoes") or []
+    if not resumo and not seccoes:
+        raise HTTPException(status_code=502, detail="A IA não devolveu um relatório utilizável")
+
+    pdf = _build_report_pdf(
+        project=name,
+        start=start,
+        end=end,
+        note_count=len(notes),
+        resumo=resumo,
+        seccoes=seccoes,
+        open_todos=open_todos,
+    )
+    filename = f"{name.replace(' ', '-')}-{start.isoformat()}-a-{end.isoformat()}.pdf"
+    return StreamingResponse(
+        iter([pdf]),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _build_report_pdf(
+    *,
+    project: str,
+    start: date_type,
+    end: date_type,
+    note_count: int,
+    resumo: str,
+    seccoes: list,
+    open_todos: list[str],
+) -> bytes:
+    """Monta o PDF do relatório. Estilo sóbrio, a condizer com a app (escuro no título)."""
+    from io import BytesIO
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import mm
+    from reportlab.platypus import ListFlowable, ListItem, Paragraph, SimpleDocTemplate, Spacer
+
+    base = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "TituloRel", parent=base["Title"], fontSize=22, leading=26,
+        textColor=colors.HexColor("#111827"), alignment=0, spaceAfter=2,
+    )
+    meta_style = ParagraphStyle(
+        "MetaRel", parent=base["Normal"], fontSize=9.5, leading=13,
+        textColor=colors.HexColor("#6b7280"), spaceAfter=14,
+    )
+    h2_style = ParagraphStyle(
+        "SeccaoRel", parent=base["Heading2"], fontSize=13, leading=17,
+        textColor=colors.HexColor("#1d4ed8"), spaceBefore=14, spaceAfter=6,
+    )
+    body_style = ParagraphStyle(
+        "CorpoRel", parent=base["Normal"], fontSize=10.5, leading=15,
+        textColor=colors.HexColor("#1f2937"),
+    )
+    bullet_style = ParagraphStyle("BulletRel", parent=body_style, spaceAfter=3)
+    footer_style = ParagraphStyle(
+        "RodapeRel", parent=base["Normal"], fontSize=8, leading=11,
+        textColor=colors.HexColor("#9ca3af"),
+    )
+
+    def esc(text: str) -> str:
+        return (
+            str(text)
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
+
+    story = [
+        Paragraph(esc(project), title_style),
+        Paragraph(
+            f"Relatório de {start.strftime('%d/%m/%Y')} a {end.strftime('%d/%m/%Y')} · "
+            f"{note_count} nota{'s' if note_count != 1 else ''}",
+            meta_style,
+        ),
+    ]
+    if resumo:
+        story.append(Paragraph(esc(resumo), body_style))
+
+    for sec in seccoes[:5]:
+        titulo = (sec or {}).get("titulo") or ""
+        bullets = [b for b in ((sec or {}).get("bullets") or []) if str(b).strip()][:10]
+        if not titulo or not bullets:
+            continue
+        story.append(Paragraph(esc(titulo), h2_style))
+        story.append(ListFlowable(
+            [ListItem(Paragraph(esc(b), bullet_style), leftIndent=12) for b in bullets],
+            bulletType="bullet", bulletColor=colors.HexColor("#1d4ed8"), start="•", leftIndent=14,
+        ))
+
+    if open_todos:
+        story.append(Paragraph("Por fazer", h2_style))
+        story.append(ListFlowable(
+            [ListItem(Paragraph(esc(t), bullet_style), leftIndent=12) for t in open_todos[:20]],
+            bulletType="bullet", bulletColor=colors.HexColor("#059669"), start="•", leftIndent=14,
+        ))
+
+    story.append(Spacer(1, 16))
+    story.append(Paragraph(
+        f"Gerado pelo Cristopher em {datetime.now().strftime('%d/%m/%Y às %H:%M')}",
+        footer_style,
+    ))
+
+    buf = BytesIO()
+    SimpleDocTemplate(
+        buf, pagesize=A4,
+        leftMargin=22 * mm, rightMargin=22 * mm, topMargin=20 * mm, bottomMargin=18 * mm,
+        title=f"{project} — relatório", author="Cristopher",
+    ).build(story)
+    return buf.getvalue()
+
+
+@router.patch("/notes/{note_id}", response_model=NoteOut)
+def update_note(note_id: int, data: NotePatch, db: Session = Depends(get_db)):
+    note = db.query(CodeProjectNote).filter(CodeProjectNote.id == note_id).first()
+    if not note:
+        raise HTTPException(status_code=404)
+    content = (data.content or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Conteúdo vazio")
+    note.content = content
     db.commit()
     db.refresh(note)
     return note
@@ -666,7 +958,7 @@ def _diff_for_file(
     return None, "none"
 
 
-@router.post("/projects/{project_path:path}/notes/generate", response_model=NoteOut)
+@router.post("/project/notes/generate", response_model=NoteOut)
 async def generate_note(
     project_path: str,
     target_date: str = Query(..., alias="date"),
@@ -765,7 +1057,7 @@ REGRAS DURAS — ler com atenção:
 
 Responde."""
 
-    full_text = await ask_agent_async(prompt, timeout=60.0)
+    full_text = await ask_agent_async(prompt, timeout=60.0, feature="code")
     if not full_text:
         raise HTTPException(status_code=502, detail="AI indisponível")
 
@@ -882,7 +1174,7 @@ class FavoriteIn(BaseModel):
     favorite: bool
 
 
-@router.put("/projects/{project_path:path}/favorite")
+@router.put("/project/favorite")
 def set_favorite(project_path: str, data: FavoriteIn, db: Session = Depends(get_db)):
     pp = _decode_path(project_path)
     existing = db.query(CodeProjectFavorite).filter(CodeProjectFavorite.project_path == pp).first()
@@ -922,7 +1214,7 @@ REGRAS DURAS:
 - NÃO repitas contexto óbvio em cada linha (ex: "no VS Code", "na app") — diz só a tarefa.
 - Não inventes nada fora da nota; junta o que for a mesma feature.
 - Sem introdução nem conclusão. Só os bullets."""
-    full_text = await ask_agent_async(prompt, timeout=60.0)
+    full_text = await ask_agent_async(prompt, timeout=60.0, feature="code")
     if not full_text:
         return None
 
@@ -964,6 +1256,71 @@ async def note_to_todos(note_id: int, db: Session = Depends(get_db)):
     return created
 
 
+@router.get("/stalled")
+def stalled_projects(days: int = Query(7, ge=1, le=180), db: Session = Depends(get_db)):
+    """Projectos com TODOs por fazer e sem código tocado há X dias.
+    'Sem toques' mede-se pelos snapshots de ficheiros, não por notas/TODOs —
+    escrever uma nota não é mexer no projecto."""
+    open_by_path: dict[str, int] = {}
+    for path, n in (
+        db.query(CodeProjectTodo.project_path, func.count(CodeProjectTodo.id))
+        .filter(CodeProjectTodo.done == False)
+        .group_by(CodeProjectTodo.project_path)
+        .all()
+    ):
+        open_by_path[path] = int(n or 0)
+    if not open_by_path:
+        return []
+
+    last_touch: dict[str, datetime] = {}
+    for path, ts in (
+        db.query(CodeFileSnapshot.project_path, func.max(CodeFileSnapshot.captured_at))
+        .filter(CodeFileSnapshot.project_path.in_(list(open_by_path.keys())))
+        .group_by(CodeFileSnapshot.project_path)
+        .all()
+    ):
+        if ts:
+            last_touch[path] = ts if isinstance(ts, datetime) else datetime.fromisoformat(str(ts))
+
+    cutoff = datetime.now() - timedelta(days=days)
+    out = []
+    for path, n_open in open_by_path.items():
+        ts = last_touch.get(path)
+        if ts and ts > cutoff:
+            continue
+        out.append({
+            "path": path,
+            "name": (path or "").rstrip("/").split("/")[-1] or path,
+            "open_todos": n_open,
+            "last_touch": ts.isoformat() if ts else None,
+            "days": (datetime.now() - ts).days if ts else None,
+        })
+    out.sort(key=lambda p: (-(p["days"] or 9999), -p["open_todos"]))
+    return out
+
+
+@router.get("/todos/open")
+def open_todos(limit: int = Query(20, ge=1, le=100), db: Session = Depends(get_db)):
+    """TODOs de código por fazer, de todos os projectos — para aparecerem no dia."""
+    rows = (
+        db.query(CodeProjectTodo)
+        .filter(CodeProjectTodo.done == False)
+        .order_by(CodeProjectTodo.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "id": t.id,
+            "content": t.content,
+            "project_path": t.project_path,
+            "project": (t.project_path or "").rstrip("/").split("/")[-1] or t.project_path,
+            "created_at": t.created_at.isoformat() if t.created_at else None,
+        }
+        for t in rows
+    ]
+
+
 @router.get("/projects-with-todos")
 def list_projects_with_todos(db: Session = Depends(get_db)):
     """Project paths that have at least one open TODO, regardless of activity."""
@@ -988,7 +1345,7 @@ class BulletsNoteIn(BaseModel):
     note_date: Optional[date_type] = None
 
 
-@router.post("/projects/{project_path:path}/notes/from-bullets", response_model=NoteOut)
+@router.post("/project/notes/from-bullets", response_model=NoteOut)
 def create_ai_note_from_bullets(
     project_path: str,
     data: BulletsNoteIn,

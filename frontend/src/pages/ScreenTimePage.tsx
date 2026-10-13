@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
-import { format, subDays, startOfWeek, startOfMonth, startOfYear, endOfWeek, endOfMonth, endOfYear, addWeeks, addMonths, addYears } from 'date-fns';
-import { Smartphone, Tablet, Monitor, Watch, HelpCircle, RefreshCw, AlertTriangle, ExternalLink, Apple, Database, MessageCircle, Briefcase, Palette, Plane, Gamepad2, Wrench, Music, BookOpen, Layers, ChevronLeft, ChevronRight } from 'lucide-react';
+import { format, subDays, addDays, startOfWeek, startOfMonth, startOfYear, endOfWeek, endOfMonth, endOfYear, addWeeks, addMonths, addYears } from 'date-fns';
+import { pt } from 'date-fns/locale';
+import { Activity, Smartphone, Tablet, Monitor, Watch, HelpCircle, RefreshCw, AlertTriangle, ExternalLink, Apple, Database, MessageCircle, Briefcase, Palette, Plane, Gamepad2, Wrench, Music, BookOpen, Layers, ChevronLeft, ChevronRight } from 'lucide-react';
 import {
-  screenTimeApi, ScreenTimeAppRow, ScreenTimeDeviceRow, ScreenTimeCategoryRow, ScreenTimeInsights,
+  screenTimeApi, habitsApi, ScreenTimeAppRow, ScreenTimeDeviceRow, ScreenTimeCategoryRow, ScreenTimeInsights,
 } from '../api';
+import { CATEGORY_FILL, CATEGORY_STACK_ORDER } from '../screenTime';
 
 const CATEGORY_META: Record<string, { Icon: typeof Layers; color: string }> = {
   'All Usage': { Icon: Layers, color: 'text-zinc-300' },
@@ -93,31 +95,217 @@ const RANGES: { key: RangeKey; label: string; days: number; bucket: 'hour' | 'da
   { key: 'month', label: '30 dias', days: 30, bucket: 'day' },
 ];
 
-// Ordem de stack das categorias (de baixo para cima). Coincide com CATEGORY_META
-// definida mais abaixo — mantém-se duplicada aqui para evitar dependency cycle.
-const CATEGORY_STACK_ORDER = [
-  'Social',
-  'Productivity & Finance',
-  'Creativity',
-  'Travel',
-  'Games',
-  'Utilities',
-  'Entertainment',
-  'Information & Reading',
-  'Other',
-];
+const PERIODO_LABEL: Record<'day' | 'week' | 'month', string> = { day: 'dia', week: 'semana', month: 'mês' };
+const DIAS_SEMANA = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'];
 
-const CATEGORY_FILL: Record<string, string> = {
-  'Social': '#60a5fa',
-  'Productivity & Finance': '#a78bfa',
-  'Creativity': '#fb923c',
-  'Travel': '#38bdf8',
-  'Games': '#f472b6',
-  'Utilities': '#a1a1aa',
-  'Entertainment': '#f87171',
-  'Information & Reading': '#34d399',
-  'Other': '#52525b',
-};
+// Meta por categoria — um alvo de horas por dia. Dia/semana/mês não são metas
+// diferentes, é só a forma de VER o progresso (o toggle acima da lista muda a
+// vista de todas ao mesmo tempo); o criar só pede o alvo diário.
+function Metas() {
+  const [status, setStatus] = useState<Awaited<ReturnType<typeof screenTimeApi.goalsStatus>> | null>(null);
+  const [habits, setHabits] = useState<{ id: number; name: string; icon: string }[]>([]);
+  const [vista, setVista] = useState<'day' | 'week' | 'month'>('day');
+  // Âncora das três vistas — "hoje" por omissão, mas dá para andar para trás
+  // (ver Julho passado, por exemplo) sem trocar de vista.
+  const [refDate, setRefDate] = useState(() => new Date());
+  const [aberto, setAberto] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [novaCategoria, setNovaCategoria] = useState('Productivity & Finance');
+  const [novasHoras, setNovasHoras] = useState('5');
+  const [novosDias, setNovosDias] = useState('daily');
+  const [novoHabito, setNovoHabito] = useState('');
+
+  const carregar = () => {
+    screenTimeApi.goalsStatus(format(refDate, 'yyyy-MM-dd')).then(setStatus).catch(() => setStatus(null));
+  };
+  useEffect(() => { carregar(); }, [refDate]);
+  useEffect(() => { habitsApi.list().then(setHabits).catch(() => {}); }, []);
+  if (!status) return null;
+
+  const categorias = Object.keys(CATEGORY_META).filter(c => c !== 'All Usage');
+
+  const navegar = (delta: number) => {
+    setRefDate(d => vista === 'day' ? addDays(d, delta) : vista === 'week' ? addWeeks(d, delta) : addMonths(d, delta));
+  };
+  const hojeIso = format(new Date(), 'yyyy-MM-dd');
+  const noPresente = status.date === hojeIso;
+  const periodoRef = status.goals[0]?.views[vista];
+  const podeAvancar = !periodoRef || periodoRef.period_end < hojeIso;
+  const rotuloPeriodo = (() => {
+    if (!periodoRef) return '';
+    const ini = new Date(periodoRef.period_start + 'T00:00:00');
+    const fim = new Date(periodoRef.period_end + 'T00:00:00');
+    if (vista === 'day') return periodoRef.period_start === hojeIso ? 'hoje' : format(ini, "d 'de' MMMM", { locale: pt });
+    if (vista === 'week') return `${format(ini, 'd MMM', { locale: pt })} – ${format(fim, 'd MMM', { locale: pt })}`;
+    return format(ini, 'MMMM yyyy', { locale: pt });
+  })();
+
+  const diasSelecionados = novosDias === 'daily' ? [0, 1, 2, 3, 4, 5, 6]
+    : novosDias === 'weekdays' ? [0, 1, 2, 3, 4]
+      : novosDias.split(',').filter(Boolean).map(Number);
+
+  const toggleDia = (i: number) => {
+    setNovosDias(d => {
+      const actual = d === 'daily' ? [0, 1, 2, 3, 4, 5, 6] : d === 'weekdays' ? [0, 1, 2, 3, 4] : d.split(',').filter(Boolean).map(Number);
+      const next = actual.includes(i) ? actual.filter(x => x !== i) : [...actual, i].sort((a, b) => a - b);
+      return next.length === 7 ? 'daily' : next.join(',');
+    });
+  };
+
+  const adicionar = async () => {
+    const horas = parseFloat(novasHoras);
+    if (!horas || horas <= 0 || !novaCategoria) return;
+    setBusy(true);
+    try {
+      await screenTimeApi.setGoal(novaCategoria, horas, novosDias, novoHabito ? Number(novoHabito) : null);
+      setNovasHoras('5');
+      setNovosDias('daily');
+      setNovoHabito('');
+      carregar();
+    } finally { setBusy(false); }
+  };
+
+  const remover = async (cat: string) => {
+    setBusy(true);
+    try { await screenTimeApi.setGoal(cat, 0, 'daily'); carregar(); } finally { setBusy(false); }
+  };
+
+  const fmt = (s: number) => `${Math.floor(s / 3600)}h${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}`;
+
+  return (
+    <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4">
+      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 mb-3">
+        <h2 className="font-semibold text-sm">Metas</h2>
+
+        <div className="flex items-center gap-1 justify-self-center">
+          {status.goals.length > 0 && (
+            <>
+              <button onClick={() => navegar(-1)}
+                className="p-1 rounded-lg text-zinc-500 hover:text-white hover:bg-white/10">
+                <ChevronLeft size={14} />
+              </button>
+              <span className="w-32 text-center text-xs text-zinc-300 capitalize">{rotuloPeriodo}</span>
+              <button onClick={() => navegar(1)} disabled={!podeAvancar}
+                className="p-1 rounded-lg text-zinc-500 hover:text-white hover:bg-white/10 disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-zinc-500">
+                <ChevronRight size={14} />
+              </button>
+              {!noPresente && (
+                <button onClick={() => setRefDate(new Date())} className="text-xs text-blue-400 hover:underline ml-1">hoje</button>
+              )}
+            </>
+          )}
+        </div>
+
+        <div className="flex items-center gap-2 justify-self-end">
+          <div className="inline-flex rounded-lg bg-zinc-800 border border-zinc-700 p-0.5">
+            {(['day', 'week', 'month'] as const).map(p => (
+              <button key={p} onClick={() => setVista(p)}
+                className={`px-2 py-1 rounded text-xs font-medium capitalize ${
+                  vista === p ? 'bg-blue-500/20 text-blue-300' : 'text-zinc-500 hover:text-zinc-300'
+                }`}>
+                {PERIODO_LABEL[p]}
+              </button>
+            ))}
+          </div>
+          <button onClick={() => setAberto(a => !a)} className="text-xs text-zinc-400 hover:text-zinc-200">
+            {aberto ? 'fechar' : 'adicionar'}
+          </button>
+        </div>
+      </div>
+
+      {status.goals.length > 0 && (
+        <div className="space-y-2">
+          {status.goals.map(g => {
+            const v = g.views[vista];
+            return (
+              <div key={g.category} className="flex items-center gap-3 text-xs">
+                <span className="w-36 truncate text-zinc-300" title={diasLabel(g.days)}>{g.category}</span>
+                <div className="flex-1 h-2 bg-zinc-800 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full ${v.reached ? 'bg-emerald-500' : 'bg-blue-500'}`}
+                    style={{ width: `${Math.min(100, v.pct || 0)}%` }}
+                  />
+                </div>
+                <span className="shrink-0 whitespace-nowrap text-right text-zinc-400">
+                  {fmt(v.used_seconds)} / {fmt(v.target_seconds)}{!v.reached ? ` · faltam ${fmt(v.remaining_seconds)}` : ''}
+                </span>
+                {g.habit_name && (
+                  <span
+                    title={g.habit_checked_today ? `${g.habit_name} marcado` : `${g.habit_name} por marcar`}
+                    className={`shrink-0 ${g.habit_checked_today ? 'text-emerald-400' : 'text-zinc-500'}`}
+                  >
+                    {g.habit_icon}{g.habit_checked_today ? '✓' : ''}
+                  </span>
+                )}
+                {aberto && (
+                  <button onClick={() => remover(g.category)} disabled={busy}
+                    className="text-zinc-500 hover:text-red-400 disabled:opacity-40">tirar</button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {status.goals.length === 0 && !aberto && (
+        <p className="text-xs text-zinc-500">Sem metas definidas. Carrega em “adicionar” para criar uma.</p>
+      )}
+
+      {aberto && (
+        <div className={`${status.goals.length > 0 ? 'mt-3 pt-3 border-t border-zinc-800' : ''} space-y-2`}>
+          <div className="flex items-center gap-2 flex-wrap">
+            <select value={novaCategoria} onChange={e => setNovaCategoria(e.target.value)}
+              className="bg-zinc-800 border border-zinc-700 rounded-lg px-2 py-1.5 text-xs text-zinc-200">
+              {categorias.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <input type="number" min="0.5" step="0.5" value={novasHoras}
+              onChange={e => setNovasHoras(e.target.value)}
+              className="w-16 bg-zinc-800 border border-zinc-700 rounded-lg px-2 py-1.5 text-xs text-zinc-200" />
+            <span className="text-xs text-zinc-500">horas/dia</span>
+          </div>
+
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-xs text-zinc-500 mr-0.5">dias:</span>
+            <button onClick={() => setNovosDias('daily')}
+              className={`px-2 py-1 rounded text-[11px] font-medium ${
+                novosDias === 'daily' ? 'bg-blue-500/20 text-blue-300' : 'bg-zinc-800 text-zinc-500 hover:text-zinc-300'
+              }`}>Todos</button>
+            <button onClick={() => setNovosDias('weekdays')}
+              className={`px-2 py-1 rounded text-[11px] font-medium ${
+                novosDias === 'weekdays' ? 'bg-blue-500/20 text-blue-300' : 'bg-zinc-800 text-zinc-500 hover:text-zinc-300'
+              }`}>Dias úteis</button>
+            {DIAS_SEMANA.map((d, i) => (
+              <button key={d} onClick={() => toggleDia(i)}
+                className={`w-7 py-1 rounded text-[11px] font-medium ${
+                  diasSelecionados.includes(i) ? 'bg-blue-500/20 text-blue-300' : 'bg-zinc-800 text-zinc-500 hover:text-zinc-300'
+                }`}>{d[0]}</button>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-zinc-500">hábito:</span>
+            <select value={novoHabito} onChange={e => setNovoHabito(e.target.value)}
+              className="bg-zinc-800 border border-zinc-700 rounded-lg px-2 py-1.5 text-xs text-zinc-200">
+              <option value="">sem hábito associado</option>
+              {habits.map(h => <option key={h.id} value={h.id}>{h.icon} {h.name}</option>)}
+            </select>
+          </div>
+
+          <button onClick={adicionar} disabled={busy}
+            className="px-3 py-1.5 rounded-lg bg-blue-500/15 text-blue-300 hover:bg-blue-500/25 disabled:opacity-40 text-xs font-medium">
+            adicionar
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function diasLabel(dias: string): string {
+  if (dias === 'daily') return 'todos os dias';
+  if (dias === 'weekdays') return 'dias úteis';
+  return dias.split(',').map(d => DIAS_SEMANA[Number(d)] || '?').join(', ');
+}
 
 function StackedActivityChart({
   series, bucket, totalSeconds,
@@ -294,14 +482,24 @@ function shiftAnchor(key: StatsPeriodKey, anchor: Date, dir: -1 | 1): Date {
   return anchor;
 }
 
-function MiniBars({ data, color }: { data: { label: string; seconds: number; highlight?: boolean }[]; color: string }) {
+function MiniBars({ data, color, tipLabel, onPick }: {
+  data: { label: string; seconds: number; highlight?: boolean; tip?: string }[];
+  color: string;
+  tipLabel?: (d: { label: string; seconds: number; tip?: string }) => string;
+  onPick?: (i: number) => void;
+}) {
   const max = Math.max(...data.map(d => d.seconds), 1);
   return (
     <div className="flex items-end gap-[3px] h-32">
       {data.map((d, i) => (
-        <div key={i} className="flex-1 flex flex-col items-center justify-end h-full group relative" title={`${d.label}: ${fmtDuration(d.seconds)}`}>
+        <div key={i} onClick={onPick ? () => onPick(i) : undefined}
+          className={`flex-1 flex flex-col items-center justify-end h-full group relative ${onPick ? 'cursor-pointer' : ''}`}>
+          {/* tooltip instantâneo (o title nativo demora ~1s a aparecer) */}
+          <div className="pointer-events-none absolute bottom-full mb-1 hidden group-hover:block z-20 whitespace-nowrap rounded-md bg-zinc-800 border border-zinc-700 px-2 py-1 text-[10px] text-zinc-100 shadow-lg">
+            {tipLabel ? tipLabel(d) : `${d.tip || d.label}: ${fmtDuration(d.seconds)}`}
+          </div>
           <div
-            className="w-full rounded-t"
+            className="w-full rounded-t transition-opacity group-hover:opacity-100"
             style={{ height: `${(d.seconds / max) * 100}%`, minHeight: d.seconds > 0 ? '2px' : '0', backgroundColor: color, opacity: d.highlight ? 1 : 0.55 }}
           />
           <span className="text-[9px] text-zinc-600 mt-1 truncate w-full text-center">{d.label}</span>
@@ -311,8 +509,163 @@ function MiniBars({ data, color }: { data: { label: string; seconds: number; hig
   );
 }
 
+/** Média por dia da semana, categoria a categoria.
+ *
+ *  A pergunta não é "quanto é que usei ontem" — é "às quintas trabalho mais e ao
+ *  domingo menos?". Segue o período escolhido em cima; os dias sem leitura
+ *  nenhuma não entram na conta, senão o Mac desligado puxava a média para baixo.
+ */
+function MediaPorDiaDaSemana({ range }: {
+  range: { start_date?: string; end_date: string };
+}) {
+  const [dias, setDias] = useState<{ bucket_start: number; categories: Record<string, number> }[]>([]);
+  const [categoria, setCategoria] = useState<string | null>(null);
+  const [erro, setErro] = useState('');
+  // O dia da semana aberto (0 = segunda) e as apps que fazem aquele número.
+  const [diaAberto, setDiaAberto] = useState<number | null>(null);
+  const [apps, setApps] = useState<ScreenTimeAppRow[] | null>(null);
+
+  useEffect(() => {
+    setErro('');
+    screenTimeApi.timeseriesStacked({
+      start_date: range.start_date, end_date: range.end_date,
+      bucket: 'day', source: 'tracker',
+    }).then(setDias).catch(e => { setDias([]); setErro(e?.message || 'não deu para ler'); });
+  }, [range.start_date, range.end_date]);
+
+  // As apps do dia aberto. Uma pergunta de cada vez: só se vai buscar quando ele
+  // carrega numa barra.
+  useEffect(() => {
+    if (diaAberto === null) { setApps(null); return; }
+    let vivo = true;
+    setApps(null);
+    screenTimeApi.byApp({
+      start_date: range.start_date, end_date: range.end_date, source: 'tracker',
+      weekday: diaAberto, category: categoria || undefined,
+    }).then(r => vivo && setApps(r)).catch(() => vivo && setApps([]));
+    return () => { vivo = false; };
+  }, [diaAberto, categoria, range.start_date, range.end_date]);
+
+  // Totais por categoria, para as fichas virem pela ordem do costume.
+  const totais: Record<string, number> = {};
+  for (const d of dias) for (const [c, v] of Object.entries(d.categories)) totais[c] = (totais[c] || 0) + v;
+  const categorias = Object.keys(totais).sort((a, b) => totais[b] - totais[a]);
+  const escolhida = categoria && totais[categoria] ? categoria : null;
+
+  const soma = Array(7).fill(0);
+  const conta = Array(7).fill(0);
+  for (const d of dias) {
+    const wd = (new Date(d.bucket_start * 1000).getDay() + 6) % 7;   // 0 = segunda
+    const seg = escolhida
+      ? (d.categories[escolhida] || 0)
+      : Object.values(d.categories).reduce((t, v) => t + v, 0);
+    soma[wd] += seg;
+    conta[wd] += 1;
+  }
+  const barras = WEEKDAY_LABELS.map((label, i) => ({
+    label,
+    seconds: conta[i] ? soma[i] / conta[i] : 0,
+    tip: `${label}: média de ${conta[i]} ${conta[i] === 1 ? 'dia' : 'dias'}`,
+    highlight: diaAberto === null || diaAberto === i,
+  }));
+  const cor = escolhida ? (CATEGORY_FILL[escolhida] || '#52525b') : '#60a5fa';
+  // A média de todos os dias — a régua contra a qual se lêem as sete barras.
+  const diasMedidos = conta.reduce((t, n) => t + n, 0);
+  const mediaDiaria = diasMedidos ? soma.reduce((t, v) => t + v, 0) / diasMedidos : 0;
+
+  return (
+    <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4">
+      <div className="flex items-baseline justify-between gap-3 flex-wrap mb-3">
+        <h2 className="font-semibold text-sm">Média por dia da semana</h2>
+        {diasMedidos > 0 && (
+          <span className="text-xs text-zinc-500">
+            <span className="font-mono text-zinc-300">{fmtDuration(mediaDiaria)}</span> por dia
+            {' '}em {escolhida || 'tudo'} · {diasMedidos} {diasMedidos === 1 ? 'dia medido' : 'dias medidos'}
+          </span>
+        )}
+      </div>
+
+      <div className="flex flex-wrap gap-1.5 mb-3">
+        <button onClick={() => setCategoria(null)}
+          className={`px-2.5 py-1 rounded-lg text-xs border transition ${
+            escolhida === null ? 'border-zinc-600 bg-zinc-700 text-white' : 'border-zinc-800 text-zinc-400 hover:bg-zinc-800'}`}>
+          Tudo
+        </button>
+        {categorias.filter(c => c !== 'All Usage').map(c => (
+          <button key={c} onClick={() => setCategoria(c)}
+            className={`px-2.5 py-1 rounded-lg text-xs border transition flex items-center gap-1.5 ${
+              escolhida === c ? 'border-zinc-600 bg-zinc-700 text-white' : 'border-zinc-800 text-zinc-400 hover:bg-zinc-800'}`}>
+            <span className="w-2 h-2 rounded-full" style={{ backgroundColor: CATEGORY_FILL[c] || '#52525b' }} />
+            {c}
+          </button>
+        ))}
+      </div>
+
+      {erro ? <p className="text-sm text-red-400">Falhou a leitura: {erro}</p>
+        : diasMedidos === 0 ? <p className="text-sm text-zinc-500">Sem dias medidos neste período.</p>
+        : <>
+            {/* a linha da média atravessa as barras: vê-se logo que dia é que
+                está acima do costume sem ter de comparar números */}
+            <div className="relative">
+              <MiniBars data={barras} color={cor}
+                tipLabel={d => `${d.tip} · ${fmtDuration(d.seconds)} · carrega para ver as apps`}
+                onPick={i => setDiaAberto(diaAberto === i ? null : i)} />
+              {mediaDiaria > 0 && (
+                <div className="pointer-events-none absolute inset-x-0 border-t border-dashed border-zinc-500/50"
+                  style={{ bottom: `${(mediaDiaria / Math.max(...barras.map(b => b.seconds), 1)) * 100 * 0.87 + 13}%` }} />
+              )}
+            </div>
+            <div className="flex justify-between mt-2 text-[10px] text-zinc-600 tabular-nums">
+              {barras.map(b => <span key={b.label} className="flex-1 text-center">{fmtDuration(b.seconds)}</span>)}
+            </div>
+
+            {/* De onde vem o número da barra. Sem isto, "2h45 de Productivity &
+                Finance à quarta" era um número sem forma de o confirmar. */}
+            {diaAberto !== null && (
+              <div className="mt-3 border-t border-zinc-800 pt-3">
+                <div className="flex items-baseline justify-between gap-2 mb-2">
+                  <h3 className="text-xs font-semibold">
+                    {['Segundas', 'Terças', 'Quartas', 'Quintas', 'Sextas', 'Sábados', 'Domingos'][diaAberto]}
+                    {escolhida ? ` · ${escolhida}` : ''}
+                  </h3>
+                  <span className="text-[11px] text-zinc-500">
+                    {conta[diaAberto]} {conta[diaAberto] === 1 ? 'dia' : 'dias'} somados ·{' '}
+                    <button onClick={() => setDiaAberto(null)} className="underline hover:text-zinc-300">fechar</button>
+                  </span>
+                </div>
+                {apps === null ? <p className="text-xs text-zinc-500">a ler…</p>
+                  : apps.length === 0 ? <p className="text-xs text-zinc-500">Nada nesse dia.</p>
+                  : (
+                    <ul className="space-y-1.5">
+                      {apps.slice(0, 8).map(a => (
+                        <li key={`${a.bundle_id}-${a.device_id}`} className="flex items-center gap-2.5">
+                          <AppIcon bundleId={a.bundle_id} category={a.category} size={20} />
+                          <span className="flex-1 min-w-0 truncate text-xs text-zinc-300">
+                            {bundleToFriendly(a.bundle_id)}
+                          </span>
+                          <span className="text-[11px] text-zinc-500 tabular-nums">
+                            {fmtDuration(a.total_seconds / Math.max(1, conta[diaAberto]))}/dia
+                          </span>
+                          <span className="w-14 text-right font-mono text-xs text-zinc-300 tabular-nums">
+                            {fmtDuration(a.total_seconds)}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+              </div>
+            )}
+          </>}
+    </section>
+  );
+}
+
 function StatsTab() {
-  const [period, setPeriod] = useState<StatsPeriodKey>('month');
+  // O período escolhido fica guardado, como a fonte e o modo da outra aba.
+  const [period, setPeriod] = useState<StatsPeriodKey>(() => {
+    const v = localStorage.getItem('screenTimeStatsPeriod');
+    return v === 'week' || v === 'month' || v === 'year' || v === 'all' ? v : 'month';
+  });
   const [anchor, setAnchor] = useState<Date>(() => new Date());
   const [data, setData] = useState<ScreenTimeInsights | null>(null);
   const [loading, setLoading] = useState(false);
@@ -329,6 +682,7 @@ function StatsTab() {
   function pickPeriod(key: StatsPeriodKey) {
     setAnchor(new Date());  // ao trocar de tipo de período, volta ao actual
     setPeriod(key);
+    localStorage.setItem('screenTimeStatsPeriod', key);
   }
   const atLatest = isLatestPeriod(period, anchor);
 
@@ -360,18 +714,21 @@ function StatsTab() {
   const tsLen = data.timeseries.length;
   const timeseriesBars = data.timeseries.map((p, i) => {
     let label = '';
+    let tip = '';
     if (isMonthly) {
-      const [, mm] = p.date.split('-');
+      const [yy, mm] = p.date.split('-');
       const mi = Number(mm) - 1;
       label = (tsLen <= 12 || i % 2 === 0) ? MONTH_LABELS[mi] : '';
+      tip = `${MONTH_LABELS[mi]} ${yy}`;
     } else {
       const dt = new Date(p.date + 'T00:00:00');
-      if (tsLen <= 14) label = WEEKDAY_LABELS[(dt.getDay() + 6) % 7][0];
-      else if (i % Math.ceil(tsLen / 8) === 0) label = String(dt.getDate());
+      const dd = dt.getDate();
+      // Mostra todos os dias: letra do dia da semana se poucos, senão o número do dia.
+      label = tsLen <= 14 ? WEEKDAY_LABELS[(dt.getDay() + 6) % 7][0] : String(dd);
+      tip = `${dd} ${MONTH_LABELS[dt.getMonth()]}`;
     }
-    return { label, seconds: p.seconds, highlight: data.busiest_day?.date === p.date };
+    return { label, tip, seconds: p.seconds, highlight: data.busiest_day?.date === p.date };
   });
-  const weekdayBars = data.by_weekday.map(w => ({ label: WEEKDAY_LABELS[w.weekday], seconds: w.avg_seconds }));
 
   return (
     <div className="space-y-6">
@@ -447,11 +804,9 @@ function StatsTab() {
         <MiniBars data={timeseriesBars} color="#60a5fa" />
       </section>
 
-      {/* Média por dia da semana */}
-      <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4">
-        <h2 className="font-semibold text-sm mb-3">Média por dia da semana</h2>
-        <MiniBars data={weekdayBars} color="#34d399" />
-      </section>
+      {/* Média por dia da semana, categoria a categoria. Substituiu a média
+          simples que estava aqui: dizia o mesmo, mas só do total. */}
+      <MediaPorDiaDaSemana range={statsRange(period, anchor)} />
 
       {/* Top apps */}
       <section className="rounded-xl border border-zinc-800 bg-zinc-900/50">
@@ -492,7 +847,7 @@ function StatsTab() {
 }
 
 export default function ScreenTimePage() {
-  const [health, setHealth] = useState<{ available: boolean; reason: string; db_path: string; python_app_path?: string } | null>(null);
+  const [health, setHealth] = useState<{ available: boolean; apple_local?: boolean; reason: string; db_path: string; python_app_path?: string } | null>(null);
   const [byDevice, setByDevice] = useState<ScreenTimeDeviceRow[]>([]);
   const [byApp, setByApp] = useState<ScreenTimeAppRow[]>([]);
   const [byCategory, setByCategory] = useState<ScreenTimeCategoryRow[]>([]);
@@ -508,6 +863,11 @@ export default function ScreenTimePage() {
     const saved = localStorage.getItem('screenTimeMode');
     return saved === 'apple' ? 'apple' : 'raw';
   });
+  // De onde vêm as horas: o tracker próprio (bate certo com a duração real dos
+  // jogos) ou a leitura aproximada do knowledgeC da Apple, que é a única que vê
+  // outros dispositivos.
+  const [fonte, setFonte] = useState<'tracker' | 'apple'>(() =>
+    (localStorage.getItem('screenTimeSource') === 'apple' ? 'apple' : 'tracker'));
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>('');
   const [tab, setTab] = useState<'live' | 'stats'>('live');
@@ -532,11 +892,13 @@ export default function ScreenTimePage() {
         setLoading(false);
         return;
       }
+      // Sem o knowledgeC neste servidor (NAS), só há o medido.
+      const origem = h.apple_local === false ? 'tracker' : fonte;
       const [sumDev, sumApp, sumCat, tsStacked] = await Promise.all([
-        screenTimeApi.byDevice({ ...dateRange, mode }),
-        screenTimeApi.byApp({ ...dateRange, device_id: filterDevice || undefined, mode }),
-        screenTimeApi.byCategory({ ...dateRange, device_id: filterDevice || undefined, mode }),
-        screenTimeApi.timeseriesStacked({ ...dateRange, bucket: cfg.bucket, device_id: filterDevice || undefined, mode }),
+        screenTimeApi.byDevice({ ...dateRange, mode, source: origem }),
+        screenTimeApi.byApp({ ...dateRange, device_id: filterDevice || undefined, mode, source: origem }),
+        screenTimeApi.byCategory({ ...dateRange, device_id: filterDevice || undefined, mode, source: origem }),
+        screenTimeApi.timeseriesStacked({ ...dateRange, bucket: cfg.bucket, device_id: filterDevice || undefined, mode, source: origem }),
       ]);
       setByDevice(sumDev);
       setByApp(sumApp);
@@ -549,7 +911,8 @@ export default function ScreenTimePage() {
     }
   }
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [range, filterDevice, mode]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [range, filterDevice, mode, fonte]);
+  useEffect(() => { localStorage.setItem('screenTimeSource', fonte); }, [fonte]);
   useEffect(() => { localStorage.setItem('screenTimeMode', mode); }, [mode]);
   useEffect(() => { localStorage.setItem('screenTimeView', view); }, [view]);
 
@@ -635,7 +998,26 @@ export default function ScreenTimePage() {
         </div>
         {tab === 'live' && (
           <div className="flex items-center gap-2 flex-wrap">
-            <div className="inline-flex rounded-lg border border-zinc-700 overflow-hidden" title="Algoritmo de agregação">
+            <div className={`inline-flex rounded-lg border border-zinc-700 overflow-hidden ${health?.apple_local === false ? 'hidden' : ''}`}
+              title="Tracker: medido pela app, bate certo com a duração real dos jogos. Apple: leitura aproximada do Screen Time, mas vê outros dispositivos.">
+              <button
+                onClick={() => setFonte('tracker')}
+                className={`px-2.5 py-1.5 text-xs font-medium flex items-center gap-1 transition-colors ${
+                  fonte === 'tracker' ? 'bg-emerald-600/30 text-emerald-200' : 'text-zinc-400 hover:bg-zinc-800'
+                }`}
+              >
+                <Activity size={12} /> Medido
+              </button>
+              <button
+                onClick={() => setFonte('apple')}
+                className={`px-2.5 py-1.5 text-xs font-medium flex items-center gap-1 transition-colors border-l border-zinc-700 ${
+                  fonte === 'apple' ? 'bg-zinc-700 text-white' : 'text-zinc-400 hover:bg-zinc-800'
+                }`}
+              >
+                <Apple size={12} /> Apple
+              </button>
+            </div>
+            <div className={`inline-flex rounded-lg border border-zinc-700 overflow-hidden ${fonte === 'tracker' || health?.apple_local === false ? 'hidden' : ''}`} title="Algoritmo de agregação">
               <button
                 onClick={() => setMode('raw')}
                 className={`px-2.5 py-1.5 text-xs font-medium flex items-center gap-1 transition-colors ${
@@ -689,13 +1071,19 @@ export default function ScreenTimePage() {
           </div>
           {range !== 'today' && cfg.days > 0 && (
             <div className="text-right">
+              {/* Só os dias com leitura, como a linha do gráfico: um dia sem nada
+                  é o Mac desligado, não um dia sem ecrã. */}
               <div className="text-xs text-zinc-500">Média / dia</div>
-              <div className="text-lg font-mono text-emerald-300">{fmtDuration(totalSelected / cfg.days)}</div>
+              <div className="text-lg font-mono text-emerald-300">
+                {fmtDuration(totalSelected / (stackedSeries.filter(b => Object.values(b.categories).some(v => v > 0)).length || cfg.days))}
+              </div>
             </div>
           )}
         </div>
         <StackedActivityChart series={stackedSeries} bucket={cfg.bucket} totalSeconds={totalSelected} />
       </section>
+
+      <Metas />
 
       {/* ── Categorias / Apps & Websites (toggle) ─────── */}
       <section className="rounded-xl border border-zinc-800 bg-zinc-900/50">

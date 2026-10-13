@@ -1,8 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { BookOpen, Sparkles, ArrowLeft, Trash2, AlertCircle, ExternalLink, Search, Loader2 } from 'lucide-react';
+import {
+  BookOpen, Sparkles, ArrowLeft, ArrowRight, Trash2, AlertCircle, ExternalLink,
+  Search, Loader2, RefreshCw, X, Compass,
+} from 'lucide-react';
 import { format } from 'date-fns';
-import { storiesApi, Story, StoryListItem, StoryLevel, StoryVersion } from '../api';
+import { storiesApi, Story, StoryListItem, StoryLevel, StorySuggestion, StoryVersion } from '../api';
 
 const LEVELS: { key: StoryLevel; label: string; hint: string }[] = [
   { key: 'simple', label: 'Simples', hint: 'Resumo rápido, linguagem simples' },
@@ -26,6 +29,38 @@ const MD_COMPONENTS = {
   hr: () => <hr className="border-[#222] my-4" />,
 };
 
+function SuggestionCard({ s, busy, disabled, onOpen, onDismiss }: {
+  s: StorySuggestion;
+  busy: boolean;
+  disabled: boolean;
+  onOpen: () => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <div className="relative group bg-[#161616] border border-[#222] hover:border-purple-500/40 rounded-2xl p-4 transition-colors">
+      <button onClick={onOpen} disabled={disabled} className="text-left w-full disabled:cursor-wait">
+        <div className="flex items-center gap-2 mb-1.5">
+          {s.category && (
+            <span className="text-[10px] px-2 py-0.5 rounded-full bg-purple-500/15 text-purple-300">
+              {s.category}
+            </span>
+          )}
+        </div>
+        <h4 className="font-semibold text-white leading-snug pr-5 mb-1">{s.title}</h4>
+        <p className="text-xs text-gray-500 leading-relaxed line-clamp-2 mb-3">{s.reason}</p>
+        <span className="inline-flex items-center gap-1.5 text-xs font-medium text-purple-300">
+          {busy ? <Loader2 size={13} className="animate-spin" /> : <ArrowRight size={13} />}
+          {busy ? 'A escrever…' : 'Explicar isto'}
+        </span>
+      </button>
+      <button onClick={onDismiss} disabled={disabled} title="Não me interessa"
+        className="absolute top-3 right-3 p-1 text-gray-700 hover:text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity">
+        <X size={13} />
+      </button>
+    </div>
+  );
+}
+
 export default function StoriesPage() {
   const [items, setItems] = useState<StoryListItem[]>([]);
   const [loadingList, setLoadingList] = useState(true);
@@ -33,13 +68,21 @@ export default function StoriesPage() {
   const [query, setQuery] = useState('');
   const [searchLevel, setSearchLevel] = useState<StoryLevel>('medium');
   const [creating, setCreating] = useState(false);
+  const [fromSuggestion, setFromSuggestion] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const [current, setCurrent] = useState<Story | null>(null);
   const [activeLevel, setActiveLevel] = useState<StoryLevel>('medium');
   const [levelLoading, setLevelLoading] = useState<StoryLevel | null>(null);
 
-  useEffect(() => { loadList(); }, []);
+  const [suggestions, setSuggestions] = useState<StorySuggestion[]>([]);
+  const [sugLoading, setSugLoading] = useState(false);
+  const [related, setRelated] = useState<StorySuggestion[]>([]);
+  const [relLoading, setRelLoading] = useState(false);
+
+  const relToken = useRef(0);  // invalida polls de histórias que já não estão abertas
+
+  useEffect(() => { loadList(); loadSuggestions(); }, []);
 
   async function loadList() {
     setLoadingList(true);
@@ -52,20 +95,80 @@ export default function StoriesPage() {
     }
   }
 
-  async function create() {
-    const q = query.trim();
+  /** Sugestões gerais: usa as guardadas; se não houver nenhuma, pede à IA. */
+  async function loadSuggestions() {
+    try {
+      const saved = await storiesApi.suggestions();
+      if (saved.length) { setSuggestions(saved); return; }
+    } catch { return; }
+    refreshSuggestions();
+  }
+
+  async function refreshSuggestions() {
+    if (sugLoading) return;
+    setSugLoading(true);
+    try {
+      setSuggestions(await storiesApi.refreshSuggestions());
+    } catch {
+      /* silent — a secção fica simplesmente vazia */
+    } finally {
+      setSugLoading(false);
+    }
+  }
+
+  async function dismissSuggestion(id: number, scope: 'general' | 'related') {
+    const setter = scope === 'general' ? setSuggestions : setRelated;
+    setter(list => list.filter(s => s.id !== id));
+    storiesApi.dismissSuggestion(id).catch(() => {});
+  }
+
+  /**
+   * Temas relacionados com a história aberta. Depois de criar uma história o backend já
+   * está a prepará-los em segundo plano (`justCreated`) — aí basta esperar; numa história
+   * antiga do histórico, pede-os na hora.
+   */
+  async function loadRelated(id: number, justCreated = false) {
+    const token = ++relToken.current;
+    setRelated([]);
+    setRelLoading(true);
+    try {
+      for (let attempt = 0; attempt < (justCreated ? 12 : 1); attempt++) {
+        if (attempt) await new Promise(r => setTimeout(r, 5000));
+        if (token !== relToken.current) return;
+        const saved = await storiesApi.suggestions(id);
+        if (token !== relToken.current) return;
+        if (saved.length) { setRelated(saved); return; }
+      }
+      const fresh = await storiesApi.refreshSuggestions(id);
+      if (token === relToken.current) setRelated(fresh);
+    } catch {
+      /* silent */
+    } finally {
+      if (token === relToken.current) setRelLoading(false);
+    }
+  }
+
+  async function create(rawQuery?: string, suggestionId?: number) {
+    const q = (rawQuery ?? query).trim();
     if (!q || creating) return;
     setError(null);
     setCreating(true);
+    setFromSuggestion(suggestionId ?? null);
     try {
-      const story = await storiesApi.create({ query: q, level: searchLevel });
+      const story = await storiesApi.create({ query: q, level: searchLevel, suggestion_id: suggestionId });
+      if (suggestionId) {
+        setSuggestions(list => list.filter(s => s.id !== suggestionId));
+        setRelated(list => list.filter(s => s.id !== suggestionId));
+      }
       setCurrent(story);
       setActiveLevel(story.last_level);
       setQuery('');
+      loadRelated(story.id, true);
     } catch (e: any) {
       setError(e?.message || 'Erro a gerar a história');
     } finally {
       setCreating(false);
+      setFromSuggestion(null);
     }
   }
 
@@ -75,15 +178,20 @@ export default function StoriesPage() {
       const story = await storiesApi.get(id);
       setCurrent(story);
       setActiveLevel(story.last_level);
+      loadRelated(id);
     } catch (e: any) {
       setError(e?.message || 'Erro a abrir');
     }
   }
 
   function backToList() {
+    relToken.current++;
     setCurrent(null);
+    setRelated([]);
+    setRelLoading(false);
     setError(null);
     loadList();
+    loadSuggestions();
   }
 
   async function switchLevel(level: StoryLevel) {
@@ -186,6 +294,38 @@ export default function StoriesPage() {
             )}
           </div>
         ) : null}
+
+        {/* Continuar a explorar — temas vizinhos deste */}
+        {(relLoading || related.length > 0) && (
+          <div className="mt-8">
+            <div className="flex items-center justify-between gap-3 mb-3">
+              <div className="flex items-center gap-2">
+                <Compass size={16} className="text-purple-400" />
+                <h3 className="text-sm font-medium text-gray-300">Continuar a explorar</h3>
+              </div>
+              <button onClick={() => loadRelated(current.id)} disabled={relLoading || creating}
+                className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-white disabled:opacity-40">
+                <RefreshCw size={12} className={relLoading ? 'animate-spin' : ''} /> Outros
+              </button>
+            </div>
+
+            {relLoading && related.length === 0 ? (
+              <div className="flex items-center gap-2 text-gray-600 text-sm py-4">
+                <Loader2 size={14} className="animate-spin" /> A procurar temas ligados a "{current.title}"…
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {related.map(s => (
+                  <SuggestionCard key={s.id} s={s}
+                    busy={creating && fromSuggestion === s.id}
+                    disabled={creating}
+                    onOpen={() => create(s.query, s.id)}
+                    onDismiss={() => dismissSuggestion(s.id, 'related')} />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     );
   }
@@ -228,7 +368,7 @@ export default function StoriesPage() {
             </div>
           </div>
           <button
-            onClick={create}
+            onClick={() => create()}
             disabled={!query.trim() || creating}
             className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-[#222] disabled:text-gray-600 disabled:cursor-not-allowed rounded-xl text-sm font-semibold transition-colors">
             {creating ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />}
@@ -244,6 +384,41 @@ export default function StoriesPage() {
         </div>
       )}
 
+      {/* Recomendações — o que ler a seguir, com base no que já pesquisaste */}
+      <div className="mb-8">
+        <div className="flex items-center justify-between gap-3 mb-1">
+          <div className="flex items-center gap-2">
+            <Compass size={16} className="text-purple-400" />
+            <h3 className="text-sm font-medium text-gray-300">Para ti</h3>
+          </div>
+          <button onClick={refreshSuggestions} disabled={sugLoading || creating}
+            className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-white disabled:opacity-40">
+            <RefreshCw size={12} className={sugLoading ? 'animate-spin' : ''} /> Outros temas
+          </button>
+        </div>
+        <p className="text-xs text-gray-600 mb-3">
+          {items.length ? 'A partir do que já leste.' : 'Temas para começar.'}
+        </p>
+
+        {sugLoading && suggestions.length === 0 ? (
+          <div className="flex items-center gap-2 text-gray-600 text-sm py-4">
+            <Loader2 size={14} className="animate-spin" /> A escolher temas para ti…
+          </div>
+        ) : suggestions.length === 0 ? (
+          <p className="text-sm text-gray-600 py-2">Sem recomendações de momento.</p>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {suggestions.map(s => (
+              <SuggestionCard key={s.id} s={s}
+                busy={creating && fromSuggestion === s.id}
+                disabled={creating}
+                onOpen={() => create(s.query, s.id)}
+                onDismiss={() => dismissSuggestion(s.id, 'general')} />
+            ))}
+          </div>
+        )}
+      </div>
+
       <h3 className="text-sm font-medium text-gray-400 mb-3">As tuas histórias</h3>
 
       {loadingList ? (
@@ -253,7 +428,7 @@ export default function StoriesPage() {
       ) : items.length === 0 ? (
         <div className="text-center py-12 text-gray-600">
           <BookOpen size={36} className="mx-auto mb-3 opacity-40" />
-          <p className="text-sm">Ainda não pesquisaste nada. Escreve um tema acima para começar.</p>
+          <p className="text-sm">Ainda não pesquisaste nada. Escreve um tema acima ou escolhe uma recomendação.</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

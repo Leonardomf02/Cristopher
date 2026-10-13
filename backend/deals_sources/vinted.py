@@ -59,10 +59,16 @@ def search(query: str, *, max_price=None, condition="any", limit=40) -> list[Lis
         # item_box.first_line = modelo classificado pela própria Vinted (ex: "Apple
         # iPhone 15 Plus"). Vem na pesquisa (sem 403) e é ótimo para desambiguar
         # (17 vs 17e). Mais fiável que o título escrito pelo vendedor.
-        hint = ""
+        hint = estado = ""
         box = getattr(it, "item_box", None)
         if isinstance(box, dict):
             hint = (box.get("first_line") or "").strip()
+            # a versão 5 da API já não traz `status`: o estado vem na segunda linha
+            # do cartão ("Novo sem etiquetas", "Muito bom")
+            estado = (box.get("second_line") or "").strip()
+        url = getattr(it, "url", "") or ""
+        if url.startswith("/"):
+            url = _DOMAIN + url
         out.append(Listing(
             source="vinted",
             external_id=str(ext),
@@ -70,8 +76,8 @@ def search(query: str, *, max_price=None, condition="any", limit=40) -> list[Lis
             description=(f"[Vinted classifica como: {hint}]" if hint else ""),
             price=getattr(it, "price", None),
             currency=getattr(it, "currency", "EUR") or "EUR",
-            condition=getattr(it, "status", "") or "",
-            url=getattr(it, "url", "") or "",
+            condition=getattr(it, "status", "") or estado,
+            url=url,
             image_url=_image_url(it),
             location="",
             seller=seller,

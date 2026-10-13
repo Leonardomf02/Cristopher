@@ -11,6 +11,7 @@ from typing import Optional
 import logging
 import asyncio
 import re
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,43 @@ async def _get(url: str, api_key: str, params: dict | None = None) -> dict | lis
         if resp.status_code != 200:
             raise RiotAPIError(resp.status_code, f"Erro inesperado: {resp.text[:200]}")
         return resp.json()
+
+
+# ── Cache dos dados de cada jogador durante um jogo ──────────────
+# A análise ao vivo pede, por cada um dos 10 jogadores, o rank, a maestria, a
+# lista de jogos e 5 jogos em detalhe: ~80 pedidos. A página refrescava de 90 em
+# 90 segundos e repetia tudo, o que dava 1.600 pedidos numa partida de meia hora
+# com uma chave que permite 100 por 2 minutos — 26.871 linhas de "Rate limited"
+# no log, metade do ficheiro.
+#
+# Nada disto muda a meio da partida: o rank de um adversário é o mesmo do
+# princípio ao fim. Guarda-se por jogador e a partida inteira passa a custar uma
+# leitura.
+_cache_jogador: dict[str, tuple[float, object]] = {}
+_TTL_JOGADOR = 1800.0          # 30 min: mais do que uma partida
+
+
+def _cache_valido(chave: str, ttl: float = _TTL_JOGADOR):
+    guardado = _cache_jogador.get(chave)
+    if guardado and (time.time() - guardado[0]) < ttl:
+        return guardado[1]
+    return None
+
+
+def _cache_guarda(chave: str, valor):
+    _cache_jogador[chave] = (time.time(), valor)
+    # A cache é de sessão; sem limpeza cresceria com cada jogador que aparece.
+    if len(_cache_jogador) > 400:
+        antigos = sorted(_cache_jogador.items(), key=lambda kv: kv[1][0])[:100]
+        for k, _ in antigos:
+            _cache_jogador.pop(k, None)
+    return valor
+
+
+def limpa_cache_jogadores() -> int:
+    n = len(_cache_jogador)
+    _cache_jogador.clear()
+    return n
 
 
 # ── PUUID cache ──────────────────────────────────────────────────
@@ -152,6 +190,16 @@ def parse_match(match_data: dict, puuid: str) -> dict | None:
     team_id_val = participant.get("teamId")
     team_side = "blue" if team_id_val == 100 else "red" if team_id_val == 200 else None
 
+    # Abates da equipa: sem isto não há participação em abates, que para um
+    # jungler diz mais do que os abates dele sozinho.
+    team_kills = sum(
+        p.get("kills", 0) for p in info.get("participants", [])
+        if p.get("teamId") == team_id_val
+    )
+
+    lane_cs = participant.get("totalMinionsKilled", 0)
+    jungle_cs = participant.get("neutralMinionsKilled", 0)
+
     return {
         "match_id": match_data.get("metadata", {}).get("matchId"),
         "date": game_date,
@@ -165,8 +213,164 @@ def parse_match(match_data: dict, puuid: str) -> dict | None:
         "game_duration": info.get("gameDuration", 0),
         "game_hour": game_hour,
         "team_side": team_side,
+        "cs": lane_cs + jungle_cs,
+        "cs_jungle": jungle_cs,
+        "gold": participant.get("goldEarned", 0),
+        "damage": participant.get("totalDamageDealtToChampions", 0),
+        "damage_taken": participant.get("totalDamageTaken", 0),
+        "vision": participant.get("visionScore", 0),
+        "team_kills": team_kills,
         "notes": "",
     }
+
+
+# ── O duelo com o jungler adversário ─────────────────────────────
+# A Riot manda 128 campos de `challenges` por participante, e manda-os para os
+# dez jogadores. Um deles é o jungler adversário: mesmo elo, mesmo patch, mesmo
+# jogo. Comparar-se com ele é a única régua que a app pode ter sem depender de
+# sites que mudam de formato — a Riot não publica referências por elo.
+
+# As medidas que ficam em colunas próprias. O resto dos 128 vai em JSON, para
+# acrescentar métricas mais tarde sem re-sincronizar 500 jogos.
+_DESAFIOS_GUARDADOS = (
+    "jungleCsBefore10Minutes", "takedownsFirstXMinutes",
+    "killsOnLanersEarlyJungleAsJungler", "controlWardsPlaced",
+    "visionScorePerMinute", "goldPerMinute", "damagePerMinute",
+    "teamDamagePercentage", "killParticipation", "dragonTakedowns",
+    "turretPlatesTaken", "baronTakedowns", "epicMonsterSteals",
+    "moreEnemyJungleThanOpponent", "soloKills", "scuttleCrabKills",
+)
+
+
+def _medidas_do_jungler(p: dict, duracao: int) -> dict:
+    """As medidas de um jungler numa partida, já por minuto onde faz sentido."""
+    ch = p.get("challenges") or {}
+    minutos = duracao / 60 if duracao else 0
+    cs = (p.get("totalMinionsKilled") or 0) + (p.get("neutralMinionsKilled") or 0)
+    def arr(v, casas=2):
+        return round(v, casas) if isinstance(v, (int, float)) else None
+
+    return {
+        # A Riot manda estes com quinze casas decimais (62.000000059604645);
+        # guardá-los assim enche a base de ruído que ninguém vai ler.
+        "jungle_cs10": arr(ch.get("jungleCsBefore10Minutes"), 1),
+        "takedowns10": ch.get("takedownsFirstXMinutes"),
+        "early_ganks": ch.get("killsOnLanersEarlyJungleAsJungler"),
+        "cs_min": round(cs / minutos, 2) if minutos else None,
+        "gold_min": arr(ch.get("goldPerMinute")),
+        "damage_min": arr(ch.get("damagePerMinute")),
+        "vision_min": arr(ch.get("visionScorePerMinute"), 3),
+        "control_wards": ch.get("controlWardsPlaced"),
+        "deaths": p.get("deaths"),
+        # Em percentagem da partida, não em segundos: vinte minutos morto num
+        # jogo de 50 não é o mesmo que num de 25.
+        "time_dead_pct": round(100 * (p.get("totalTimeSpentDead") or 0) / duracao, 2) if duracao else None,
+        "enemy_jungle_cs": p.get("totalEnemyJungleMinionsKilled"),
+        "damage_share": round(100 * ch["teamDamagePercentage"], 2) if ch.get("teamDamagePercentage") is not None else None,
+        "kill_participation": round(100 * ch["killParticipation"], 2) if ch.get("killParticipation") is not None else None,
+        "dragons": ch.get("dragonTakedowns"),
+        "turret_plates": ch.get("turretPlatesTaken"),
+        "_challenges": {k: ch[k] for k in _DESAFIOS_GUARDADOS if k in ch},
+    }
+
+
+def _diferencas_da_timeline(timeline: dict, puuid: str, puuid_adv: str) -> dict:
+    """Ouro e XP dele menos os do jungler adversário, ao minuto.
+
+    Aos 10 minutos as vitórias e as derrotas dele são indistinguíveis (−157 e
+    −150 de ouro); aos 15 já vão +607 contra −812. Sem isto não se vê onde é que
+    o jogo se parte."""
+    info = timeline.get("info", {})
+    ids = {p.get("puuid"): str(p.get("participantId")) for p in info.get("participants", [])}
+    meu, adv = ids.get(puuid), ids.get(puuid_adv)
+    frames = info.get("frames", [])
+    if not meu or not adv or not frames:
+        return {}
+
+    def campo(minuto: int, quem: str, nome: str):
+        if minuto >= len(frames):
+            return None
+        return (frames[minuto].get("participantFrames", {}).get(quem) or {}).get(nome)
+
+    out: dict = {}
+    for m in (10, 15, 20):
+        a, b = campo(m, meu, "totalGold"), campo(m, adv, "totalGold")
+        if a is not None and b is not None:
+            out[f"gd{m}"] = a - b
+    for m in (10, 15):
+        a, b = campo(m, meu, "xp"), campo(m, adv, "xp")
+        if a is not None and b is not None:
+            out[f"xd{m}"] = a - b
+
+    # Quanto dos primeiros 15 minutos passou na metade do mapa que não é dele.
+    # É invade e pressão medidos sem ter de desenhar um mapa. A diagonal do
+    # mapa (x+y = 15000) separa as duas metades da Summoner's Rift.
+    lado_azul = None
+    for p in info.get("participants", []):
+        if p.get("puuid") == puuid:
+            lado_azul = int(p.get("participantId", 6)) <= 5
+    posicoes = [campo(m, meu, "position") for m in range(1, min(16, len(frames)))]
+    posicoes = [p for p in posicoes if p]
+    if posicoes and lado_azul is not None:
+        def fora_de_casa(p) -> bool:
+            soma = p.get("x", 0) + p.get("y", 0)
+            return soma > 15000 if lado_azul else soma < 15000
+        fora = sum(1 for p in posicoes if fora_de_casa(p))
+        out["enemy_half_pct"] = round(100 * fora / len(posicoes), 1)
+    return out
+
+
+def parse_duel(match_data: dict, puuid: str, timeline: dict | None = None) -> dict | None:
+    """O jogo dele lado a lado com o do jungler adversário.
+
+    Devolve None quando não há duelo para medir: não é Summoner's Rift, ele não
+    jogou de jungle, ou a partida não teve jungler do outro lado (autofill,
+    remake). A timeline é opcional — sem ela ficam as medidas da partida."""
+    import json as _json
+
+    info = match_data.get("info", {})
+    if info.get("mapId") != 11:
+        return None
+    duracao = info.get("gameDuration", 0)
+    if duracao < 600:                       # remakes e partidas que não chegam a acontecer
+        return None
+
+    participantes = info.get("participants", [])
+    eu = next((p for p in participantes if p.get("puuid") == puuid), None)
+    if eu is None or eu.get("teamPosition") != "JUNGLE":
+        return None
+    adv = next(
+        (p for p in participantes
+         if p.get("teamId") != eu.get("teamId") and p.get("teamPosition") == "JUNGLE"),
+        None,
+    )
+    if adv is None:
+        return None
+
+    inicio = info.get("gameStartTimestamp", 0)
+    meu = _medidas_do_jungler(eu, duracao)
+    dele = _medidas_do_jungler(adv, duracao)
+
+    linha = {
+        "match_id": match_data.get("metadata", {}).get("matchId"),
+        "date": datetime.fromtimestamp(inicio / 1000).date() if inicio else date.today(),
+        "won": bool(eu.get("win")),
+        "duration": duracao,
+        "champion": eu.get("championName"),
+        "opp_champion": adv.get("championName"),
+        "challenges_json": _json.dumps(meu.pop("_challenges")),
+        "opp_challenges_json": _json.dumps(dele.pop("_challenges")),
+        "has_timeline": False,
+    }
+    linha.update(meu)
+    linha.update({f"opp_{k}": v for k, v in dele.items()})
+
+    if timeline:
+        difs = _diferencas_da_timeline(timeline, puuid, adv.get("puuid", ""))
+        if difs:
+            linha.update(difs)
+            linha["has_timeline"] = True
+    return linha
 
 
 async def fetch_recent_games(
@@ -369,6 +573,11 @@ async def get_live_game(game_name: str, tag_line: str, api_key: str) -> dict | N
 
 async def _live_fetch_rank(puuid: str, api_key: str, sem: asyncio.Semaphore) -> dict | None:
     """Fetch ranked stats for a player (live game helper)."""
+    if not puuid:
+        return None                       # jogador sem puuid: pedir dava 400
+    guardado = _cache_valido(f"rank:{puuid}")
+    if guardado is not None:
+        return guardado if guardado != "vazio" else None
     try:
         async with sem:
             entries = await _get(f"{LEAGUE_V4}/entries/by-puuid/{puuid}", api_key)
@@ -377,7 +586,7 @@ async def _live_fetch_rank(puuid: str, api_key: str, sem: asyncio.Semaphore) -> 
                 wins = entry.get("wins", 0)
                 losses = entry.get("losses", 0)
                 total = wins + losses
-                return {
+                resultado = {
                     "tier": entry.get("tier", "UNRANKED"),
                     "rank": entry.get("rank", ""),
                     "lp": entry.get("leaguePoints", 0),
@@ -386,18 +595,27 @@ async def _live_fetch_rank(puuid: str, api_key: str, sem: asyncio.Semaphore) -> 
                     "winrate": round(wins / max(total, 1) * 100, 1),
                     "hot_streak": entry.get("hotStreak", False),
                 }
+                return _cache_guarda(f"rank:{puuid}", resultado)
     except Exception:
-        pass
+        return None
+    _cache_guarda(f"rank:{puuid}", "vazio")
     return None
 
 
 async def _live_fetch_mastery(puuid: str, champ_id: int, api_key: str, sem: asyncio.Semaphore) -> dict:
     """Fetch champion mastery for current champion (live game helper)."""
+    if not puuid:
+        return {"points": 0, "level": 0}
+    chave = f"mastery:{puuid}:{champ_id}"
+    guardado = _cache_valido(chave)
+    if guardado is not None:
+        return guardado
     try:
         async with sem:
             url = f"{CHAMPION_MASTERY_V4}/champion-masteries/by-puuid/{puuid}/by-champion/{champ_id}"
             m = await _get(url, api_key)
-        return {"points": m.get("championPoints", 0), "level": m.get("championLevel", 0)}
+        return _cache_guarda(chave, {"points": m.get("championPoints", 0),
+                                     "level": m.get("championLevel", 0)})
     except Exception:
         return {"points": 0, "level": 0}
 
@@ -409,7 +627,20 @@ async def _live_fetch_matches(
     """Fetch recent ranked matches and compute per-champion/role stats.
     Also extracts data needed for: duo detection, champion pool,
     tilt/mental state, rank trajectory, head-to-head, early game.
+
+    É a chamada mais cara da análise ao vivo (1 lista + 5 jogos em detalhe por
+    jogador). O histórico de um adversário não muda enquanto a partida decorre,
+    por isso guarda-se e a partida inteira custa uma leitura por jogador.
     """
+    vazio = {"champion_stats": None, "role_distribution": {}, "recent_results": [],
+             "total_recent": 0, "match_ids": [], "unique_champions": [],
+             "games_today": 0, "kda_trend": [], "co_players": {}}
+    if not puuid:
+        return vazio                      # sem puuid a Riot devolve 400 em ciclo
+    chave = f"matches:{puuid}:{champion_name}"
+    guardado = _cache_valido(chave)
+    if guardado is not None:
+        return guardado
     try:
         async with sem:
             match_ids = await _get(
@@ -418,9 +649,7 @@ async def _live_fetch_matches(
                 {"count": 20, "queue": 420},
             )
         if not match_ids:
-            return {"champion_stats": None, "role_distribution": {}, "recent_results": [],
-                    "total_recent": 0, "match_ids": [], "unique_champions": [],
-                    "games_today": 0, "kda_trend": [], "co_players": {}}
+            return _cache_guarda(chave, vazio)
 
         # Fetch match details (limited to detail_count)
         match_details = []
@@ -429,6 +658,9 @@ async def _live_fetch_matches(
                 async with sem:
                     detail = await _get(f"{MATCH_V5}/matches/{mid}", api_key)
                 match_details.append(detail)
+                # O "contra o meu campeão" varre os mesmos jogos: guardá-los aqui
+                # poupa-lhe os pedidos que esta função já fez.
+                _cache_guarda(f"slim:{mid}", _resumo_da_partida(detail))
             except Exception:
                 continue
 
@@ -555,7 +787,7 @@ async def _live_fetch_matches(
                 "vision_per_min": round(all_vision / mins, 2),
             }
 
-        return {
+        return _cache_guarda(chave, {
             "champion_stats": champion_stats,
             "role_distribution": role_counts,
             "recent_results": recent_results,
@@ -567,12 +799,147 @@ async def _live_fetch_matches(
             "games_today": games_today,
             "kda_trend": kda_trend,
             "co_players": co_players,
-        }
+        })
     except Exception as e:
         logger.warning(f"Failed to fetch recent matches for {puuid}: {e}")
-        return {"champion_stats": None, "role_distribution": {}, "recent_results": [],
-                "total_recent": 0, "avg_stats": None, "match_ids": [],
-                "unique_champions": [], "games_today": 0, "kda_trend": [], "co_players": {}}
+        return dict(vazio, avg_stats=None)
+
+
+# ── O jogador do outro lado contra o campeão que eu tenho ────────
+# Em champ select isto é impossível: o cliente manda a equipa inimiga sem
+# identidade nenhuma (`nameVisibilityType: HIDDEN`, `puuid` e `obfuscatedPuuid`
+# vazios), mesmo já com os campeões escolhidos. O puuid só aparece quando o jogo
+# arranca — é daí para a frente que estas contas existem.
+
+def _resumo_da_partida(md: dict) -> dict:
+    """Só o que se precisa de um jogo, para o caber na cache dos jogadores.
+    Guardar o JSON inteiro da Riot são ~100 KB por jogo: vinte jogos de dez
+    jogadores encheriam a memória do backend para nada."""
+    info = md.get("info", {})
+    return {
+        "start": info.get("gameStartTimestamp", 0),
+        "duration": info.get("gameDuration", 0),
+        "participants": [
+            {
+                "puuid": p.get("puuid", ""),
+                "champion": p.get("championName", ""),
+                "team": p.get("teamId", 0),
+                "win": bool(p.get("win")),
+                "kills": p.get("kills", 0),
+                "deaths": p.get("deaths", 0),
+                "assists": p.get("assists", 0),
+                "position": p.get("teamPosition", ""),
+            }
+            for p in info.get("participants", [])
+        ],
+    }
+
+
+async def _partida_resumida(mid: str, api_key: str, sem: asyncio.Semaphore) -> dict | None:
+    chave = f"slim:{mid}"
+    guardado = _cache_valido(chave)
+    if guardado is not None:
+        return None if guardado == "vazio" else guardado
+    try:
+        async with sem:
+            detalhe = await _get(f"{MATCH_V5}/matches/{mid}", api_key)
+    except Exception:
+        _cache_guarda(chave, "vazio")
+        return None
+    return _cache_guarda(chave, _resumo_da_partida(detalhe))
+
+
+async def historico_do_adversario(
+    puuid: str,
+    o_meu_campeao: str,
+    campeao_dele: str,
+    api_key: str,
+    sem: asyncio.Semaphore,
+    jogos: int = 20,
+) -> dict | None:
+    """O que aquele jogador já fez contra o campeão que eu tenho em mãos.
+
+    A Riot não responde a "os jogos dele contra X": dá a lista dos últimos jogos
+    e cada jogo em detalhe, por isso a resposta custa um pedido por jogo e a
+    amostra é o que couber nos últimos `jogos` ranked dele. Por isso devolve-se
+    sempre quantos foram lidos e os jogos um a um — apanhar o meu campeão uma
+    vez em vinte jogos já é sorte, e um winrate de um jogo não é um winrate.
+    """
+    if not puuid or not o_meu_campeao:
+        return None
+    chave = f"contra:{puuid}:{o_meu_campeao}"
+    guardado = _cache_valido(chave)
+    if guardado is not None:
+        return None if guardado == "vazio" else guardado
+
+    try:
+        async with sem:
+            ids = await _get(
+                f"{MATCH_V5}/matches/by-puuid/{puuid}/ids",
+                api_key,
+                {"count": jogos, "queue": 420},
+            )
+    except Exception as e:
+        logger.warning(f"contra o meu campeão: sem lista de jogos ({e})")
+        return None
+    if not ids:
+        _cache_guarda(chave, "vazio")
+        return None
+
+    encontros: list[dict] = []
+    lidos = 0
+    for mid in ids:
+        partida = await _partida_resumida(mid, api_key, sem)
+        if not partida or partida["duration"] < 300:
+            continue
+        lidos += 1
+        ele = next((p for p in partida["participants"] if p["puuid"] == puuid), None)
+        if not ele:
+            continue
+        if not any(p["team"] != ele["team"] and p["champion"] == o_meu_campeao
+                   for p in partida["participants"]):
+            continue
+        encontros.append({
+            "date": (datetime.fromtimestamp(partida["start"] / 1000).date().isoformat()
+                     if partida["start"] else None),
+            "champion": ele["champion"],
+            "won": ele["win"],
+            "kda": f"{ele['kills']}/{ele['deaths']}/{ele['assists']}",
+            "role": ROLE_MAP.get(ele["position"]),
+        })
+
+    resultado: dict = {
+        "champion": campeao_dele,
+        "scanned": lidos,
+        "games": encontros,
+        "vs_all": None,
+        "with_current": None,
+        "by_champion": [],
+    }
+    if encontros:
+        vitorias = sum(1 for e in encontros if e["won"])
+        resultado["vs_all"] = {
+            "games": len(encontros),
+            "wins": vitorias,
+            "losses": len(encontros) - vitorias,
+            "winrate": round(vitorias / len(encontros) * 100),
+        }
+        por_campeao: dict[str, dict] = {}
+        for e in encontros:
+            d = por_campeao.setdefault(
+                e["champion"], {"champion": e["champion"], "wins": 0, "losses": 0}
+            )
+            d["wins" if e["won"] else "losses"] += 1
+        linhas = []
+        for d in por_campeao.values():
+            n = d["wins"] + d["losses"]
+            linhas.append({**d, "games": n, "winrate": round(d["wins"] / n * 100)})
+        linhas.sort(key=lambda x: (-x["games"], -x["winrate"]))
+        resultado["by_champion"] = linhas
+        resultado["with_current"] = next(
+            (l for l in linhas if l["champion"] == campeao_dele), None
+        )
+    return _cache_guarda(chave, resultado)
 
 
 def _generate_player_tags(
@@ -875,12 +1242,41 @@ def _score_player(p: dict) -> dict:
     }
 
 
-def _compute_matchups(my_team: list[dict], enemy_team: list[dict]) -> list[dict]:
-    """Match players by role across teams and compare scores."""
+# lolalytics → papéis da app
+_LANE_PARA_PAPEL = {"top": "top", "jungle": "jungle", "middle": "mid",
+                    "bottom": "adc", "support": "support"}
 
-    def _role_scores(p: dict) -> dict[str, float]:
+
+def _compute_matchups(my_team: list[dict], enemy_team: list[dict],
+                      posicoes_do_draft: dict[int, str] | None = None) -> list[dict]:
+    """Match players by role across teams and compare scores.
+
+    Quem joga onde, por ordem de confiança: a posição que o draft lhe deu (só a
+    equipa dele, e só quando o agente viu o champ select), onde o campeão se joga
+    no meta, e o histórico do jogador. Só com o histórico, um mid que também
+    joga adc caía em adc e a linha do mid aparecia trocada."""
+    from meta_stats import lane_shares_cached, normalize_name
+    fatias = lane_shares_cached()
+    posicoes_do_draft = posicoes_do_draft or {}
+    # O draft guardado tem de ser deste jogo: quatro dos cinco campeões dele têm
+    # de lá estar, senão é o draft de uma partida anterior.
+    if sum((p.get("champion_id") or 0) in posicoes_do_draft for p in my_team) < 4:
+        posicoes_do_draft = {}
+
+    def _role_scores(p: dict, do_draft: bool) -> dict[str, float]:
         """Compute a probability-like score for each role based on match history + spells."""
         scores: dict[str, float] = {r: 0.0 for r in _ROLE_ORDER}
+
+        papel_do_draft = posicoes_do_draft.get(p.get("champion_id") or 0) if do_draft else None
+        if papel_do_draft in scores:
+            scores[papel_do_draft] += 1000
+
+        # A Ahri joga-se de mid em ~95% dos jogos: pesa mais do que os últimos
+        # vinte jogos de quem a tem nas mãos.
+        for lane, fatia in fatias.get(normalize_name(p.get("champion_name") or ""), {}).items():
+            papel = _LANE_PARA_PAPEL.get(lane)
+            if papel:
+                scores[papel] += fatia * 150
         role_dist = p.get("role_distribution", {}) or {}
         total_games = sum(role_dist.values()) if role_dist else 0
 
@@ -909,7 +1305,7 @@ def _compute_matchups(my_team: list[dict], enemy_team: list[dict]) -> list[dict]
 
         return scores
 
-    def _assign_roles(team: list[dict]) -> list[dict]:
+    def _assign_roles(team: list[dict], do_draft: bool = False) -> list[dict]:
         """Assign canonical roles using score-based constraint assignment.
         Each player gets a score per role from match history + spell heuristics.
         Greedy assignment picks the best (player, role) pair iteratively."""
@@ -919,7 +1315,7 @@ def _compute_matchups(my_team: list[dict], enemy_team: list[dict]) -> list[dict]
         player_scores = []
         for p in team:
             pid = p.get("puuid") or p.get("summoner_name") or id(p)
-            player_scores.append((pid, p, _role_scores(p)))
+            player_scores.append((pid, p, _role_scores(p, do_draft)))
 
         assigned = []
         used_pids: set = set()
@@ -951,7 +1347,7 @@ def _compute_matchups(my_team: list[dict], enemy_team: list[dict]) -> list[dict]
 
         return sorted(assigned, key=lambda x: _ROLE_ORDER.index(x.get("_assigned_role", "support")) if x.get("_assigned_role") in _ROLE_ORDER else 99)
 
-    my_assigned = _assign_roles(my_team)
+    my_assigned = _assign_roles(my_team, do_draft=True)
     enemy_assigned = _assign_roles(enemy_team)
 
     matchups = []
@@ -1929,7 +2325,10 @@ async def get_live_game_detailed(
 
     my_team_stats = _compute_team_stats(my_team)
     enemy_team_stats = _compute_team_stats(enemy_team)
-    matchup_analysis = _compute_matchups(my_team, enemy_team)
+    import lol_live
+    from meta_stats import aquece_lane_shares
+    aquece_lane_shares()
+    matchup_analysis = _compute_matchups(my_team, enemy_team, lol_live.posicoes_do_draft())
 
     # _compute_matchups tags each player with _assigned_role; order both teams by
     # canonical role so row i lines up with the same lane on the enemy side.
@@ -1940,6 +2339,39 @@ async def get_live_game_detailed(
     enemy_team.sort(key=_role_sort_key)
 
     # ── Advanced Features ──────────────────────────────────────
+    # O jogador do outro lado contra o campeão que eu tenho em mãos. Só o
+    # adversário directo: são até 20 pedidos por jogador, e perguntar o mesmo aos
+    # cinco não daria mais informação — daria rate limit.
+    eu = next((p for p in my_team if p.get("is_me")), None)
+    meu_papel = (eu or {}).get("_assigned_role") or (eu or {}).get("role")
+    adversario = next(
+        (p for p in enemy_team if p.get("_assigned_role") == meu_papel), None
+    ) if meu_papel else None
+    # Sem papéis atribuídos (o `_compute_matchups` nem sempre lá chega), o smite
+    # continua a apontar o jungler do outro lado — que é o adversário dele.
+    if adversario is None and (eu or {}).get("role") == "jungle":
+        adversario = next(
+            (p for p in enemy_team if p.get("spell1") == 11 or p.get("spell2") == 11), None
+        )
+    contra_o_meu_campeao = None
+    if eu and adversario and adversario.get("puuid") and adversario.get("data_available"):
+        try:
+            contra_o_meu_campeao = await historico_do_adversario(
+                adversario["puuid"], eu.get("champion_name", ""),
+                adversario.get("champion_name", ""), api_key, sem,
+            )
+        except Exception as e:
+            logger.warning(f"histórico do adversário falhou: {e}")
+        if contra_o_meu_campeao:
+            contra_o_meu_campeao = {
+                **contra_o_meu_campeao,
+                "player": adversario.get("summoner_name"),
+                "rank": adversario.get("rank"),
+                "role": meu_papel,
+                "my_champion": eu.get("champion_name"),
+            }
+            adversario["vs_my_champion"] = contra_o_meu_campeao
+
     # Feature 2: Duo detection
     duos_my = _detect_duos(my_team)
     duos_enemy = _detect_duos(enemy_team)
@@ -2003,6 +2435,7 @@ async def get_live_game_detailed(
         "my_team_stats": my_team_stats,
         "enemy_team_stats": enemy_team_stats,
         "matchup_analysis": matchup_analysis,
+        "enemy_vs_my_champion": contra_o_meu_campeao,
         # New features
         "duos_my_team": duos_my,
         "duos_enemy_team": duos_enemy,

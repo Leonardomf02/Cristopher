@@ -19,6 +19,7 @@ from datetime import datetime, date, timedelta
 import httpx
 
 from cache import cached
+from database import DB_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -247,7 +248,7 @@ def format_onchain_for_prompt(snap: dict) -> str:
 
 # ── Funding rate persistence (BTC contrarian signal) ───────────
 
-def persist_daily_funding(snap: dict, db_path: str = "cristopher.db") -> None:
+def persist_daily_funding(snap: dict, db_path: str = DB_PATH) -> None:
     """Upsert today's funding rate (BTC + ETH) into daily_funding table.
 
     Persistence is the contrarian signal: 5+ consecutive days of extreme
@@ -279,7 +280,7 @@ def persist_daily_funding(snap: dict, db_path: str = "cristopher.db") -> None:
         logger.warning(f"persist_daily_funding failed: {e}")
 
 
-def compute_funding_persistence(symbol: str = "BTC", db_path: str = "cristopher.db") -> dict:
+def compute_funding_persistence(symbol: str = "BTC", db_path: str = DB_PATH) -> dict:
     """Detect persistent leverage skew.
 
     Returns:
@@ -351,7 +352,7 @@ def compute_funding_persistence(symbol: str = "BTC", db_path: str = "cristopher.
     }
 
 
-def fetch_funding_history(symbol: str = "BTC", days: int = 60, db_path: str = "cristopher.db") -> list[dict]:
+def fetch_funding_history(symbol: str = "BTC", days: int = 60, db_path: str = DB_PATH) -> list[dict]:
     """Chronological list (oldest → newest) for charting."""
     try:
         conn = sqlite3.connect(db_path)

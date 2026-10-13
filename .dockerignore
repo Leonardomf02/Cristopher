@@ -1,0 +1,27 @@
+**/node_modules
+**/dist
+**/venv
+**/.venv
+**/__pycache__
+**/.pytest_cache
+# as cópias cristopher.db.bak-* são ~400 MB e o *.db sozinho não as apanha
+**/*.db
+**/*.db-*
+**/*.db.bak-*
+**/*.pem
+**/push_keys.json
+**/.env
+**/.env.*
+backend/uploads
+backend/tests
+backend/scripts
+backend/tools
+frontend/certs
+.git
+tasks
+agent
+docs
+scripts
+*.log
+.DS_Store
+nas-compose.yml

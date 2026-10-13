@@ -2,6 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
+
 @layer components {
   .inp {
     @apply w-full bg-[#0f0f0f] border border-[#222] rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-pink-500/50;
@@ -35,4 +36,16 @@ body {
 
 ::-webkit-scrollbar-thumb:hover {
   background: #555;
+}
+
+
+/* O iOS amplia a página inteira quando se toca num campo com letra abaixo de
+   16px — e o zoom fica lá quando se muda de secção. Em ecrã pequeno todos os
+   campos têm 16px; no computador mantêm o tamanho que o desenho pede. */
+@media (max-width: 640px) {
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+  }
 }

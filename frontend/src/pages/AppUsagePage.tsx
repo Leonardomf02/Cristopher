@@ -1,3 +1,4 @@
+import { inkColor } from '../theme';
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
@@ -13,7 +14,7 @@ import {
 } from 'lucide-react';
 import {
   appUsageApi, AppUsageSession, AppUsageFullSummary,
-  FlowOverlap, WeeklyTrend,
+  FlowOverlap, WeeklyTrend, BrowserDomains,
 } from '../api';
 import { InsightsTab, GoalsTab, DistractionToast } from './AppUsageInsights';
 
@@ -56,6 +57,64 @@ function formatDuration(seconds: number): string {
   return rem ? `${h}h ${rem}m` : `${h}h`;
 }
 
+
+// Onde é que ele passa o tempo dentro da própria app. Sai do tracker: cada
+// página passou a dizer o seu nome no título da janela, por isso isto aparece
+// sozinho — sem telemetria nem nada a mais.
+function UsoDaApp() {
+  const [d, setD] = useState<Awaited<ReturnType<typeof appUsageApi.selfUsage>> | null>(null);
+  const [dias, setDias] = useState(30);
+
+  useEffect(() => { appUsageApi.selfUsage(dias).then(setD).catch(() => setD(null)); }, [dias]);
+  if (!d) return null;
+
+  const hm = (s: number) => (s >= 3600 ? `${Math.floor(s / 3600)}h${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}` : `${Math.round(s / 60)}min`);
+  const max = Math.max(1, ...d.sections.map(s => s.seconds));
+
+  return (
+    <div className="bg-[#161616] rounded-2xl border border-[#222] p-4 mb-6">
+      <div className="flex items-baseline justify-between gap-2 mb-1 flex-wrap">
+        <h2 className="text-sm font-semibold text-gray-300">Onde passas o tempo dentro do Cristopher</h2>
+        <div className="flex gap-1">
+          {[7, 30, 90].map(n => (
+            <button key={n} onClick={() => setDias(n)}
+              className={`text-[11px] px-2 py-0.5 rounded-lg ${dias === n ? 'bg-white/10 text-gray-200' : 'text-gray-500 hover:text-gray-300'}`}>
+              {n}d
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {d.sections.length === 0 ? (
+        <p className="text-xs text-gray-500">
+          Ainda a juntar. Cada página passou agora a dizer o seu nome ao tracker; daqui a uns dias
+          isto mostra que secções usas mesmo.
+          {d.unnamed_seconds > 0 && ` (${hm(d.unnamed_seconds)} registados antes disso, sem secção)`}
+        </p>
+      ) : (
+        <>
+          <p className="text-[11px] text-gray-500 mb-3">
+            {hm(d.total_seconds)} identificados
+            {d.unnamed_seconds > 0 && ` · ${hm(d.unnamed_seconds)} de antes de as páginas se identificarem`}
+          </p>
+          <div className="space-y-1.5">
+            {d.sections.map(s => (
+              <div key={s.section} className="flex items-center gap-2">
+                <span className="text-xs w-32 shrink-0 truncate">{s.section}</span>
+                <div className="flex-1 h-2 bg-[#1a1a1a] rounded-full overflow-hidden">
+                  <div className="h-full rounded-full bg-blue-500/70" style={{ width: `${(s.seconds / max) * 100}%` }} />
+                </div>
+                <span className="text-[11px] text-gray-500 w-16 text-right">{hm(s.seconds)}</span>
+                <span className="text-[10px] text-gray-600 w-10 text-right">{s.share}%</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function AppUsagePage() {
   const [viewMode, setViewMode] = useState<ViewMode>('day');
   const [tab, setTab] = useState<Tab>('timeline');
@@ -73,6 +132,7 @@ export default function AppUsagePage() {
   const [flow, setFlow] = useState<FlowOverlap[]>([]);
   const [trend, setTrend] = useState<WeeklyTrend[]>([]);
   const [byTitle, setByTitle] = useState<{ window_title: string; total_seconds: number; session_count: number; percentage: number }[]>([]);
+  const [sites, setSites] = useState<BrowserDomains | null>(null);
 
   const [showSettings, setShowSettings] = useState(false);
   const [timelineDisplay, setTimelineDisplay] = useState<TimelineDisplay>('clean');
@@ -146,6 +206,11 @@ export default function AppUsagePage() {
       setByTitle([]);
     }
   }, [filterApp, startStr, endStr]);
+
+  useEffect(() => {
+    appUsageApi.byDomain({ start_date: startStr, end_date: endStr, limit: 15 })
+      .then(setSites).catch(() => setSites(null));
+  }, [startStr, endStr]);
 
   const filteredSessions = useMemo(() => {
     let out = sessions;
@@ -308,7 +373,7 @@ export default function AppUsagePage() {
                 className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all ${
                   selected ? 'bg-white/10 border-white/30' : 'border-transparent hover:bg-white/5'
                 }`}
-                style={{ color: c.color, borderColor: selected ? c.color : c.color + '40', backgroundColor: selected ? c.color + '20' : c.color + '10' }}
+                style={{ color: inkColor(c.color), borderColor: selected ? c.color : c.color + '40', backgroundColor: selected ? c.color + '20' : c.color + '10' }}
               >
                 <span className="w-1.5 h-1.5 rounded-full inline-block mr-1.5" style={{ backgroundColor: c.color }} />
                 {c.label} · {formatDuration(c.total_seconds)} · {c.percentage}%
@@ -320,7 +385,10 @@ export default function AppUsagePage() {
 
       {/* Tab content */}
       {tab === 'insights' ? (
-        <InsightsTab startStr={startStr} endStr={endStr} />
+        <>
+          <UsoDaApp />
+          <InsightsTab startStr={startStr} endStr={endStr} />
+        </>
       ) : tab === 'goals' ? (
         <GoalsTab />
       ) : (
@@ -352,6 +420,7 @@ export default function AppUsagePage() {
               filterApp={filterApp}
               onSelect={(name) => setFilterApp(filterApp === name ? null : name)}
             />
+            <SiteBreakdown dados={sites} />
             {filterApp && byTitle.length > 0 && (
               <TitleBreakdown app={filterApp} rows={byTitle} />
             )}
@@ -744,7 +813,7 @@ function TimelineView({
                             {showLabel && (
                               <span
                                 className="text-[10px] font-medium truncate"
-                                style={{ color }}
+                                style={{ color: inkColor(color) }}
                               >
                                 {b.app_name}
                               </span>
@@ -917,7 +986,7 @@ function FlowView({ overlaps }: { overlaps: FlowOverlap[] }) {
                 <span
                   key={c.category}
                   className="text-[10px] px-2 py-0.5 rounded-full font-medium"
-                  style={{ color: c.color, backgroundColor: c.color + '20' }}
+                  style={{ color: inkColor(c.color), backgroundColor: c.color + '20' }}
                 >
                   {c.label} {formatDuration(c.seconds)}
                 </span>
@@ -1039,6 +1108,61 @@ function AppBreakdown({
           );
         })}
       </div>
+    </div>
+  );
+}
+
+// O browser era o maior número da app e o mais inútil: 258h repartidas por 1970
+// títulos. Por site são umas dezenas, e cada um diz logo o que ali se fazia.
+function SiteBreakdown({ dados }: { dados: BrowserDomains | null }) {
+  if (!dados || !dados.sites.length) return null;
+
+  const porFazer = dados.unknown_seconds > 0
+    ? Math.round((dados.unknown_seconds / (dados.unknown_seconds + dados.total_seconds)) * 100)
+    : 0;
+
+  return (
+    <div className="bg-[#161616] border border-[#222] rounded-xl p-4 h-fit">
+      <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-1">
+        Onde vais no browser
+      </h2>
+      <p className="text-[11px] text-gray-600 mb-3">
+        {dados.distinct_domains} sites · {formatDuration(dados.total_seconds)}
+      </p>
+
+      {dados.by_category.length > 0 && (
+        <div className="flex h-1.5 rounded-full overflow-hidden mb-3">
+          {dados.by_category.map(c => (
+            <div key={c.category} title={`${c.label} · ${c.percentage}%`}
+              style={{ width: `${c.percentage}%`, backgroundColor: c.color }} />
+          ))}
+        </div>
+      )}
+
+      <div className="space-y-1.5 max-h-[400px] overflow-y-auto pr-1">
+        {dados.sites.map(s => {
+          const cor = dados.by_category.find(c => c.category === s.category)?.color || '#9CA3AF';
+          return (
+            <div key={s.domain} className="text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: cor }} />
+                <span className="truncate flex-1" title={`${s.domain} · ${s.days} dias`}>{s.domain}</span>
+                <span className="text-gray-500 shrink-0">{formatDuration(s.seconds)}</span>
+              </div>
+              <div className="h-0.5 rounded-full bg-white/5 mt-1 overflow-hidden">
+                <div className="h-full" style={{ width: `${s.percentage}%`, backgroundColor: cor }} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {porFazer > 5 && (
+        <p className="text-[10px] text-gray-600 mt-2">
+          Faltam {formatDuration(dados.unknown_seconds)} de browser sem site guardado ({porFazer}%) —
+          são de antes de a app passar a registá-lo.
+        </p>
+      )}
     </div>
   );
 }

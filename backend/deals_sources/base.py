@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 
@@ -16,6 +16,9 @@ class Listing:
     image_url: str = ""
     location: str = ""
     seller: str = ""
+    # Ano, km, potência e cor quando a fonte os dá em campos (StandVirtual dá).
+    # Vale mais do que o `deal_attrs`, que os tem de adivinhar a partir do texto.
+    attrs: Optional[dict] = None
 
 
 def matches_condition(listing_condition: str, wanted: str) -> bool:

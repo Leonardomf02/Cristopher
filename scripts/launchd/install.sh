@@ -174,45 +174,22 @@ cat > "$FRONTEND_PLIST" <<EOF
 </plist>
 EOF
 
-# Job diário dos Sinais IA: refresca outcomes + gera o sinal do dia às 08:30.
-chmod +x "$DAILY_SCRIPT" 2>/dev/null || true
-cat > "$DAILY_PLIST" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>$DAILY_LABEL</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/bin/bash</string>
-    <string>$DAILY_SCRIPT</string>
-  </array>
-  <key>StartCalendarInterval</key>
-  <dict>
-    <key>Hour</key><integer>8</integer>
-    <key>Minute</key><integer>30</integer>
-  </dict>
-  <key>StandardOutPath</key>
-  <string>$LOG_DIR/daily_signals.log</string>
-  <key>StandardErrorPath</key>
-  <string>$LOG_DIR/daily_signals.err.log</string>
-</dict>
-</plist>
-EOF
+# Os trabalhos diários (sinais IA, snapshots, sync do WakaTime) já NÃO usam launchd:
+# o macOS bloqueava /bin/bash a ler scripts em ~/Documents ("Operation not permitted")
+# e falhavam em silêncio. Agora corre tudo dentro do backend (backend/scheduler.py),
+# com registo em job_runs e visível no painel de Avisos.
 
 # Recarregar (unload + load) para reflectir mudanças
 launchctl unload "$BACKEND_PLIST" 2>/dev/null || true
 launchctl unload "$FRONTEND_PLIST" 2>/dev/null || true
-launchctl unload "$DAILY_PLIST" 2>/dev/null || true
+launchctl unload "$DAILY_PLIST" 2>/dev/null || true   # legado: já não é criado
 launchctl load -w "$BACKEND_PLIST"
 launchctl load -w "$FRONTEND_PLIST"
-launchctl load -w "$DAILY_PLIST"
 
 echo "✅ Instalado:"
 echo "   $BACKEND_LABEL  →  http://localhost:8001"
 echo "   $FRONTEND_LABEL →  http://localhost:3001"
-echo "   $DAILY_LABEL → sinais IA diários às 08:30"
+echo "   trabalhos diários → dentro do backend (ver /api/jobs)"
 echo ""
 echo "Logs em: $LOG_DIR"
 echo "Para parar: ./scripts/launchd/uninstall.sh"

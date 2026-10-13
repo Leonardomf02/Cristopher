@@ -1,4 +1,8 @@
-"""Lê o knowledgeC.db do macOS para extrair Screen Time (Mac + iPhone + iPad sincronizados).
+"""Lê o knowledgeC.db do macOS para extrair Screen Time.
+
+Hoje só há dados deste Mac (`device_id = '__local__'`). A separação por
+dispositivo existe para o caso de o iPhone/iPad chegarem a sincronizar para cá,
+mas não se deve contar com isso.
 
 Requer Full Disk Access para o processo Python que corre o backend
 (System Settings → Privacy & Security → Full Disk Access).

@@ -22,6 +22,8 @@ import logging
 import sqlite3
 from typing import Optional
 
+from database import DB_PATH
+
 logger = logging.getLogger(__name__)
 
 HIT_THRESHOLD_PCT = 1.0          # cover round-trip fees before counting a "hit"
@@ -38,7 +40,7 @@ _FAMILIES = ("técnico", "fundamental", "earnings", "on-chain", "insider")
 
 # ── Outcome loading ─────────────────────────────────────────────
 
-def _load_outcomes(db_path: str = "cristopher.db") -> list[dict]:
+def _load_outcomes(db_path: str = DB_PATH) -> list[dict]:
     """Flatten every stored suggestion with a known outcome into rows.
 
     Joins each signal's date against daily_regime so we can bucket by regime.
@@ -89,7 +91,7 @@ def _rate(rows: list[dict]) -> Optional[float]:
 
 # ── Public: aggregate stats ─────────────────────────────────────
 
-def empirical_stats(db_path: str = "cristopher.db") -> dict:
+def empirical_stats(db_path: str = DB_PATH) -> dict:
     """Hit-rates + N per bucket. Cheap enough to call once per generation."""
     rows = [r for r in _load_outcomes(db_path) if r["action"] in ("buy", "hold", "watch")]
     if not rows:
@@ -170,7 +172,7 @@ def blend_confidence(sug: dict, stats: dict) -> dict:
     return sug
 
 
-def empirical_conviction_prob(db_path: str = "cristopher.db") -> dict:
+def empirical_conviction_prob(db_path: str = DB_PATH) -> dict:
     """Replacement for the hardcoded CONVICTION_PROB: {low,medium,high} → prob 0-1,
     blended from history with fallback to the theoretical prior."""
     stats = empirical_stats(db_path)
@@ -185,7 +187,7 @@ def empirical_conviction_prob(db_path: str = "cristopher.db") -> dict:
 
 # ── Family weight adjustments for the engine ────────────────────
 
-def family_weight_adjustments(db_path: str = "cristopher.db") -> dict:
+def family_weight_adjustments(db_path: str = DB_PATH) -> dict:
     """Multiplier per family vs the overall hit-rate. Only buckets with enough
     history move; everything else stays at 1.0 (neutral). Clamped to [0.6, 1.4]
     so a noisy bucket can't dominate."""
@@ -202,7 +204,7 @@ def family_weight_adjustments(db_path: str = "cristopher.db") -> dict:
     return out
 
 
-def adjusted_family_weights(base: dict, db_path: str = "cristopher.db") -> dict:
+def adjusted_family_weights(base: dict, db_path: str = DB_PATH) -> dict:
     """Apply family_weight_adjustments to a base FAMILY_WEIGHTS dict (renormalized)."""
     adj = family_weight_adjustments(db_path)
     out = {f: base.get(f, 0.0) * adj.get(f, 1.0) for f in base}
@@ -214,7 +216,7 @@ def adjusted_family_weights(base: dict, db_path: str = "cristopher.db") -> dict:
 
 # ── Prompt blurb ────────────────────────────────────────────────
 
-def calibration_summary_for_prompt(db_path: str = "cristopher.db") -> str:
+def calibration_summary_for_prompt(db_path: str = DB_PATH) -> str:
     """2-3 lines giving the LLM its own track record so it can self-correct."""
     stats = empirical_stats(db_path)
     if not stats.get("n"):

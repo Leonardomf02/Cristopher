@@ -15,7 +15,7 @@ _BATCH = 40          # candidatos por chamada (Opus aguenta; menos chamadas = me
 _BATCH_PAUSE = 1.0   # pausa entre lotes (gentil com o rate limit do agente)
 
 
-def _candidate_line(i: int, lst) -> str:
+def _candidate_line(i: int, lst, criterios: dict | None = None) -> str:
     desc = (lst.description or "").replace("\n", " ").strip()[:220]
     title = (lst.title or "").strip()[:120]
     price = f"{lst.price} {lst.currency}" if lst.price is not None else "?"
@@ -24,6 +24,20 @@ def _candidate_line(i: int, lst) -> str:
         parts.append(f"estado: {lst.condition}")
     if desc:
         parts.append(f"descricao: {desc}")
+    # Ano, km, potência e cor já lidos do texto por regras. Vão para o prompt
+    # feitos: pedir à IA que os extraia outra vez é dar-lhe hipótese de errar
+    # naquilo que uma regex acerta, e é o que decide se o anúncio serve.
+    if criterios:
+        import deal_criteria
+        a = deal_criteria.avalia(lst.title or "", lst.description or "",
+                                 lst.price, criterios)
+        lidos = ", ".join(f"{k}={v}" for k, v in a["attrs"].items() if v is not None)
+        if lidos:
+            parts.append(f"lido do anuncio: {lidos}")
+        if a["failed"]:
+            parts.append("NAO CUMPRE: " + ", ".join(a["failed"]))
+        if a["unknown"]:
+            parts.append("anuncio nao diz: " + ", ".join(a["unknown"]))
     return " | ".join(parts)
 
 
@@ -42,17 +56,32 @@ def _build_prompt(watch: dict, listings: list) -> str:
         wanted.append(f"Contexto importante: {watch['ai_context']}")
     if watch.get("exclude_keywords"):
         wanted.append(f"EXCLUIR se for: {watch['exclude_keywords']}")
+    criterios = watch.get("criteria") or {}
+    if criterios:
+        import deal_criteria
+        exigencias = deal_criteria.resumo_para_prompt(criterios)
+        if exigencias:
+            wanted.append("EXIGENCIAS (nenhuma é negociável):\n" + exigencias)
     wanted_block = "\n".join("- " + w for w in wanted)
 
-    cand_block = "\n".join(_candidate_line(i, lst) for i, lst in enumerate(listings))
+    cand_block = "\n".join(_candidate_line(i, lst, criterios) for i, lst in enumerate(listings))
 
-    return f"""És um caçador de deals exigente. O utilizador quer um produto específico e tu avalias anúncios de marketplaces (Vinted, OLX) para encontrar os melhores negócios e filtrar o lixo.
+    if (watch.get("kind") or "specific") == "generic":
+        return _prompt_generico(wanted_block, cand_block)
+
+    return f"""És um caçador de deals exigente. O utilizador quer um produto específico e tu avalias anúncios de marketplaces (Vinted, OLX, Facebook Marketplace) para encontrar os melhores negócios e filtrar o lixo.
 
 O QUE O UTILIZADOR QUER:
 {wanted_block}
 
 REGRAS DE AVALIAÇÃO (por anúncio):
-1. "match": true só se o anúncio for MESMO o produto pedido. Põe false se:
+1. "match": true se o anúncio for MESMO o produto pedido — é só sobre a IDENTIDADE do
+   produto, não sobre as exigências. Uma MT-07 de 2016 continua a ser uma MT-07: match=true.
+   As exigências (ano, km, potência, cor) já são verificadas fora de ti e aparecem como
+   "NAO CUMPRE" — não mexas no match por causa delas, mas baixa o rating e di-lo na razão.
+   Atenção: "anuncio nao diz" não é defeito nenhum. O vendedor pode só não ter escrito;
+   avalia o resto e menciona o que falta perguntar.
+   Põe false se:
    - For uma variante/modelo diferente (ex: pede "iPhone 17" e o anúncio é "17e", "Plus", "Pro", "mini" — lê o título E a descrição com atenção, muita gente engana).
    - For um acessório/peça/capa quando se pede o produto em si.
    - For condição claramente errada vs o pedido, ou claramente outra coisa.
@@ -62,6 +91,33 @@ REGRAS DE AVALIAÇÃO (por anúncio):
    - Estado/condição, completude (caixa, fatura, garantia, acessórios), fiabilidade do vendedor, qualidade do anúncio.
    - 90-100 = negócio excelente (raro). 70-89 = bom. 50-69 = ok. <50 = fraco/caro.
 3. "reason": 1 frase curta em português a justificar (porque é bom/mau, ou porque não é o item).
+
+Avalia APENAS com a informação dada abaixo — NÃO precisas de pesquisar na web.
+
+Candidatos:
+{cand_block}
+
+Responde APENAS com um array JSON, um objecto por candidato, NESTA forma e nada mais (sem texto, sem ```):
+[{{"i": 0, "match": true, "rating": 82, "reason": "..."}}]"""
+
+
+def _prompt_generico(wanted_block: str, cand_block: str) -> str:
+    """Watches genéricos ("o que houver de bom em bicicletas até 200€"): não há um
+    produto exacto para confirmar, o que conta é se aquilo é um bom achado no tema."""
+    return f"""És um caçador de deals exigente. O utilizador não quer um produto exacto — quer que lhe mostres o que aparecer de BOM dentro de um tema, em marketplaces (Vinted, OLX, Facebook Marketplace).
+
+O QUE O UTILIZADOR PROCURA:
+{wanted_block}
+
+REGRAS DE AVALIAÇÃO (por anúncio):
+1. "match": true se o anúncio pertencer ao tema pedido e fizer sentido mostrar. Põe false se:
+   - For de outra categoria (o tema é bicicletas e o anúncio é um telemóvel).
+   - For lixo, peça avariada, ou anúncio vazio/enganador.
+   - Bater nas regras de EXCLUIR, ou passar claramente o preço máximo.
+2. "rating" 0-100: o quão bom é o ACHADO — preço face ao que a coisa vale, estado,
+   completude e credibilidade. Sê duro: 90-100 = achado raro, 70-89 = vale a pena ver,
+   50-69 = passável, <50 = não vale o tempo. Anúncios comuns ao preço normal ficam abaixo de 60.
+3. "reason": 1 frase curta em português a dizer o que é e porque vale (ou não) a pena.
 
 Avalia APENAS com a informação dada abaixo — NÃO precisas de pesquisar na web.
 
@@ -87,7 +143,7 @@ def rate_listings(watch: dict, listings: list) -> list[dict]:
         parsed = None
         for attempt in range(2):  # 1 retry: o agente às vezes devolve prosa em vez de JSON
             msg = prompt if attempt == 0 else ("RESPONDE SÓ COM O ARRAY JSON, NADA MAIS.\n\n" + prompt)
-            parsed = extract_json(ask_agent(msg))
+            parsed = extract_json(ask_agent(msg, feature="deals"))
             if isinstance(parsed, list):
                 break
         if not isinstance(parsed, list):

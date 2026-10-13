@@ -1,0 +1,669 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+   Tema claro.
+
+   A app foi escrita com as cores escuras directamente nas classes (bg-[#161616],
+   text-gray-500, hover:bg-white/5, …). Em vez de tocar em milhares de classes,
+   esta folha remapeia essas mesmas classes quando <html data-theme="light">.
+   Especificidade :root[data-theme=light] .x (0,2,1) ganha sempre à utility (0,1,0).
+
+   Regra geral do mapeamento:
+     superfícies escuras  → brancos/cinzentos muito claros
+     escala de cinzentos  → espelhada (o mais apagado no escuro fica o mais
+                            apagado no claro, não o mais escuro)
+     realces white/N      → black/N
+   Cores de marca (azul, verde, roxo, …) ficam como estão.
+   ───────────────────────────────────────────────────────────────────────────── */
+
+:root {
+  --app-bg: #0f0f0f;
+  --app-surface: #161616;
+  --app-surface-2: #1a1a1a;
+  --app-surface-3: #222;
+  --app-border: #222;
+  --app-border-strong: #333;
+  --app-text: #ffffff;
+  --app-text-dim: #6b7280;
+  --app-chart-grid: #333;
+}
+
+:root[data-theme='light'] {
+  --app-bg: #f4f6f9;
+  --app-surface: #ffffff;
+  --app-surface-2: #f2f4f7;
+  --app-surface-3: #e7eaef;
+  --app-border: #e3e7ec;
+  --app-border-strong: #d3d9e0;
+  --app-text: #0f172a;
+  --app-text-dim: #64748b;
+  --app-chart-grid: #d8dee6;
+
+  color-scheme: light;
+}
+
+:root[data-theme='light'] body {
+  background-color: var(--app-bg);
+  color: var(--app-text);
+}
+
+/* ── Superfícies ─────────────────────────────────────────────────────────── */
+
+:root[data-theme='light'] .bg-\[\#0f0f0f\],
+:root[data-theme='light'] .bg-\[\#0a0a0a\],
+:root[data-theme='light'] .bg-\[\#0d0d0d\],
+:root[data-theme='light'] .bg-\[\#0e0e0e\] { background-color: #eef1f5; }
+
+:root[data-theme='light'] .bg-\[\#111\],
+:root[data-theme='light'] .bg-\[\#121212\],
+:root[data-theme='light'] .bg-\[\#141414\],
+:root[data-theme='light'] .bg-\[\#151515\] { background-color: #f7f8fa; }
+
+:root[data-theme='light'] .bg-\[\#161616\],
+:root[data-theme='light'] .bg-\[\#181818\] { background-color: #ffffff; }
+
+:root[data-theme='light'] .bg-\[\#1a1a1a\],
+:root[data-theme='light'] .bg-\[\#1c1c1c\],
+:root[data-theme='light'] .bg-\[\#1e1e1e\] { background-color: #f2f4f7; }
+
+:root[data-theme='light'] .bg-\[\#222\],
+:root[data-theme='light'] .bg-\[\#252525\],
+:root[data-theme='light'] .bg-\[\#2a2a2a\] { background-color: #e7eaef; }
+
+:root[data-theme='light'] .bg-\[\#303030\],
+:root[data-theme='light'] .bg-\[\#333\],
+:root[data-theme='light'] .bg-\[\#444\] { background-color: #d7dce3; }
+
+:root[data-theme='light'] .hover\:bg-\[\#1a1a1a\]:hover,
+:root[data-theme='light'] .hover\:bg-\[\#1c1c1c\]:hover,
+:root[data-theme='light'] .hover\:bg-\[\#1e1e1e\]:hover { background-color: #e9edf2; }
+
+:root[data-theme='light'] .hover\:bg-\[\#222\]:hover,
+:root[data-theme='light'] .hover\:bg-\[\#252525\]:hover,
+:root[data-theme='light'] .hover\:bg-\[\#2a2a2a\]:hover,
+:root[data-theme='light'] .hover\:bg-\[\#333\]:hover { background-color: #dde2e9; }
+
+:root[data-theme='light'] .to-\[\#161616\] { --tw-gradient-to: #ffffff var(--tw-gradient-to-position); }
+:root[data-theme='light'] .to-\[\#111\] { --tw-gradient-to: #f7f8fa var(--tw-gradient-to-position); }
+:root[data-theme='light'] .from-\[\#1a1020\] { --tw-gradient-from: #f5f0fb var(--tw-gradient-from-position); }
+:root[data-theme='light'] .from-\[\#0a1a0a\] { --tw-gradient-from: #eef7ee var(--tw-gradient-from-position); }
+:root[data-theme='light'] .ring-\[\#101010\] { --tw-ring-color: #ffffff; }
+
+/* Superfícies neutras da paleta zinc (Screen Time / App Usage) */
+:root[data-theme='light'] .bg-zinc-900,
+:root[data-theme='light'] .bg-zinc-900\/50 { background-color: #ffffff; }
+:root[data-theme='light'] .bg-zinc-800 { background-color: #f2f4f7; }
+:root[data-theme='light'] .bg-zinc-700 { background-color: #e7eaef; }
+:root[data-theme='light'] .hover\:bg-zinc-800:hover,
+:root[data-theme='light'] .hover\:bg-zinc-800\/50:hover,
+:root[data-theme='light'] .hover\:bg-zinc-800\/40:hover { background-color: #eceff4; }
+:root[data-theme='light'] .bg-gray-800\/40,
+:root[data-theme='light'] .bg-gray-900\/40,
+:root[data-theme='light'] .bg-gray-700\/40,
+:root[data-theme='light'] .bg-gray-700,
+:root[data-theme='light'] .bg-gray-600 { background-color: #e7eaef; }
+:root[data-theme='light'] .bg-gray-500\/5 { background-color: rgb(100 116 139 / 0.06); }
+:root[data-theme='light'] .bg-gray-500\/10 { background-color: rgb(100 116 139 / 0.1); }
+:root[data-theme='light'] .bg-gray-500\/15 { background-color: rgb(100 116 139 / 0.14); }
+:root[data-theme='light'] .bg-gray-500\/20 { background-color: rgb(100 116 139 / 0.18); }
+
+/* ── Contornos e separadores ─────────────────────────────────────────────── */
+
+:root[data-theme='light'] .border-\[\#1a1a1a\],
+:root[data-theme='light'] .border-\[\#1c1c1c\],
+:root[data-theme='light'] .border-\[\#1e1e1e\],
+:root[data-theme='light'] .border-\[\#1f1f1f\],
+:root[data-theme='light'] .border-\[\#222\],
+:root[data-theme='light'] .border-\[\#0f0f0f\] { border-color: #e3e7ec; }
+
+:root[data-theme='light'] .border-\[\#2a2a2a\],
+:root[data-theme='light'] .border-\[\#2a2a3a\],
+:root[data-theme='light'] .border-\[\#333\],
+:root[data-theme='light'] .border-\[\#444\],
+:root[data-theme='light'] .border-\[\#555\] { border-color: #d3d9e0; }
+
+:root[data-theme='light'] .hover\:border-\[\#333\]:hover,
+:root[data-theme='light'] .hover\:border-\[\#444\]:hover { border-color: #c3cbd5; }
+
+:root[data-theme='light'] .divide-\[\#151515\] > :not([hidden]) ~ :not([hidden]),
+:root[data-theme='light'] .divide-\[\#1a1a1a\] > :not([hidden]) ~ :not([hidden]),
+:root[data-theme='light'] .divide-\[\#1c1c1c\] > :not([hidden]) ~ :not([hidden]),
+:root[data-theme='light'] .divide-\[\#222\] > :not([hidden]) ~ :not([hidden]) { border-color: #e6e9ee; }
+
+:root[data-theme='light'] .border-zinc-800,
+:root[data-theme='light'] .border-zinc-800\/60 { border-color: #e3e7ec; }
+:root[data-theme='light'] .border-zinc-700 { border-color: #d3d9e0; }
+:root[data-theme='light'] .divide-zinc-800 > :not([hidden]) ~ :not([hidden]) { border-color: #e6e9ee; }
+:root[data-theme='light'] .border-gray-600,
+:root[data-theme='light'] .border-gray-500,
+:root[data-theme='light'] .border-gray-600\/40,
+:root[data-theme='light'] .border-gray-700\/40,
+:root[data-theme='light'] .border-gray-500\/30 { border-color: #d3d9e0; }
+:root[data-theme='light'] .focus\:border-gray-600:focus,
+:root[data-theme='light'] .focus\:border-gray-500:focus { border-color: #9aa4b2; }
+
+/* ── Texto: escala espelhada ─────────────────────────────────────────────── */
+
+:root[data-theme='light'] .text-white,
+:root[data-theme='light'] .text-gray-100,
+:root[data-theme='light'] .text-zinc-100 { color: #0f172a; }
+:root[data-theme='light'] .text-gray-200,
+:root[data-theme='light'] .text-zinc-200 { color: #1e293b; }
+:root[data-theme='light'] .text-gray-300,
+:root[data-theme='light'] .text-zinc-300 { color: #334155; }
+:root[data-theme='light'] .text-gray-400,
+:root[data-theme='light'] .text-zinc-400 { color: #475569; }
+:root[data-theme='light'] .text-gray-500,
+:root[data-theme='light'] .text-zinc-500 { color: #64748b; }
+:root[data-theme='light'] .text-gray-600,
+:root[data-theme='light'] .text-zinc-600 { color: #77839a; }
+:root[data-theme='light'] .text-gray-700,
+:root[data-theme='light'] .text-zinc-700 { color: #7b8798; }
+:root[data-theme='light'] .text-white\/70 { color: rgb(15 23 42 / 0.7); }
+
+:root[data-theme='light'] .hover\:text-white:hover { color: #0f172a; }
+:root[data-theme='light'] .hover\:text-gray-200:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-gray-200 { color: #1e293b; }
+:root[data-theme='light'] .hover\:text-gray-300:hover { color: #334155; }
+:root[data-theme='light'] .hover\:text-gray-400:hover { color: #475569; }
+:root[data-theme='light'] .disabled\:text-gray-600:disabled { color: #8b96a8; }
+:root[data-theme='light'] .placeholder-gray-600::placeholder,
+:root[data-theme='light'] .placeholder\:text-gray-600::placeholder { color: #939fb0; }
+
+/* Texto branco por cima de fundos de cor (botões, badges) tem de continuar branco.
+   O espaço antes de "bg-" evita apanhar variantes hover:/focus:. */
+:root[data-theme='light'] .text-white[class^='bg-blue-'],
+:root[data-theme='light'] .text-white[class*=' bg-blue-'],
+:root[data-theme='light'] .text-white[class^='bg-emerald-'],
+:root[data-theme='light'] .text-white[class*=' bg-emerald-'],
+:root[data-theme='light'] .text-white[class^='bg-green-'],
+:root[data-theme='light'] .text-white[class*=' bg-green-'],
+:root[data-theme='light'] .text-white[class^='bg-red-'],
+:root[data-theme='light'] .text-white[class*=' bg-red-'],
+:root[data-theme='light'] .text-white[class^='bg-rose-'],
+:root[data-theme='light'] .text-white[class*=' bg-rose-'],
+:root[data-theme='light'] .text-white[class^='bg-pink-'],
+:root[data-theme='light'] .text-white[class*=' bg-pink-'],
+:root[data-theme='light'] .text-white[class^='bg-purple-'],
+:root[data-theme='light'] .text-white[class*=' bg-purple-'],
+:root[data-theme='light'] .text-white[class^='bg-violet-'],
+:root[data-theme='light'] .text-white[class*=' bg-violet-'],
+:root[data-theme='light'] .text-white[class^='bg-indigo-'],
+:root[data-theme='light'] .text-white[class*=' bg-indigo-'],
+:root[data-theme='light'] .text-white[class^='bg-cyan-'],
+:root[data-theme='light'] .text-white[class*=' bg-cyan-'],
+:root[data-theme='light'] .text-white[class^='bg-sky-'],
+:root[data-theme='light'] .text-white[class*=' bg-sky-'],
+:root[data-theme='light'] .text-white[class^='bg-teal-'],
+:root[data-theme='light'] .text-white[class*=' bg-teal-'],
+:root[data-theme='light'] .text-white[class^='bg-orange-'],
+:root[data-theme='light'] .text-white[class*=' bg-orange-'],
+:root[data-theme='light'] .text-white[class^='bg-amber-'],
+:root[data-theme='light'] .text-white[class*=' bg-amber-'],
+:root[data-theme='light'] .text-white[class^='bg-yellow-'],
+:root[data-theme='light'] .text-white[class*=' bg-yellow-'],
+:root[data-theme='light'] .text-white[class^='bg-lime-'],
+:root[data-theme='light'] .text-white[class*=' bg-lime-'],
+:root[data-theme='light'] .text-white[class^='bg-fuchsia-'],
+:root[data-theme='light'] .text-white[class*=' bg-fuchsia-'],
+:root[data-theme='light'] .text-white[class*='bg-gradient-'],
+:root[data-theme='light'] .text-white[class*='bg-\[\#1DB954\]'],
+:root[data-theme='light'] .text-white[style*='background'] { color: #ffffff; }
+
+/* O mesmo para elementos dentro de um botão/badge colorido. */
+:root[data-theme='light'] [class^='bg-blue-'] .text-white,
+:root[data-theme='light'] [class*=' bg-blue-'] .text-white,
+:root[data-theme='light'] [class^='bg-emerald-'] .text-white,
+:root[data-theme='light'] [class*=' bg-emerald-'] .text-white,
+:root[data-theme='light'] [class^='bg-red-'] .text-white,
+:root[data-theme='light'] [class*=' bg-red-'] .text-white,
+:root[data-theme='light'] [class*='bg-gradient-'] .text-white { color: #ffffff; }
+
+/* ── Realces translúcidos (hover, chips) ─────────────────────────────────── */
+
+:root[data-theme='light'] .bg-white\/5 { background-color: rgb(15 23 42 / 0.04); }
+:root[data-theme='light'] .bg-white\/10 { background-color: rgb(15 23 42 / 0.07); }
+:root[data-theme='light'] .bg-white\/15 { background-color: rgb(15 23 42 / 0.1); }
+:root[data-theme='light'] .bg-white\/20 { background-color: rgb(15 23 42 / 0.13); }
+:root[data-theme='light'] .hover\:bg-white\/5:hover,
+:root[data-theme='light'] .focus\:bg-white\/5:focus,
+:root[data-theme='light'] .group:hover .group-hover\:bg-white\/5 { background-color: rgb(15 23 42 / 0.04); }
+:root[data-theme='light'] .hover\:bg-white\/10:hover { background-color: rgb(15 23 42 / 0.07); }
+:root[data-theme='light'] .hover\:bg-white\/15:hover { background-color: rgb(15 23 42 / 0.1); }
+:root[data-theme='light'] .hover\:bg-white\/20:hover { background-color: rgb(15 23 42 / 0.13); }
+:root[data-theme='light'] .border-white\/10 { border-color: rgb(15 23 42 / 0.08); }
+:root[data-theme='light'] .border-white\/20 { border-color: rgb(15 23 42 / 0.12); }
+:root[data-theme='light'] .border-white\/30 { border-color: rgb(15 23 42 / 0.16); }
+:root[data-theme='light'] .focus\:border-white\/30:focus { border-color: rgb(15 23 42 / 0.25); }
+:root[data-theme='light'] .border-white { border-color: #cbd5e1; }
+:root[data-theme='light'] .ring-white { --tw-ring-color: #cbd5e1; }
+:root[data-theme='light'] .ring-white\/20 { --tw-ring-color: rgb(15 23 42 / 0.12); }
+:root[data-theme='light'] .ring-white\/30 { --tw-ring-color: rgb(15 23 42 / 0.16); }
+:root[data-theme='light'] .ring-white\/40 { --tw-ring-color: rgb(15 23 42 / 0.2); }
+:root[data-theme='light'] .ring-white\/50 { --tw-ring-color: rgb(15 23 42 / 0.25); }
+:root[data-theme='light'] .ring-white\/60 { --tw-ring-color: rgb(15 23 42 / 0.3); }
+:root[data-theme='light'] .hover\:ring-white\/20:hover { --tw-ring-color: rgb(15 23 42 / 0.12); }
+:root[data-theme='light'] .hover\:ring-white\/30:hover { --tw-ring-color: rgb(15 23 42 / 0.16); }
+
+/* Fundos brancos usados como "chip claro" no escuro passam a cinzento no claro,
+   para não desaparecerem contra o cartão branco. */
+:root[data-theme='light'] .bg-white:not([class*='text-'])  { background-color: #eef1f5; }
+:root[data-theme='light'] .hover\:bg-white:hover { background-color: #e4e8ee; }
+
+/* Véus de modais: mantêm-se escuros mas mais suaves. */
+:root[data-theme='light'] .bg-black\/20 { background-color: rgb(15 23 42 / 0.12); }
+:root[data-theme='light'] .bg-black\/30 { background-color: rgb(15 23 42 / 0.18); }
+:root[data-theme='light'] .bg-black\/40 { background-color: rgb(15 23 42 / 0.28); }
+:root[data-theme='light'] .bg-black\/60 { background-color: rgb(15 23 42 / 0.38); }
+:root[data-theme='light'] .bg-black\/70 { background-color: rgb(15 23 42 / 0.45); }
+
+/* ── Campos e componentes próprios ───────────────────────────────────────── */
+
+:root[data-theme='light'] .inp {
+  background-color: #ffffff;
+  border-color: #d3d9e0;
+  color: #0f172a;
+}
+
+:root[data-theme='light'] input,
+:root[data-theme='light'] textarea,
+:root[data-theme='light'] select {
+  color-scheme: light;
+}
+
+:root[data-theme='light'] ::-webkit-scrollbar-track { background: #eef1f5; }
+:root[data-theme='light'] ::-webkit-scrollbar-thumb { background: #c3cbd5; }
+:root[data-theme='light'] ::-webkit-scrollbar-thumb:hover { background: #a6b0bd; }
+
+/* Sombras pretas fortes ficam demasiado duras em fundo claro. */
+:root[data-theme='light'] .shadow-xl,
+:root[data-theme='light'] .shadow-2xl,
+:root[data-theme='light'] .shadow-lg {
+  --tw-shadow-color: rgb(15 23 42 / 0.12);
+  --tw-shadow: var(--tw-shadow-colored);
+}
+
+/* ── Acentos ─────────────────────────────────────────────────────────────────
+   Os tons 100–500 foram escolhidos para brilhar sobre fundo escuro; em fundo
+   claro ficam ilegíveis. Aqui passam para o tom escuro equivalente da mesma cor.
+   Só o texto — os fundos translúcidos (bg-*/10) continuam a funcionar. */
+
+:root[data-theme='light'] .text-blue-100,
+:root[data-theme='light'] .hover\:text-blue-100:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-blue-100 { color: #1e40af; }
+:root[data-theme='light'] .text-blue-200,
+:root[data-theme='light'] .hover\:text-blue-200:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-blue-200 { color: #1d4ed8; }
+:root[data-theme='light'] .text-blue-300,
+:root[data-theme='light'] .hover\:text-blue-300:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-blue-300 { color: #1d4ed8; }
+:root[data-theme='light'] .text-blue-400,
+:root[data-theme='light'] .hover\:text-blue-400:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-blue-400 { color: #1d4ed8; }
+:root[data-theme='light'] .text-blue-500,
+:root[data-theme='light'] .hover\:text-blue-500:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-blue-500 { color: #1d4ed8; }
+:root[data-theme='light'] .text-sky-100,
+:root[data-theme='light'] .hover\:text-sky-100:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-sky-100 { color: #0369a1; }
+:root[data-theme='light'] .text-sky-200,
+:root[data-theme='light'] .hover\:text-sky-200:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-sky-200 { color: #0369a1; }
+:root[data-theme='light'] .text-sky-300,
+:root[data-theme='light'] .hover\:text-sky-300:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-sky-300 { color: #0369a1; }
+:root[data-theme='light'] .text-sky-400,
+:root[data-theme='light'] .hover\:text-sky-400:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-sky-400 { color: #0284c7; }
+:root[data-theme='light'] .text-sky-500,
+:root[data-theme='light'] .hover\:text-sky-500:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-sky-500 { color: #0284c7; }
+:root[data-theme='light'] .text-cyan-100,
+:root[data-theme='light'] .hover\:text-cyan-100:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-cyan-100 { color: #0e7490; }
+:root[data-theme='light'] .text-cyan-200,
+:root[data-theme='light'] .hover\:text-cyan-200:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-cyan-200 { color: #0e7490; }
+:root[data-theme='light'] .text-cyan-300,
+:root[data-theme='light'] .hover\:text-cyan-300:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-cyan-300 { color: #0e7490; }
+:root[data-theme='light'] .text-cyan-400,
+:root[data-theme='light'] .hover\:text-cyan-400:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-cyan-400 { color: #0891b2; }
+:root[data-theme='light'] .text-cyan-500,
+:root[data-theme='light'] .hover\:text-cyan-500:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-cyan-500 { color: #0891b2; }
+:root[data-theme='light'] .text-teal-100,
+:root[data-theme='light'] .hover\:text-teal-100:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-teal-100 { color: #0f766e; }
+:root[data-theme='light'] .text-teal-200,
+:root[data-theme='light'] .hover\:text-teal-200:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-teal-200 { color: #0f766e; }
+:root[data-theme='light'] .text-teal-300,
+:root[data-theme='light'] .hover\:text-teal-300:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-teal-300 { color: #0f766e; }
+:root[data-theme='light'] .text-teal-400,
+:root[data-theme='light'] .hover\:text-teal-400:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-teal-400 { color: #0d9488; }
+:root[data-theme='light'] .text-teal-500,
+:root[data-theme='light'] .hover\:text-teal-500:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-teal-500 { color: #0d9488; }
+:root[data-theme='light'] .text-emerald-100,
+:root[data-theme='light'] .hover\:text-emerald-100:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-emerald-100 { color: #047857; }
+:root[data-theme='light'] .text-emerald-200,
+:root[data-theme='light'] .hover\:text-emerald-200:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-emerald-200 { color: #047857; }
+:root[data-theme='light'] .text-emerald-300,
+:root[data-theme='light'] .hover\:text-emerald-300:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-emerald-300 { color: #047857; }
+:root[data-theme='light'] .text-emerald-400,
+:root[data-theme='light'] .hover\:text-emerald-400:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-emerald-400 { color: #059669; }
+:root[data-theme='light'] .text-emerald-500,
+:root[data-theme='light'] .hover\:text-emerald-500:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-emerald-500 { color: #059669; }
+:root[data-theme='light'] .text-green-100,
+:root[data-theme='light'] .hover\:text-green-100:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-green-100 { color: #15803d; }
+:root[data-theme='light'] .text-green-200,
+:root[data-theme='light'] .hover\:text-green-200:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-green-200 { color: #15803d; }
+:root[data-theme='light'] .text-green-300,
+:root[data-theme='light'] .hover\:text-green-300:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-green-300 { color: #15803d; }
+:root[data-theme='light'] .text-green-400,
+:root[data-theme='light'] .hover\:text-green-400:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-green-400 { color: #16a34a; }
+:root[data-theme='light'] .text-green-500,
+:root[data-theme='light'] .hover\:text-green-500:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-green-500 { color: #16a34a; }
+:root[data-theme='light'] .text-lime-100,
+:root[data-theme='light'] .hover\:text-lime-100:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-lime-100 { color: #4d7c0f; }
+:root[data-theme='light'] .text-lime-200,
+:root[data-theme='light'] .hover\:text-lime-200:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-lime-200 { color: #4d7c0f; }
+:root[data-theme='light'] .text-lime-300,
+:root[data-theme='light'] .hover\:text-lime-300:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-lime-300 { color: #4d7c0f; }
+:root[data-theme='light'] .text-lime-400,
+:root[data-theme='light'] .hover\:text-lime-400:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-lime-400 { color: #65a30d; }
+:root[data-theme='light'] .text-lime-500,
+:root[data-theme='light'] .hover\:text-lime-500:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-lime-500 { color: #65a30d; }
+:root[data-theme='light'] .text-yellow-100,
+:root[data-theme='light'] .hover\:text-yellow-100:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-yellow-100 { color: #a16207; }
+:root[data-theme='light'] .text-yellow-200,
+:root[data-theme='light'] .hover\:text-yellow-200:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-yellow-200 { color: #a16207; }
+:root[data-theme='light'] .text-yellow-300,
+:root[data-theme='light'] .hover\:text-yellow-300:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-yellow-300 { color: #a16207; }
+:root[data-theme='light'] .text-yellow-400,
+:root[data-theme='light'] .hover\:text-yellow-400:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-yellow-400 { color: #a16207; }
+:root[data-theme='light'] .text-yellow-500,
+:root[data-theme='light'] .hover\:text-yellow-500:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-yellow-500 { color: #a16207; }
+:root[data-theme='light'] .text-amber-100,
+:root[data-theme='light'] .hover\:text-amber-100:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-amber-100 { color: #b45309; }
+:root[data-theme='light'] .text-amber-200,
+:root[data-theme='light'] .hover\:text-amber-200:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-amber-200 { color: #b45309; }
+:root[data-theme='light'] .text-amber-300,
+:root[data-theme='light'] .hover\:text-amber-300:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-amber-300 { color: #b45309; }
+:root[data-theme='light'] .text-amber-400,
+:root[data-theme='light'] .hover\:text-amber-400:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-amber-400 { color: #d97706; }
+:root[data-theme='light'] .text-amber-500,
+:root[data-theme='light'] .hover\:text-amber-500:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-amber-500 { color: #d97706; }
+:root[data-theme='light'] .text-orange-100,
+:root[data-theme='light'] .hover\:text-orange-100:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-orange-100 { color: #c2410c; }
+:root[data-theme='light'] .text-orange-200,
+:root[data-theme='light'] .hover\:text-orange-200:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-orange-200 { color: #c2410c; }
+:root[data-theme='light'] .text-orange-300,
+:root[data-theme='light'] .hover\:text-orange-300:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-orange-300 { color: #c2410c; }
+:root[data-theme='light'] .text-orange-400,
+:root[data-theme='light'] .hover\:text-orange-400:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-orange-400 { color: #ea580c; }
+:root[data-theme='light'] .text-orange-500,
+:root[data-theme='light'] .hover\:text-orange-500:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-orange-500 { color: #ea580c; }
+:root[data-theme='light'] .text-red-100,
+:root[data-theme='light'] .hover\:text-red-100:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-red-100 { color: #b91c1c; }
+:root[data-theme='light'] .text-red-200,
+:root[data-theme='light'] .hover\:text-red-200:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-red-200 { color: #b91c1c; }
+:root[data-theme='light'] .text-red-300,
+:root[data-theme='light'] .hover\:text-red-300:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-red-300 { color: #b91c1c; }
+:root[data-theme='light'] .text-red-400,
+:root[data-theme='light'] .hover\:text-red-400:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-red-400 { color: #dc2626; }
+:root[data-theme='light'] .text-red-500,
+:root[data-theme='light'] .hover\:text-red-500:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-red-500 { color: #dc2626; }
+:root[data-theme='light'] .text-rose-100,
+:root[data-theme='light'] .hover\:text-rose-100:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-rose-100 { color: #be123c; }
+:root[data-theme='light'] .text-rose-200,
+:root[data-theme='light'] .hover\:text-rose-200:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-rose-200 { color: #be123c; }
+:root[data-theme='light'] .text-rose-300,
+:root[data-theme='light'] .hover\:text-rose-300:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-rose-300 { color: #be123c; }
+:root[data-theme='light'] .text-rose-400,
+:root[data-theme='light'] .hover\:text-rose-400:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-rose-400 { color: #e11d48; }
+:root[data-theme='light'] .text-rose-500,
+:root[data-theme='light'] .hover\:text-rose-500:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-rose-500 { color: #e11d48; }
+:root[data-theme='light'] .text-pink-100,
+:root[data-theme='light'] .hover\:text-pink-100:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-pink-100 { color: #be185d; }
+:root[data-theme='light'] .text-pink-200,
+:root[data-theme='light'] .hover\:text-pink-200:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-pink-200 { color: #be185d; }
+:root[data-theme='light'] .text-pink-300,
+:root[data-theme='light'] .hover\:text-pink-300:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-pink-300 { color: #be185d; }
+:root[data-theme='light'] .text-pink-400,
+:root[data-theme='light'] .hover\:text-pink-400:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-pink-400 { color: #db2777; }
+:root[data-theme='light'] .text-pink-500,
+:root[data-theme='light'] .hover\:text-pink-500:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-pink-500 { color: #db2777; }
+:root[data-theme='light'] .text-fuchsia-100,
+:root[data-theme='light'] .hover\:text-fuchsia-100:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-fuchsia-100 { color: #a21caf; }
+:root[data-theme='light'] .text-fuchsia-200,
+:root[data-theme='light'] .hover\:text-fuchsia-200:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-fuchsia-200 { color: #a21caf; }
+:root[data-theme='light'] .text-fuchsia-300,
+:root[data-theme='light'] .hover\:text-fuchsia-300:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-fuchsia-300 { color: #a21caf; }
+:root[data-theme='light'] .text-fuchsia-400,
+:root[data-theme='light'] .hover\:text-fuchsia-400:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-fuchsia-400 { color: #c026d3; }
+:root[data-theme='light'] .text-fuchsia-500,
+:root[data-theme='light'] .hover\:text-fuchsia-500:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-fuchsia-500 { color: #c026d3; }
+:root[data-theme='light'] .text-purple-100,
+:root[data-theme='light'] .hover\:text-purple-100:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-purple-100 { color: #7e22ce; }
+:root[data-theme='light'] .text-purple-200,
+:root[data-theme='light'] .hover\:text-purple-200:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-purple-200 { color: #7e22ce; }
+:root[data-theme='light'] .text-purple-300,
+:root[data-theme='light'] .hover\:text-purple-300:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-purple-300 { color: #7e22ce; }
+:root[data-theme='light'] .text-purple-400,
+:root[data-theme='light'] .hover\:text-purple-400:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-purple-400 { color: #9333ea; }
+:root[data-theme='light'] .text-purple-500,
+:root[data-theme='light'] .hover\:text-purple-500:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-purple-500 { color: #9333ea; }
+:root[data-theme='light'] .text-violet-100,
+:root[data-theme='light'] .hover\:text-violet-100:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-violet-100 { color: #6d28d9; }
+:root[data-theme='light'] .text-violet-200,
+:root[data-theme='light'] .hover\:text-violet-200:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-violet-200 { color: #6d28d9; }
+:root[data-theme='light'] .text-violet-300,
+:root[data-theme='light'] .hover\:text-violet-300:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-violet-300 { color: #6d28d9; }
+:root[data-theme='light'] .text-violet-400,
+:root[data-theme='light'] .hover\:text-violet-400:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-violet-400 { color: #7c3aed; }
+:root[data-theme='light'] .text-violet-500,
+:root[data-theme='light'] .hover\:text-violet-500:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-violet-500 { color: #7c3aed; }
+:root[data-theme='light'] .text-indigo-100,
+:root[data-theme='light'] .hover\:text-indigo-100:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-indigo-100 { color: #4338ca; }
+:root[data-theme='light'] .text-indigo-200,
+:root[data-theme='light'] .hover\:text-indigo-200:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-indigo-200 { color: #4338ca; }
+:root[data-theme='light'] .text-indigo-300,
+:root[data-theme='light'] .hover\:text-indigo-300:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-indigo-300 { color: #4338ca; }
+:root[data-theme='light'] .text-indigo-400,
+:root[data-theme='light'] .hover\:text-indigo-400:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-indigo-400 { color: #4f46e5; }
+:root[data-theme='light'] .text-indigo-500,
+:root[data-theme='light'] .hover\:text-indigo-500:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-indigo-500 { color: #4f46e5; }
+
+/* Acentos com opacidade (text-green-400/60, …): mesma ideia, tom escuro + alfa mínimo. */
+:root[data-theme='light'] .text-purple-300\/80 { color: rgb(126 34 206 / 0.8); }
+:root[data-theme='light'] .text-red-400\/80 { color: rgb(185 28 28 / 0.8); }
+:root[data-theme='light'] .text-red-400\/60 { color: rgb(185 28 28 / 0.75); }
+:root[data-theme='light'] .text-purple-400\/70 { color: rgb(126 34 206 / 0.75); }
+:root[data-theme='light'] .text-emerald-500\/70 { color: rgb(4 120 87 / 0.75); }
+:root[data-theme='light'] .text-cyan-400\/60 { color: rgb(14 116 144 / 0.75); }
+:root[data-theme='light'] .text-amber-400\/80 { color: rgb(180 83 9 / 0.8); }
+:root[data-theme='light'] .text-yellow-500\/80 { color: rgb(161 98 7 / 0.8); }
+:root[data-theme='light'] .text-yellow-500\/70 { color: rgb(161 98 7 / 0.75); }
+:root[data-theme='light'] .text-yellow-400\/80 { color: rgb(161 98 7 / 0.8); }
+:root[data-theme='light'] .text-red-400\/70 { color: rgb(185 28 28 / 0.75); }
+:root[data-theme='light'] .text-red-300\/80 { color: rgb(185 28 28 / 0.8); }
+:root[data-theme='light'] .text-orange-400\/80 { color: rgb(194 65 12 / 0.8); }
+:root[data-theme='light'] .text-orange-400\/70 { color: rgb(194 65 12 / 0.75); }
+:root[data-theme='light'] .text-green-400\/70 { color: rgb(21 128 61 / 0.75); }
+:root[data-theme='light'] .text-green-400\/60 { color: rgb(21 128 61 / 0.75); }
+:root[data-theme='light'] .text-cyan-300\/80 { color: rgb(14 116 144 / 0.8); }
+:root[data-theme='light'] .text-blue-400\/80 { color: rgb(29 78 216 / 0.8); }
+:root[data-theme='light'] .text-blue-300\/60 { color: rgb(29 78 216 / 0.75); }
+:root[data-theme='light'] .text-amber-300\/90 { color: rgb(180 83 9 / 0.9); }
+:root[data-theme='light'] .text-amber-300\/70 { color: rgb(180 83 9 / 0.75); }
+:root[data-theme='light'] .text-amber-200\/70 { color: rgb(180 83 9 / 0.75); }
+
+/* ── Gráficos (recharts + SVG próprio) ───────────────────────────────────── */
+
+:root[data-theme='light'] .recharts-cartesian-grid line,
+:root[data-theme='light'] .recharts-cartesian-axis-line,
+:root[data-theme='light'] .recharts-cartesian-axis-tick-line { stroke: var(--app-chart-grid); }
+:root[data-theme='light'] .recharts-text { fill: #64748b; }
+:root[data-theme='light'] .recharts-default-tooltip {
+  background-color: var(--app-surface) !important;
+  border-color: var(--app-border-strong) !important;
+  color: var(--app-text) !important;
+}
+
+/* Traços escuros desenhados à mão em SVG. */
+:root[data-theme='light'] svg [stroke='#222'],
+:root[data-theme='light'] svg [stroke='#333'] { stroke: var(--app-chart-grid); }
+:root[data-theme='light'] svg [stroke='#444'] { stroke: #c3cbd5; }
+:root[data-theme='light'] svg [stroke='#161616'] { stroke: #ffffff; }
+
+/* ── Cores escuras vindas de estilos inline ──────────────────────────────────
+   O browser serializa o style inline em rgb(), por isso é por aí que se apanha:
+   mapa de calor dos hábitos, fundo das notas, barras de gráficos próprios. */
+
+:root[data-theme='light'] [style*='rgb(22, 22, 22)'],
+:root[data-theme='light'] [style*='rgb(39, 39, 42)'] { background-color: #eef1f5 !important; }
+:root[data-theme='light'] [style*='rgb(42, 26, 26)'] { background-color: #fadada !important; }
+:root[data-theme='light'] [style*='rgb(28, 28, 28)'],
+:root[data-theme='light'] [style*='rgb(26, 26, 26)'] { background-color: #e6eaf0 !important; }
+:root[data-theme='light'] [style*='rgb(34, 34, 34)'] { background-color: #dfe4ea !important; }
+:root[data-theme='light'] [style*='rgb(15, 15, 15)'],
+:root[data-theme='light'] [style*='rgb(14, 14, 14)'] { background-color: #f2f4f7 !important; }
+
+/* Variantes que faltavam (disabled:, hover: em superfícies, etc.) */
+:root[data-theme='light'] .disabled\:bg-\[\#222\]:disabled { background-color: #e7eaef; }
+:root[data-theme='light'] .hover\:bg-\[\#0f0f0f\]:hover { background-color: #eef1f5; }
+:root[data-theme='light'] .hover\:bg-\[\#111\]:hover { background-color: #f2f4f7; }
+:root[data-theme='light'] .hover\:bg-\[\#161616\]:hover { background-color: #f7f8fa; }
+:root[data-theme='light'] .hover\:bg-\[\#303030\]:hover { background-color: #d0d6de; }
+:root[data-theme='light'] .lg\:border-\[\#222\] { border-color: #e3e7ec; }
+:root[data-theme='light'] .focus\:border-\[\#555\]:focus { border-color: #9aa4b2; }
+
+/* Cores de fundo das notas: as versões escuras passam às pastéis equivalentes. */
+:root[data-theme='light'] [style*='rgb(30, 58, 95)'] { background-color: #dbeafe !important; }
+:root[data-theme='light'] [style*='rgb(26, 61, 46)'] { background-color: #dcfce7 !important; }
+:root[data-theme='light'] [style*='rgb(61, 53, 32)'] { background-color: #fef3c7 !important; }
+:root[data-theme='light'] [style*='rgb(61, 31, 31)'] { background-color: #fee2e2 !important; }
+:root[data-theme='light'] [style*='rgb(45, 31, 61)'] { background-color: #ede9fe !important; }
+:root[data-theme='light'] [style*='rgb(61, 31, 53)'] { background-color: #fce7f3 !important; }
+
+/* Opacidades arbitrárias de branco/preto (Planear Dia e afins). */
+:root[data-theme='light'] .bg-white\/\[0\.02\],
+:root[data-theme='light'] .bg-white\/\[0\.025\] { background-color: rgb(15 23 42 / 0.025); }
+:root[data-theme='light'] .bg-white\/\[0\.04\],
+:root[data-theme='light'] .bg-white\/\[0\.05\] { background-color: rgb(15 23 42 / 0.04); }
+:root[data-theme='light'] .bg-white\/\[0\.06\],
+:root[data-theme='light'] .bg-white\/\[0\.08\] { background-color: rgb(15 23 42 / 0.06); }
+:root[data-theme='light'] .hover\:bg-white\/\[0\.03\]:hover,
+:root[data-theme='light'] .hover\:bg-white\/\[0\.04\]:hover { background-color: rgb(15 23 42 / 0.04); }
+:root[data-theme='light'] .hover\:bg-white\/\[0\.1\]:hover,
+:root[data-theme='light'] .hover\:bg-white\/\[0\.12\]:hover { background-color: rgb(15 23 42 / 0.08); }
+:root[data-theme='light'] .border-white\/\[0\.06\],
+:root[data-theme='light'] .border-white\/\[0\.07\] { border-color: rgb(15 23 42 / 0.08); }
+
+/* Campos com fundo preto translúcido ficam brancos. */
+:root[data-theme='light'] .bg-black\/40.rounded-xl,
+:root[data-theme='light'] input.bg-black\/40,
+:root[data-theme='light'] textarea.bg-black\/40,
+:root[data-theme='light'] select.bg-black\/40,
+:root[data-theme='light'] label.bg-black\/40 { background-color: #ffffff; }
+
+/* Texto branco sobre gradientes: no tema claro os gradientes são claros. */
+:root[data-theme='light'] [class*='bg-gradient-'] .text-white,
+:root[data-theme='light'] .text-white[class*='bg-gradient-'] { color: #0f172a; }
+:root[data-theme='light'] [class*='from-blue-6'] .text-white,
+:root[data-theme='light'] [class*='from-purple-6'] .text-white,
+:root[data-theme='light'] [class*='from-pink-6'] .text-white,
+:root[data-theme='light'] [class*='from-emerald-6'] .text-white { color: #ffffff; }
+
+/* Títulos com gradiente branco→branco (Planear Dia) precisam do gradiente escuro. */
+:root[data-theme='light'] .from-white { --tw-gradient-from: #0f172a var(--tw-gradient-from-position); }
+:root[data-theme='light'] .to-white\/60 { --tw-gradient-to: rgb(15 23 42 / 0.6) var(--tw-gradient-to-position); }
+:root[data-theme='light'] .via-white { --tw-gradient-via: #0f172a var(--tw-gradient-via-position); }
+
+/* Barras translúcidas com hex + opacidade (topo em mobile). */
+:root[data-theme='light'] .bg-\[\#0f0f0f\]\/95 { background-color: rgb(244 246 249 / 0.95); }
+:root[data-theme='light'] .bg-\[\#0f0f0f\]\/50 { background-color: rgb(244 246 249 / 0.6); }
+
+/* ── Login ───────────────────────────────────────────────────────────────── */
+:root[data-theme='light'] .bg-zinc-950 { background-color: var(--app-bg); }
+:root[data-theme='light'] .bg-white.text-zinc-900 { background-color: #0f172a; color: #ffffff; }
+:root[data-theme='light'] .text-zinc-900 { color: #0f172a; }
+
+/* Verde do Spotify e outros tons de marca claros precisam de escurecer no texto. */
+:root[data-theme='light'] .text-\[\#1DB954\] { color: #0f7a37; }
+:root[data-theme='light'] .hover\:text-\[\#1DB954\]:hover,
+:root[data-theme='light'] .group:hover .group-hover\:text-\[\#1DB954\] { color: #0f7a37; }
+:root[data-theme='light'] .border-\[\#1DB954\]\/30 { border-color: rgb(15 122 55 / 0.35); }
+:root[data-theme='light'] .border-\[\#1DB954\]\/40 { border-color: rgb(15 122 55 / 0.45); }
+
+/* Acentos com opacidade acrescentados depois (sugestões de hábitos, etc.). */
+:root[data-theme='light'] .text-emerald-400\/90 { color: rgb(4 120 87 / 0.95); }
+:root[data-theme='light'] .text-red-400\/80 { color: rgb(185 28 28 / 0.9); }

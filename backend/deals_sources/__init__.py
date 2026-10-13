@@ -1,10 +1,11 @@
 """Fontes de deals. Cada adapter expõe `search(...) -> list[Listing]` e é
 best-effort: se rebentar, o dispatcher apanha e segue para a próxima fonte."""
 
+import inspect
 import logging
 
 from .base import Listing, matches_condition
-from . import vinted, olx, ai_web
+from . import vinted, olx, facebook, standvirtual, ai_web
 
 logger = logging.getLogger(__name__)
 
@@ -12,6 +13,8 @@ logger = logging.getLogger(__name__)
 SOURCES = {
     "vinted": vinted,
     "olx": olx,
+    "facebook": facebook,
+    "standvirtual": standvirtual,
     "web": ai_web,
 }
 
@@ -25,7 +28,8 @@ def parse_sources(spec: str) -> list[str]:
     return [n for n in names if n in SOURCES] or list(SOURCES.keys())
 
 
-def search_all(query: str, sources: str, *, max_price=None, condition="any", limit=40) -> list[Listing]:
+def search_all(query: str, sources: str, *, max_price=None, condition="any", limit=40,
+               extra_queries=None) -> list[Listing]:
     """Pesquisa em todas as fontes pedidas e devolve a lista agregada (best-effort).
 
     Aplica os filtros duros (condição + preço máximo) de forma uniforme a TODAS as
@@ -34,7 +38,13 @@ def search_all(query: str, sources: str, *, max_price=None, condition="any", lim
     for name in parse_sources(sources):
         adapter = SOURCES[name]
         try:
-            found = adapter.search(query, max_price=max_price, condition=condition, limit=limit)
+            # Só o Facebook precisa das pesquisas alternativas (é o único com um
+            # tecto de 24 por query); os outros ignoram-nas.
+            if extra_queries and "extra_queries" in inspect.signature(adapter.search).parameters:
+                found = adapter.search(query, max_price=max_price, condition=condition,
+                                       limit=limit, extra_queries=extra_queries)
+            else:
+                found = adapter.search(query, max_price=max_price, condition=condition, limit=limit)
         except Exception as e:  # noqa: BLE001 — uma fonte não pode derrubar o scan
             logger.warning("source %s falhou: %s", name, e)
             continue

@@ -1,8 +1,9 @@
 # Agente local do Cristopher (modo híbrido)
 
-O backend do Cristopher corre na cloud (Oracle) e está sempre online. Mas o
-**Screen Time** (knowledgeC) e o **tracker de apps ativas** só existem no teu
-Mac. Este agente lê esses dados localmente e empurra-os para o backend cloud.
+O backend do Cristopher corre na NAS e está sempre online. Mas o **Screen
+Time** (knowledgeC), o **tracker de apps ativas**, o champ select do LoL e os
+Reminders da Apple só existem no Mac. Este agente lê esses dados localmente e
+empurra-os para o backend da NAS.
 
 ```
 Mac (quando ligado)                          Cloud (sempre online)
@@ -20,8 +21,8 @@ ligar, o agente volta a sincronizar. A ingestão é **idempotente** (upsert).
 ## Instalar
 
 ```bash
-CRISTOPHER_CLOUD_URL=https://cristopher-api.duckdns.org \
-INGEST_TOKEN=<o mesmo INGEST_TOKEN definido no backend cloud> \
+CRISTOPHER_CLOUD_URL=https://NASPEDRO02.myqnapcloud.com:8443 \
+INGEST_TOKEN=<o mesmo INGEST_TOKEN definido no backend da NAS> \
 ./install.sh
 ```
 
@@ -42,10 +43,16 @@ launchctl load   ~/Library/LaunchAgents/com.cristopher.agent.plist   # arrancar
 |---|---|---|
 | Screen Time (Mac + iPhone/iPad) | `screen_time_reader` (knowledgeC) | `/api/ingest/screen-time` |
 | Apps ativas no Mac | `app_tracker` → BD local do agente | `/api/ingest/app-usage` |
+| Champ select do LoL | cliente do LoL (LCU) | `/api/ingest/lol-champ-select` |
+| Reminders da Apple (nos dois sentidos) | `apple_reminders` (EventKit) | `/api/ingest/reminders/*` |
+
+Os Reminders são imediatos: o agente fica pendurado em `/reminders/wait` e
+sincroniza no segundo em que alguma coisa muda nas Listas. `AGENT_REMINDERS=0`
+desliga.
 
 Variáveis opcionais: `PUSH_INTERVAL` (s, default 300), `PUSH_SCREEN_DAYS`
 (default 3), `PUSH_USAGE_HOURS` (default 48), `AGENT_DB`.
 
-> LoL e VS Code/WakaTime não passam por aqui: o WakaTime já é um serviço cloud
-> (o backend puxa diretamente com a tua API key) e o LoL depende do cliente
+> O WakaTime não passa por aqui: já é um serviço cloud e o backend puxa
+> diretamente com a API key. O jogo ao vivo do LoL também não: depende do cliente
 > aberto. Estes mantêm-se nos fluxos próprios.

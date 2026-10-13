@@ -70,11 +70,14 @@ def delete_folder(folder_id: int, db: Session = Depends(get_db)):
 def list_notes(
     folder_id: Optional[int] = Query(None),
     search: Optional[str] = Query(None),
+    project_path: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
     q = db.query(Note)
     if folder_id is not None:
         q = q.filter(Note.folder_id == folder_id)
+    if project_path is not None:
+        q = q.filter(Note.project_path == project_path)
     if search:
         term = f"%{search}%"
         q = q.filter((Note.title.ilike(term)) | (Note.content.ilike(term)))

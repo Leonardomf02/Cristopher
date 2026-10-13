@@ -9,6 +9,7 @@ export interface Event {
   category: string;
   color: string;
   completed: boolean;
+  completed_at?: string | null;
   recurrence: string;
   recurrence_end: string | null;
   is_recurring_instance?: boolean;
@@ -27,6 +28,7 @@ export interface EventCreate {
   color?: string;
   recurrence?: string;
   recurrence_end?: string | null;
+  completed?: boolean;          // uma sessão de flow já aconteceu
 }
 
 export interface Expense {
@@ -35,6 +37,7 @@ export interface Expense {
   amount: number;
   category: string;
   date: string;
+  time_of_day?: string | null;
   receipt_image: string | null;
   trip_id: number | null;
   notes: string;
@@ -42,6 +45,22 @@ export interface Expense {
   original_currency: string | null;
   merchant_city: string | null;
   merchant_country: string | null;
+  // spend | income | transfer | reversal — só `spend` conta como gasto
+  kind?: string;
+  // compra grande e pontual: conta no total do mês, fica fora das comparações
+  extraordinary?: boolean;
+  // pago com Klarna em N vezes (vazio = não é); o valor é o de uma prestação
+  klarna_installments?: number | null;
+  // veio do banco: mudar-lhe a categoria cria uma regra para os iguais
+  bank_tx_id?: string | null;
+  // a parte de um amigo numa conta que ele pagou (gasto negativo dessa conta)
+  reimburses_id?: number | null;
+  reimburses_description?: string | null;
+  // conta paga por ele para N pessoas, e o que os outros já devolveram
+  split_people?: number | null;
+  my_share?: number | null;
+  reimbursed_total?: number;
+  reimbursed_count?: number;
 }
 
 export interface ExpenseCreate {
@@ -49,12 +68,17 @@ export interface ExpenseCreate {
   amount: number;
   category?: string;
   date: string;
+  time_of_day?: string | null;
   trip_id?: number | null;
   notes?: string;
   original_amount?: number | null;
   original_currency?: string | null;
   merchant_city?: string | null;
   merchant_country?: string | null;
+  extraordinary?: boolean;
+  klarna_installments?: number | null;
+  split_people?: number | null;
+  my_share?: number | null;
 }
 
 export interface ExpenseSummary {
@@ -232,6 +256,7 @@ export interface LivePlayer {
   champion_pool?: ChampionPoolDepth;
   mental_state?: MentalState;
   rank_trajectory?: RankTrajectory;
+  vs_my_champion?: EnemyVsMyChampion;
 }
 
 export interface LiveTeamStats {
@@ -271,6 +296,23 @@ export interface LiveGameDetailed {
     my_champ_vs_enemy?: { wins: number; losses: number; games: number; winrate: number };
     best_picks?: Array<{ champion: string; wins: number; losses: number; games: number; winrate: number }>;
   }>;
+  enemy_vs_my_champion?: EnemyVsMyChampion;
+}
+
+// O que o jogador do outro lado já fez contra o campeão que eu tenho em mãos.
+// A amostra é o que couber nos últimos jogos ranked dele (`scanned`), por isso
+// vêm sempre os jogos um a um: um winrate de um jogo não é um winrate.
+export interface EnemyVsMyChampion {
+  player?: string;
+  champion?: string;
+  my_champion?: string;
+  role?: string;
+  rank?: LivePlayerRank | null;
+  scanned: number;
+  vs_all?: { games: number; wins: number; losses: number; winrate: number } | null;
+  with_current?: { champion: string; games: number; wins: number; losses: number; winrate: number } | null;
+  by_champion?: Array<{ champion: string; games: number; wins: number; losses: number; winrate: number }>;
+  games?: Array<{ date?: string | null; champion: string; won: boolean; kda?: string; role?: string | null }>;
 }
 
 export interface MatchupPlayerScore {
@@ -460,6 +502,23 @@ export interface ChampSelectSession {
   my_comp?: TeamComp;
   their_comp?: TeamComp;
   suggestions?: ChampSuggestion[];
+  picks?: import('./api').LolPicks;
+  my_side?: 'blue' | 'red' | null;
+  side_note?: {
+    side: 'blue' | 'red'; is_better_side: boolean;
+    winrate: number; games: number; other_winrate: number; diff: number;
+    top_cause: { label: string; blue: number; red: number; z: number } | null;
+  } | null;
+  enemy_jungler?: string | null;
+  enemy_jungler_source?: 'cliente' | 'inferido' | null;
+  my_pick?: string | null;
+  vs_enemy_jungler?: {
+    enemy: string;
+    games: number; wins: number; losses: number; winrate: number;
+    by_champion: { champion: string; wins: number; losses: number; games: number; winrate: number }[];
+    current_pick: string | null;
+    current_pick_games: { date: string; won: boolean; kda: string | null }[];
+  } | null;
   enemy_counters?: Record<string, { champion: string; wins: number; losses: number; games: number; winrate: number }[]>;
   phase?: string;
   timer_remaining?: number;
@@ -572,6 +631,8 @@ export interface ListItem {
   due_date: string | null;
   due_time: string | null;
   priority: number;
+  created_at?: string | null;      // quando foi apontado
+  checked_at?: string | null;      // quando foi dado como feito
 }
 
 // ── Sleep ────────────────────────────────────────────────────────
@@ -587,13 +648,15 @@ export interface SleepEntry {
   source?: string;
 }
 
+// Só as noites que o relógio mediu. A pontuação 0-100 substituiu as estrelas de
+// 1 a 5, e um palpite pelo uso do Mac não entra nas médias.
 export interface SleepStats {
   avg_hours: number;
-  avg_quality: number;
+  avg_score: number | null;
   total_entries: number;
   best_day: { date: string; hours: number } | null;
   worst_day: { date: string; hours: number } | null;
-  entries: SleepEntry[];
+  entries: (SleepEntry & { score: number | null })[];
 }
 
 // ── Day Types ───────────────────────────────────────────────────
@@ -609,17 +672,16 @@ export interface DayTypeEntry {
 export const DAY_TYPE_PRESETS = [
   { name: 'Trabalho', color: '#3B82F6', icon: '💼' },
   { name: 'Aulas', color: '#F97316', icon: '🎓' },
-  { name: 'Folga', color: '#10B981', icon: '🏖️' },
-  { name: 'Dia Livre', color: '#22C55E', icon: '🌞' },
-  { name: 'Viagem', color: '#F59E0B', icon: '✈️' },
+  { name: 'Projetos', color: '#06B6D4', icon: '🚀' },
+  { name: 'Livre', color: '#22C55E', icon: '🌞' },
   { name: 'Férias', color: '#8B5CF6', icon: '🌴' },
-  { name: 'Doente', color: '#EF4444', icon: '🤒' },
-  { name: 'Estudo', color: '#06B6D4', icon: '📚' },
-  { name: 'Pessoal', color: '#EC4899', icon: '🏠' },
 ] as const;
 
+// Dia sem tipo definido conta como Livre (não se grava nada — é só o que se mostra).
+export const DEFAULT_DAY_TYPE = DAY_TYPE_PRESETS.find(p => p.name === 'Livre')!;
+
 // Day types that protect habit streaks (mirrors backend STREAK_PROTECTED_TYPES)
-export const STREAK_PROTECTED_DAY_TYPES: readonly string[] = ['Férias', 'Aulas', 'Doente', 'Viagem'];
+export const STREAK_PROTECTED_DAY_TYPES: readonly string[] = ['Férias'];
 
 export const EXPENSE_CATEGORIES = [
   { value: 'food', label: 'Comida', emoji: '🍔' },
@@ -627,10 +689,12 @@ export const EXPENSE_CATEGORIES = [
   { value: 'transport', label: 'Transporte', emoji: '🚗' },
   { value: 'travel', label: 'Viagens', emoji: '✈️' },
   { value: 'entertainment', label: 'Entretenimento', emoji: '🎮' },
+  { value: 'nightlife', label: 'Noite', emoji: '🌙' },
   { value: 'subscriptions', label: 'Subscrições', emoji: '📱' },
   { value: 'shopping', label: 'Compras', emoji: '🛍️' },
   { value: 'health', label: 'Saúde', emoji: '💊' },
   { value: 'bills', label: 'Contas', emoji: '📄' },
+  { value: 'invest', label: 'Investir', emoji: '📈' },
   { value: 'other', label: 'Outro', emoji: '📦' },
 ] as const;
 
@@ -670,6 +734,7 @@ export interface Note {
   folder_id: number | null;
   pinned: boolean;
   color: string;
+  project_path?: string | null;
   created_at: string;
   updated_at: string;
 }

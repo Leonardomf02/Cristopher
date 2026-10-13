@@ -52,7 +52,7 @@ Responde APENAS com um array JSON (sem texto à volta), no máximo {limit} itens
 
 Regras: só inclui itens REAIS encontrados na pesquisa, com URL que abra a página do produto/anúncio. NÃO inventes preços nem URLs. Se não encontrares nada fiável, devolve []."""
 
-    reply = ask_agent(prompt, timeout=180.0)
+    reply = ask_agent(prompt, timeout=180.0, feature="deals")
     parsed = extract_json(reply)
     if not isinstance(parsed, list):
         logger.warning("ai_web: sem JSON válido para '%s'", query)
@@ -67,7 +67,7 @@ Regras: só inclui itens REAIS encontrados na pesquisa, com URL que abra a pági
         if not url.startswith("http") or url in seen:
             continue
         site = _domain(url, str(obj.get("site", "web")) or "web")
-        if site in ("olx", "vinted"):  # já cobertos por adapters próprios (melhor data)
+        if site in ("olx", "vinted", "facebook"):  # já cobertos por adapters próprios (melhor data)
             continue
         seen.add(url)
         out.append(Listing(

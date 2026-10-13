@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import date, datetime
 from typing import Optional, List
 
@@ -40,6 +40,9 @@ class EventCreate(BaseModel):
     color: str = "#3B82F6"
     recurrence: str = "none"
     recurrence_end: Optional[Date] = None
+    # Uma sessão de flow que já aconteceu entra no calendário já feita — o campo
+    # existia no model e não no schema, e ela nascia sempre por fazer.
+    completed: bool = False
 
 
 class EventUpdate(BaseModel):
@@ -67,6 +70,7 @@ class EventOut(BaseModel):
     category: str
     color: str
     completed: bool
+    completed_at: Optional[str] = None
     recurrence: str = "none"
     recurrence_end: Optional[Date] = None
     is_recurring_instance: bool = False
@@ -82,12 +86,23 @@ class ExpenseCreate(BaseModel):
     amount: float
     category: str = "other"
     date: date
+    time_of_day: Optional[str] = None
     trip_id: Optional[int] = None
     notes: str = ""
     original_amount: Optional[float] = None
     original_currency: Optional[str] = None
     merchant_city: Optional[str] = None
     merchant_country: Optional[str] = None
+    # Vazio = a app decide (ver expense_kind). Só se envia para corrigir.
+    kind: Optional[str] = None
+    # Compra grande e pontual: conta no total do mês, fica fora das comparações.
+    extraordinary: bool = False
+    # Pago com Klarna em N vezes; vazio = não é Klarna.
+    klarna_installments: Optional[int] = Field(None, ge=2, le=36)
+    # Pago por ele para N pessoas (ele incluído); vazio = é só dele.
+    split_people: Optional[int] = Field(None, ge=2, le=20)
+    # ...ou, quando não é por igual, quanto é a parte dele.
+    my_share: Optional[float] = Field(None, ge=0)
 
 
 class ExpenseUpdate(BaseModel):
@@ -95,12 +110,21 @@ class ExpenseUpdate(BaseModel):
     amount: Optional[float] = None
     category: Optional[str] = None
     date: Optional[Date] = None
+    time_of_day: Optional[str] = None
     trip_id: Optional[int] = None
     notes: Optional[str] = None
     original_amount: Optional[float] = None
     original_currency: Optional[str] = None
     merchant_city: Optional[str] = None
     merchant_country: Optional[str] = None
+    kind: Optional[str] = None
+    extraordinary: Optional[bool] = None
+    klarna_installments: Optional[int] = Field(None, ge=2, le=36)
+    split_people: Optional[int] = Field(None, ge=2, le=20)
+    my_share: Optional[float] = Field(None, ge=0)
+    # Mudar a categoria de um movimento do banco só vira regra (a mesma loja ou
+    # pessoa passa sempre a ir para lá) quando ele o pede.
+    apply_to_similar: bool = False
 
 
 class ExpenseOut(BaseModel):
@@ -109,6 +133,7 @@ class ExpenseOut(BaseModel):
     amount: float
     category: str
     date: date
+    time_of_day: Optional[str] = None
     receipt_image: Optional[str]
     trip_id: Optional[int]
     notes: str
@@ -116,6 +141,63 @@ class ExpenseOut(BaseModel):
     original_currency: Optional[str]
     merchant_city: Optional[str]
     merchant_country: Optional[str]
+    kind: str = "spend"
+    extraordinary: bool = False
+    klarna_installments: Optional[int] = None
+    bank_tx_id: Optional[str] = None
+    reimburses_id: Optional[int] = None
+    split_people: Optional[int] = None
+    my_share: Optional[float] = None
+    # Preenchidos pela lista: o que os outros já devolveram desta conta, e de
+    # que conta é este reembolso.
+    reimbursed_total: float = 0
+    reimbursed_count: int = 0
+    reimburses_description: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
+
+# ── Wishlist ─────────────────────────────────────────────────────
+
+class WishlistItemCreate(BaseModel):
+    name: str
+    price: float
+    priority: str = "medium"
+    category: str = "other"
+    url: Optional[str] = None
+    notes: str = ""
+    saved_amount: float = 0.0
+
+
+class WishlistItemUpdate(BaseModel):
+    name: Optional[str] = None
+    price: Optional[float] = None
+    priority: Optional[str] = None
+    category: Optional[str] = None
+    url: Optional[str] = None
+    notes: Optional[str] = None
+    saved_amount: Optional[float] = None
+
+
+class WishlistPurchase(BaseModel):
+    date: Optional[date] = None
+    amount: Optional[float] = None
+
+
+class WishlistItemOut(BaseModel):
+    id: int
+    name: str
+    price: float
+    priority: str
+    category: str
+    url: Optional[str]
+    notes: str
+    saved_amount: float
+    purchased: bool
+    purchased_date: Optional[date]
+    expense_id: Optional[int]
+    watch_id: Optional[int] = None
+    created_at: Optional[datetime]
 
     model_config = {"from_attributes": True}
 
@@ -332,11 +414,16 @@ class UserListUpdate(BaseModel):
     color: Optional[str] = None
 
 
+class UserListReorder(BaseModel):
+    ids: List[int]                       # a nova ordem, de cima para baixo
+
+
 class UserListOut(BaseModel):
     id: int
     name: str
     icon: str
     color: str
+    position: int = 0
     item_count: int = 0
     checked_count: int = 0
 
@@ -353,6 +440,7 @@ class ListItemCreate(BaseModel):
 
 
 class ListItemUpdate(BaseModel):
+    list_id: Optional[int] = None        # mudar de lista
     text: Optional[str] = None
     checked: Optional[bool] = None
     position: Optional[int] = None
@@ -372,8 +460,124 @@ class ListItemOut(BaseModel):
     due_date: Optional[Date] = None
     due_time: Optional[str] = None
     priority: int = 0
+    created_at: Optional[datetime] = None      # quando foi apontado
+    checked_at: Optional[datetime] = None      # quando foi feito
 
     model_config = {"from_attributes": True}
+
+
+# ── Day Planner ──────────────────────────────────────────────────
+
+class DayActivityCreate(BaseModel):
+    name: str
+    icon: str = "⏱️"
+    color: str = "#3B82F6"
+    duration_min: int = 60
+    duration_max: Optional[int] = None
+    window: str = "any"
+    fixed_time: Optional[str] = None
+    priority: int = 1
+    splittable: bool = False
+    chunk_max: Optional[int] = None
+    enabled: bool = True
+    position: int = 0
+
+
+class DayActivityUpdate(BaseModel):
+    name: Optional[str] = None
+    icon: Optional[str] = None
+    color: Optional[str] = None
+    duration_min: Optional[int] = None
+    duration_max: Optional[int] = None
+    window: Optional[str] = None
+    fixed_time: Optional[str] = None
+    priority: Optional[int] = None
+    splittable: Optional[bool] = None
+    chunk_max: Optional[int] = None
+    enabled: Optional[bool] = None
+    position: Optional[int] = None
+
+
+class DayActivityOut(BaseModel):
+    id: int
+    name: str
+    icon: str
+    color: str
+    duration_min: int
+    duration_max: Optional[int] = None
+    window: str
+    fixed_time: Optional[str] = None
+    priority: int
+    splittable: bool = False
+    chunk_max: Optional[int] = None
+    enabled: bool
+    position: int
+
+    model_config = {"from_attributes": True}
+
+
+class DayPlanRequest(BaseModel):
+    # Vazio = o que o relógio mediu nessa noite (ou a mediana das últimas semanas).
+    wake_time: Optional[str] = None      # HH:MM
+    mode: str = "local"                  # local|ai
+    day_end: Optional[str] = None        # HH:MM — hora limite (deitar); default 24:00
+    activity_ids: Optional[List[int]] = None  # se None → usa todas as enabled
+    preferences: Optional[str] = None    # texto livre (só usado pelo motor IA)
+    plan_date: Optional[Date] = None     # dia a que se destina; default hoje
+    save: bool = True                    # guardar no histórico
+
+
+class EnsureTodayResponse(BaseModel):
+    created: bool
+    reason: str
+    plan_date: Date
+    plan: Optional["DayPlanResponse"] = None
+
+
+class PlanBlock(BaseModel):
+    activity_id: Optional[int] = None
+    name: str
+    icon: str
+    color: str
+    start: str                           # HH:MM
+    end: str                             # HH:MM
+    note: str = ""
+    done: bool = False
+    event_id: Optional[int] = None       # evento criado no calendário quando marcado feito
+
+
+class DayPlanResponse(BaseModel):
+    mode: str
+    wake_time: str
+    blocks: List[PlanBlock]
+    unplaced: List[str] = []             # atividades que não couberam
+    advice: str = ""                     # comentário (sobretudo no modo IA)
+    plan_date: Optional[Date] = None
+    day_end: Optional[str] = None
+    preferences: str = ""
+
+
+class PlanBlockCreate(BaseModel):
+    name: str
+    icon: str = "📌"
+    color: str = "#6B7280"
+    start: str                           # HH:MM
+    end: str                             # HH:MM
+    note: str = ""
+
+
+class PlanBlockUpdate(BaseModel):
+    name: Optional[str] = None
+    start: Optional[str] = None          # HH:MM
+    end: Optional[str] = None            # HH:MM
+    note: Optional[str] = None
+
+
+class DayPlanSummary(BaseModel):
+    plan_date: Date
+    wake_time: str
+    mode: str
+    block_count: int
 
 
 # ── Sleep ────────────────────────────────────────────────────────
@@ -500,6 +704,7 @@ class NoteCreate(BaseModel):
     folder_id: Optional[int] = None
     pinned: bool = False
     color: str = ""
+    project_path: Optional[str] = None
 
 
 class NoteUpdate(BaseModel):
@@ -508,6 +713,7 @@ class NoteUpdate(BaseModel):
     folder_id: Optional[int] = None
     pinned: Optional[bool] = None
     color: Optional[str] = None
+    project_path: Optional[str] = None
 
 
 class NoteOut(BaseModel):
@@ -517,6 +723,7 @@ class NoteOut(BaseModel):
     folder_id: Optional[int]
     pinned: bool
     color: str
+    project_path: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -815,6 +1022,36 @@ class BudgetLimitOut(BaseModel):
     color: str
 
     model_config = {"from_attributes": True}
+
+
+# ── Salary Buckets (plano do salário por % ) ─────────────────────
+
+class SalaryBucketCreate(BaseModel):
+    name: str
+    percentage: float = 0
+    categories: list[str] = []
+    kind: str = "spend"          # "spend" | "save"
+    color: str = "#3B82F6"
+    sort_order: int = 0
+
+
+class SalaryBucketUpdate(BaseModel):
+    name: Optional[str] = None
+    percentage: Optional[float] = None
+    categories: Optional[list[str]] = None
+    kind: Optional[str] = None
+    color: Optional[str] = None
+    sort_order: Optional[int] = None
+
+
+class SalaryBucketOut(BaseModel):
+    id: int
+    name: str
+    percentage: float
+    categories: list[str]
+    kind: str
+    color: str
+    sort_order: int
 
 
 # ── Subscriptions ────────────────────────────────────────────────

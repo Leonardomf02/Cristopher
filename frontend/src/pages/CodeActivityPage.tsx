@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { format, parseISO } from 'date-fns';
 import { pt } from 'date-fns/locale';
-import { Code2, ChevronLeft, ChevronRight, ChevronDown, FileCode, FolderGit2, FolderOpen, ListChecks, ListPlus, Sparkles, Plus, Star, Trash2, Loader2, Clock, RefreshCw, FolderKanban } from 'lucide-react';
+import { Code2, ChevronRight, ChevronDown, FileCode, FolderOpen, ListChecks, ListPlus, Sparkles, Plus, Star, Trash2, Loader2, Clock, RefreshCw, FolderKanban, StickyNote, Pencil, FileDown, AlertTriangle, FilePlus2, Link2, Unlink, Search, X } from 'lucide-react';
 import {
   codeActivityApi,
   CodeActivityDay,
@@ -9,18 +10,76 @@ import {
   CodeProjectTodo,
   CodeProjectNote,
   CodeKnownProject,
+  notesApi,
   wakatimeApi,
   WakaSummary,
+  WakaHours,
   WakaBreakdownItem,
   WakaProjectDetail,
+  WakaAiTrend,
   WAKA_RANGES,
   WAKA_PROJECT_RANGES,
 } from '../api';
+import { Note } from '../types';
+import { ModeToggle, NoteBody, viewModeKey } from '../components/NoteBody';
 
-function shiftDate(iso: string, days: number): string {
-  const d = parseISO(iso);
-  d.setDate(d.getDate() + days);
-  return format(d, 'yyyy-MM-dd');
+// Rascunhos por escrever ficam guardados para sobreviverem a mudar de secção.
+const draftKey = (kind: 'nota' | 'todo', projectPath: string) => `codeDraft:${kind}:${projectPath}`;
+
+function readDraft(kind: 'nota' | 'todo', projectPath: string): string {
+  try { return localStorage.getItem(draftKey(kind, projectPath)) || ''; } catch { return ''; }
+}
+
+function writeDraft(kind: 'nota' | 'todo', projectPath: string, value: string) {
+  try {
+    if (value) localStorage.setItem(draftKey(kind, projectPath), value);
+    else localStorage.removeItem(draftKey(kind, projectPath));
+  } catch { /* ignora */ }
+}
+
+// O backend grava os timestamps em UTC sem sufixo; sem isto a hora aparecia atrasada.
+function localDate(ts: string): Date {
+  return new Date(/([zZ]|[+-]\d{2}:?\d{2})$/.test(ts) ? ts : `${ts}Z`);
+}
+
+// Último projecto seleccionado na aba Atividade.
+const SELECTED_KEY = 'codeActivitySelected';
+
+function readSelected(): string | null {
+  try { return localStorage.getItem(SELECTED_KEY); } catch { return null; }
+}
+
+function writeSelected(path: string) {
+  try { localStorage.setItem(SELECTED_KEY, path); } catch { /* ignora */ }
+}
+
+// Vista activa do projecto: a nota da secção Notas sozinha, os painéis
+// completos (notas/TODOs + notas IA), ou a nota com os TODOs e sem a IA.
+const VIEW_KEY = 'codeActivityView';
+type ProjectView = 'nota' | 'paineis' | 'nota_todos';
+
+function readView(): ProjectView {
+  try {
+    const v = localStorage.getItem(VIEW_KEY);
+    return v === 'nota' || v === 'nota_todos' ? v : 'paineis';
+  } catch { return 'paineis'; }
+}
+
+function writeView(v: ProjectView) {
+  try { localStorage.setItem(VIEW_KEY, v); } catch { /* ignora */ }
+}
+
+// Altura disponível até ao fundo da janela, para o board não fazer scroll de página.
+// Selector de período do WakaTime: "m:2026-07" → mês, "y:2026" → ano, resto → range nomeado.
+function periodToArg(v: string): string | { range?: string; month?: string; year?: number } {
+  if (v.startsWith('m:')) return { month: v.slice(2) };
+  if (v.startsWith('y:')) return { year: Number(v.slice(2)) };
+  return v;
+}
+
+function monthLabel(m: string): string {
+  const s = format(parseISO(`${m}-01`), 'MMMM yyyy', { locale: pt });
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 function fileIcon(filename: string): string {
@@ -42,18 +101,20 @@ function fileIcon(filename: string): string {
 
 export default function CodeActivityPage() {
   const today = format(new Date(), 'yyyy-MM-dd');
-  const [date, setDate] = useState(today);
+  const [date] = useState(today);
   const [data, setData] = useState<CodeActivityDay | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [weekTotals, setWeekTotals] = useState<{ date: string; total_saves: number; total_files: number; project_count: number }[]>([]);
-  const [totals, setTotals] = useState<{ open_todos: number; total_notes: number }>({ open_todos: 0, total_notes: 0 });
   const [todoProjects, setTodoProjects] = useState<{ path: string; name: string }[]>([]);
   const [known, setKnown] = useState<CodeKnownProject[]>([]);
+  const [knownLoaded, setKnownLoaded] = useState(false);
   const [tab, setTab] = useState<'atividade' | 'tempo' | 'projectos'>('atividade');
 
   const refreshKnown = () => {
-    codeActivityApi.allProjects().then(setKnown).catch(() => {});
+    codeActivityApi.allProjects()
+      .then(setKnown)
+      .catch(() => {})
+      .finally(() => setKnownLoaded(true));
   };
   useEffect(() => { refreshKnown(); }, []);
 
@@ -86,324 +147,428 @@ export default function CodeActivityPage() {
     return () => { cancelled = true; };
   }, [date]);
 
-  useEffect(() => {
-    codeActivityApi.range(7).then(r => setWeekTotals(r.days)).catch(() => {});
-  }, []);
-
   const refreshTotals = () => {
-    codeActivityApi.totals().then(setTotals).catch(() => {});
     codeActivityApi.projectsWithTodos().then(setTodoProjects).catch(() => {});
   };
   useEffect(() => { refreshTotals(); }, []);
 
   const dateLabel = format(parseISO(date), "d 'de' MMMM yyyy", { locale: pt });
   const weekday = format(parseISO(date), 'EEEE', { locale: pt });
-  const isToday = date === today;
-  const maxWeekSaves = Math.max(1, ...weekTotals.map(d => d.total_saves));
 
   return (
-    <div className="max-w-6xl mx-auto">
-      <div className="flex items-center gap-3 mb-2">
-        <Code2 size={28} className="text-blue-400" />
-        <h2 className="text-2xl sm:text-3xl font-bold">Atividade VS Code</h2>
-      </div>
-      <div className="flex items-center gap-2 mt-4 mb-6 border-b border-[#222]">
-        <button
-          onClick={() => setTab('atividade')}
-          className={`px-4 py-2 text-sm font-semibold border-b-2 -mb-px transition-colors ${
-            tab === 'atividade' ? 'border-blue-400 text-blue-300' : 'border-transparent text-gray-500 hover:text-gray-300'
-          }`}
-        >
-          Atividade
-        </button>
-        <button
-          onClick={() => setTab('tempo')}
-          className={`flex items-center gap-1.5 px-4 py-2 text-sm font-semibold border-b-2 -mb-px transition-colors ${
-            tab === 'tempo' ? 'border-cyan-400 text-cyan-300' : 'border-transparent text-gray-500 hover:text-gray-300'
-          }`}
-        >
-          <Clock size={14} /> Tempo de código
-        </button>
-        <button
-          onClick={() => setTab('projectos')}
-          className={`flex items-center gap-1.5 px-4 py-2 text-sm font-semibold border-b-2 -mb-px transition-colors ${
-            tab === 'projectos' ? 'border-cyan-400 text-cyan-300' : 'border-transparent text-gray-500 hover:text-gray-300'
-          }`}
-        >
-          <FolderKanban size={14} /> Projectos
-        </button>
+    <div className={`flex flex-col ${tab === 'atividade'
+      ? 'max-w-7xl mx-auto lg:h-[calc(100dvh-4rem)] lg:overflow-hidden'
+      : 'max-w-6xl mx-auto'}`}>
+      {/* A data vai por baixo do título: entalada a meio, entre o título e as
+          abas, ficava por cima dos dois em qualquer largura de iPad. */}
+      <div className="flex items-center justify-between gap-x-3 gap-y-2 mb-4 flex-wrap shrink-0">
+        <div className="flex items-center gap-3 shrink-0">
+          <Code2 size={28} className="text-blue-400 shrink-0" />
+          <div>
+            <h2 className="text-2xl sm:text-3xl font-bold whitespace-nowrap">Atividade VS Code</h2>
+            {tab === 'atividade' && (
+              <p className="text-xs text-gray-500 whitespace-nowrap first-letter:uppercase">{weekday}, {dateLabel}</p>
+            )}
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3 flex-wrap min-w-0 max-w-full">
+          {/* No telemóvel as três abas não cabem: rolam em vez de esticarem a página */}
+          <div className="flex items-center gap-2 border-b border-[#222] max-w-full overflow-x-auto">
+            <button
+              onClick={() => setTab('atividade')}
+              className={`shrink-0 whitespace-nowrap px-3 sm:px-4 py-2 text-sm font-semibold border-b-2 -mb-px transition-colors ${
+                tab === 'atividade' ? 'border-blue-400 text-blue-300' : 'border-transparent text-gray-500 hover:text-gray-300'
+              }`}
+            >
+              Atividade
+            </button>
+            <button
+              onClick={() => setTab('tempo')}
+              className={`shrink-0 whitespace-nowrap flex items-center gap-1.5 px-3 sm:px-4 py-2 text-sm font-semibold border-b-2 -mb-px transition-colors ${
+                tab === 'tempo' ? 'border-cyan-400 text-cyan-300' : 'border-transparent text-gray-500 hover:text-gray-300'
+              }`}
+            >
+              <Clock size={14} /> Tempo de código
+            </button>
+            <button
+              onClick={() => setTab('projectos')}
+              className={`shrink-0 whitespace-nowrap flex items-center gap-1.5 px-3 sm:px-4 py-2 text-sm font-semibold border-b-2 -mb-px transition-colors ${
+                tab === 'projectos' ? 'border-cyan-400 text-cyan-300' : 'border-transparent text-gray-500 hover:text-gray-300'
+              }`}
+            >
+              <FolderKanban size={14} /> Projectos
+            </button>
+          </div>
+        </div>
       </div>
 
       {tab === 'tempo' && <WakaTimePanel />}
       {tab === 'projectos' && <WakaProjectsPanel />}
 
-      {tab === 'atividade' && weekTotals.length > 0 && (
-        <div className="bg-[#161616] rounded-2xl border border-[#222] p-4 mb-6">
-          <div className="flex items-end gap-2">
-            {weekTotals.map(d => {
-              const h = (d.total_saves / maxWeekSaves) * 100;
-              const selected = d.date === date;
-              return (
-                <button
-                  key={d.date}
-                  onClick={() => setDate(d.date)}
-                  className="flex-1 flex flex-col items-center gap-1 group"
-                >
-                  <div className="w-full h-24 flex items-end">
-                    <div
-                      className={`w-full rounded-t-md transition-all ${
-                        selected ? 'bg-blue-400' : 'bg-blue-400/30 group-hover:bg-blue-400/60'
-                      }`}
-                      style={{ height: `${Math.max(4, h)}%` }}
-                      title={`${d.total_saves} saves`}
-                    />
-                  </div>
-                  <span className={`text-[10px] ${selected ? 'text-blue-400 font-bold' : 'text-gray-500'}`}>
-                    {format(parseISO(d.date), 'EEE', { locale: pt })}
-                  </span>
-                  <span className="text-[10px] text-gray-600">{d.total_saves}</span>
-                </button>
-              );
-            })}
-          </div>
+      {tab === 'atividade' && (
+        <div className="flex-1 min-h-0 flex flex-col">
+          <ActivityBoard
+            date={date}
+            data={data}
+            loading={loading}
+            error={error}
+            known={known}
+            knownLoaded={knownLoaded}
+            favPaths={favPaths}
+            todoProjects={todoProjects}
+            onToggleFavorite={toggleFavorite}
+            onChanged={refreshTotals}
+          />
         </div>
       )}
+    </div>
+  );
+}
 
-      {tab === 'atividade' && (<>
-      <div className="flex items-center justify-between mb-6">
-        <button
-          onClick={() => setDate(shiftDate(date, -1))}
-          className="p-2 bg-[#161616] hover:bg-[#1a1a1a] border border-[#222] rounded-xl text-gray-400 hover:text-white"
-        >
-          <ChevronLeft size={18} />
-        </button>
-        <div className="text-center">
-          <p className="text-xs text-gray-500 uppercase">{weekday}</p>
-          <p className="text-xl font-bold">{dateLabel}</p>
-          {isToday && <p className="text-[10px] text-blue-400 mt-0.5">hoje</p>}
-        </div>
-        <button
-          onClick={() => setDate(shiftDate(date, 1))}
-          disabled={date >= today}
-          className="p-2 bg-[#161616] hover:bg-[#1a1a1a] disabled:opacity-30 border border-[#222] rounded-xl text-gray-400 hover:text-white disabled:hover:text-gray-400"
-        >
-          <ChevronRight size={18} />
-        </button>
-      </div>
+function ActivityBoard({
+  date,
+  data, loading, error, known, knownLoaded, favPaths, todoProjects, onToggleFavorite, onChanged,
+}: {
+  date: string;
+  data: CodeActivityDay | null;
+  loading: boolean;
+  error: string | null;
+  known: CodeKnownProject[];
+  knownLoaded: boolean;
+  favPaths: Set<string>;
+  todoProjects: { path: string; name: string }[];
+  onToggleFavorite: (path: string, name: string) => void;
+  onChanged: () => void;
+}) {
+  const [selected, setSelected] = useState<string | null>(() => readSelected());
+  const [showAll, setShowAll] = useState(false);
+  const [view, setView] = useState<ProjectView>(() => readView());
+  const [showFiles, setShowFiles] = useState(false);
 
+  const activePaths = new Set((data?.projects || []).map(p => p.path));
+  const todoOnly: CodeActivityProject[] = todoProjects
+    .filter(t => !activePaths.has(t.path))
+    .map(t => ({ name: t.name, path: t.path, saves: 0, files_count: 0, files: [], last_ts: 0 }));
+  const dayAll = [...(data?.projects || []), ...todoOnly];
+
+  // Favoritos ficam sempre no topo, mesmo sem actividade no dia.
+  const favCards: CodeActivityProject[] = known
+    .filter(k => k.favorite)
+    .map(k => dayAll.find(p => p.path === k.path) ?? {
+      name: k.name, path: k.path, saves: 0, files_count: 0, files: [], last_ts: 0,
+    });
+  const dayCards = dayAll.filter(p => !favPaths.has(p.path));
+  const mainList = [...favCards, ...dayCards];
+
+  const mainPaths = new Set(mainList.map(p => p.path));
+  const others: CodeActivityProject[] = known
+    .filter(k => !mainPaths.has(k.path))
+    .sort((a, b) => (b.last_activity || '').localeCompare(a.last_activity || ''))
+    .map(k => ({ name: k.name, path: k.path, saves: 0, files_count: 0, files: [], last_ts: 0 }));
+
+  // O projecto guardado manda, mesmo que hoje não tenha actividade — só se cai
+  // para o primeiro da lista quando já se sabe que ele não existe.
+  const resolved = selected
+    ? mainList.find(p => p.path === selected) ?? others.find(p => p.path === selected)
+    : undefined;
+  const settled = knownLoaded && !loading;
+  const current = resolved ?? (!selected || settled ? mainList[0] : undefined);
+
+  const pinned = resolved && !mainList.some(p => p.path === resolved.path) && !showAll ? [resolved] : [];
+  const visible = showAll ? [...mainList, ...others] : [...pinned, ...mainList];
+
+  const pick = (path: string) => {
+    setSelected(path);
+    writeSelected(path);
+  };
+
+  const pickView = (v: ProjectView) => { setView(v); writeView(v); };
+
+  return (
+    <div className="flex-1 min-h-0 flex flex-col">
       {error && (
-        <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-3 mb-6 text-sm text-red-400">
+        <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-2.5 mb-3 text-sm text-red-400 shrink-0">
           {error}
         </div>
       )}
 
-      {loading && !data && (
-        <div className="text-center text-gray-600 text-sm py-12">A carregar...</div>
-      )}
-
-      {data && (
-        <>
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 mb-6">
-            <SummaryTile label="💾 Saves" value={data.total_saves} />
-            <SummaryTile label="📄 Ficheiros" value={data.total_files} />
-            <SummaryTile label="📁 Projetos" value={data.projects.length} />
-            <SummaryTile label="✅ TODOs" value={totals.open_todos} accent="emerald" />
-            <SummaryTile label="✨ Notas IA" value={totals.total_notes} accent="purple" />
+      <div className="shrink-0 mb-3 bg-[#161616] rounded-2xl border border-[#222]">
+        <div className="flex items-center gap-2 p-1.5 flex-wrap sm:flex-nowrap">
+          <div className="w-full sm:w-auto sm:flex-1 min-w-0 flex items-center gap-1.5 overflow-x-auto">
+            {loading && !data && <span className="text-xs text-gray-600 px-2">A carregar...</span>}
+            {!loading && visible.length === 0 && (
+              <span className="text-xs text-gray-600 px-2">Nenhuma atividade neste dia.</span>
+            )}
+            {visible.map(p => (
+              <ProjectChip
+                key={p.path || p.name}
+                project={p}
+                active={current?.path === p.path}
+                favorite={favPaths.has(p.path)}
+                onSelect={() => pick(p.path)}
+                onToggleFavorite={() => onToggleFavorite(p.path, p.name)}
+              />
+            ))}
           </div>
+          <div className="w-full sm:w-auto shrink-0 flex items-center gap-1.5 flex-nowrap overflow-x-auto
+                          sm:pl-1.5 sm:border-l border-[#222]">
+            {others.length > 0 && (
+              <button
+                onClick={() => setShowAll(s => !s)}
+                title={showAll ? 'Mostrar só os do dia' : 'Mostrar todos os projectos'}
+                className={`shrink-0 whitespace-nowrap flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-[11px] font-semibold border transition-colors ${
+                  showAll ? 'bg-blue-500/15 border-blue-500/30 text-blue-300' : 'bg-[#1a1a1a] border-[#222] text-gray-500 hover:text-gray-300'
+                }`}
+              >
+                <FolderOpen size={13} />
+                {showAll ? 'Todos' : `+${others.length}`}
+              </button>
+            )}
+            {current && current.files_count > 0 && (
+              <button
+                onClick={() => setShowFiles(s => !s)}
+                title="Ficheiros gravados neste dia"
+                className={`shrink-0 whitespace-nowrap flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-[11px] font-semibold border transition-colors ${
+                  showFiles ? 'bg-blue-500/15 border-blue-500/30 text-blue-300' : 'bg-[#1a1a1a] border-[#222] text-gray-500 hover:text-gray-300'
+                }`}
+              >
+                <FileCode size={13} /> {current.files_count}
+                <ChevronDown size={12} className={showFiles ? 'rotate-180' : ''} />
+              </button>
+            )}
+            <div className="inline-flex rounded-xl bg-[#1a1a1a] border border-[#222] p-0.5">
+              <button
+                onClick={() => pickView('nota')}
+                title="Nota deste projecto (secção Notas)"
+                className={`shrink-0 whitespace-nowrap flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition-colors ${
+                  view === 'nota' ? 'bg-blue-500/20 text-blue-300' : 'text-gray-500 hover:text-gray-300'
+                }`}
+              >
+                <StickyNote size={13} /> Nota
+              </button>
+              <button
+                onClick={() => pickView('nota_todos')}
+                title="Nota deste projecto e TODOs, sem notas IA"
+                className={`shrink-0 whitespace-nowrap flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition-colors ${
+                  view === 'nota_todos' ? 'bg-blue-500/20 text-blue-300' : 'text-gray-500 hover:text-gray-300'
+                }`}
+              >
+                <ListChecks size={13} /> Nota / TODOs
+              </button>
+              <button
+                onClick={() => pickView('paineis')}
+                title="Notas do projecto, notas IA e TODOs"
+                className={`shrink-0 whitespace-nowrap flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition-colors ${
+                  view === 'paineis' ? 'bg-blue-500/20 text-blue-300' : 'text-gray-500 hover:text-gray-300'
+                }`}
+              >
+                <ListChecks size={13} /> Notas / TODOs
+              </button>
+            </div>
+          </div>
+        </div>
+        {showFiles && current && current.files.length > 0 && (
+          <div className="border-t border-[#222] max-h-44 overflow-y-auto divide-y divide-[#1a1a1a]">
+            {current.files.map(f => (
+              <div key={f.abs_path} className="flex items-center gap-3 px-3 py-1.5 hover:bg-white/5">
+                <span className="text-sm shrink-0">{fileIcon(f.filename)}</span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs truncate">{f.filename}</p>
+                  <p className="text-[10px] text-gray-600 truncate">{f.rel_path}</p>
+                </div>
+                <span className="text-[11px] text-gray-500 shrink-0">{f.saves}×</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
 
-          {(() => {
-            const activePaths = new Set(data.projects.map(p => p.path));
-            const todoOnly: CodeActivityProject[] = todoProjects
-              .filter(t => !activePaths.has(t.path))
-              .map(t => ({
-                name: t.name, path: t.path, saves: 0, files_count: 0, files: [], last_ts: 0,
-              }));
-            const dayAll = [...data.projects, ...todoOnly];
-
-            // Favorites pinned at top, regardless of activity. Use today's activity data
-            // if the favorite was touched today, otherwise a synthetic empty card.
-            const favCards: CodeActivityProject[] = known
-              .filter(k => k.favorite)
-              .map(k => dayAll.find(p => p.path === k.path) ?? {
-                name: k.name, path: k.path, saves: 0, files_count: 0, files: [], last_ts: 0,
-              });
-
-            const dayCards = dayAll.filter(p => !favPaths.has(p.path));
-            const excludeFromAll = new Set([...favPaths, ...dayCards.map(p => p.path)]);
-
-            const allCards = [...favCards, ...dayCards];
-            return (
-              <>
-                {allCards.length === 0 ? (
-                  <div className="bg-[#161616] rounded-2xl border border-[#222] p-12 text-center">
-                    <FileCode size={32} className="text-gray-700 mx-auto mb-2" />
-                    <p className="text-sm text-gray-500">Nenhuma atividade registada neste dia.</p>
-                    {data.history_dir === null && (
-                      <p className="text-xs text-gray-600 mt-2">
-                        VS Code Local History não encontrado em <code>~/Library/Application Support/Code/User/History/</code>
-                      </p>
-                    )}
-                  </div>
-                ) : (
-                  <div className="space-y-4">
-                    {allCards.map(p => (
-                      <ProjectCard
-                        key={p.path || p.name}
-                        project={p}
-                        date={date}
-                        hasActivity={p.saves > 0}
-                        onChanged={refreshTotals}
-                        favorite={favPaths.has(p.path)}
-                        onToggleFavorite={() => toggleFavorite(p.path, p.name)}
-                      />
-                    ))}
-                  </div>
-                )}
-                <AllProjectsSection
-                  date={date}
-                  projects={known}
-                  excludePaths={excludeFromAll}
-                  onChanged={refreshTotals}
-                  onToggleFavorite={toggleFavorite}
-                />
-              </>
-            );
-          })()}
-        </>
-      )}
-      </>)}
-    </div>
-  );
-}
-
-function AllProjectsSection({
-  date, projects, excludePaths, onChanged, onToggleFavorite,
-}: {
-  date: string;
-  projects: CodeKnownProject[];
-  excludePaths: Set<string>;
-  onChanged: () => void;
-  onToggleFavorite: (path: string, name: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-
-  const others = projects
-    .filter(p => !excludePaths.has(p.path))
-    .sort((a, b) => (b.last_activity || '').localeCompare(a.last_activity || ''));
-
-  return (
-    <div className="mt-6 bg-[#161616] rounded-2xl border border-[#222] overflow-hidden">
-      <button
-        onClick={() => setOpen(o => !o)}
-        className="w-full flex items-center gap-3 p-4 hover:bg-white/5"
-      >
-        <FolderOpen size={18} className="text-gray-400 shrink-0" />
-        <span className="text-sm font-semibold">Todos os projectos</span>
-        <span className="text-[11px] text-gray-600">abrir notas/TODOs de projectos antigos</span>
-        <ChevronDown
-          size={18}
-          className={`ml-auto text-gray-500 transition-transform ${open ? 'rotate-180' : ''}`}
-        />
-      </button>
-      {open && (
-        <div className="border-t border-[#222] p-3 space-y-3">
-          {others.length === 0 && (
-            <p className="text-xs text-gray-600 text-center py-4">Sem outros projectos guardados.</p>
-          )}
-          {others.map(p => (
-            <KnownProjectRow
-              key={p.path}
-              project={p}
-              date={date}
-              onChanged={onChanged}
-              onToggleFavorite={() => onToggleFavorite(p.path, p.name)}
-            />
-          ))}
+      {current ? (
+        view === 'nota' ? (
+          <LinkedNotePanel
+            key={`nota-${current.path}`}
+            projectPath={current.path}
+            projectName={current.name}
+          />
+        ) : view === 'nota_todos' ? (
+          <NoteAndTodosPanels
+            key={`nota-todos-${current.path}`}
+            project={current}
+            onChanged={onChanged}
+          />
+        ) : (
+          <ProjectPanels
+            key={`paineis-${current.path}`}
+            project={current}
+            date={date}
+            onChanged={onChanged}
+          />
+        )
+      ) : (
+        <div className="flex-1 min-h-0 bg-[#161616] rounded-2xl border border-[#222] flex items-center justify-center">
+          <div className="text-center">
+            <FileCode size={28} className="text-gray-700 mx-auto mb-2" />
+            <p className="text-sm text-gray-600">
+              {settled && data?.history_dir === null
+                ? 'VS Code Local History não encontrado.'
+                : settled ? 'Sem projectos.' : 'A carregar...'}
+            </p>
+          </div>
         </div>
       )}
     </div>
   );
 }
 
-function KnownProjectRow({
-  project, date, onChanged, onToggleFavorite,
+
+function ProjectChip({
+  project, active, favorite, onSelect, onToggleFavorite,
 }: {
-  project: CodeKnownProject;
-  date: string;
-  onChanged: () => void;
+  project: CodeActivityProject;
+  active: boolean;
+  favorite: boolean;
+  onSelect: () => void;
   onToggleFavorite: () => void;
 }) {
-  const [expanded, setExpanded] = useState(false);
-  const asActivity: CodeActivityProject = {
-    name: project.name,
-    path: project.path,
-    saves: 0,
-    files_count: 0,
-    files: [],
-    last_ts: 0,
-  };
-  const starBtn = (
-    <button
-      onClick={(e) => { e.stopPropagation(); onToggleFavorite(); }}
-      title={project.favorite ? 'Remover dos favoritos' : 'Marcar como favorito'}
-      className={`shrink-0 transition-colors ${
-        project.favorite ? 'text-blue-400' : 'text-gray-600 hover:text-blue-400'
+  return (
+    <div
+      onClick={onSelect}
+      title={project.path ? `~/${project.path}` : project.name}
+      className={`shrink-0 flex items-center gap-1.5 pl-2 pr-3 py-1.5 rounded-xl border cursor-pointer transition-colors ${
+        active ? 'bg-blue-500/15 border-blue-500/40' : 'bg-[#1a1a1a] border-transparent hover:bg-white/5'
       }`}
     >
-      <Star size={15} fill={project.favorite ? 'currentColor' : 'none'} />
-    </button>
+      <button
+        onClick={e => { e.stopPropagation(); onToggleFavorite(); }}
+        title={favorite ? 'Remover dos favoritos' : 'Marcar como favorito'}
+        className={`shrink-0 transition-colors ${favorite ? 'text-blue-400' : 'text-gray-700 hover:text-blue-400'}`}
+      >
+        <Star size={12} fill={favorite ? 'currentColor' : 'none'} />
+      </button>
+      <span className={`text-sm whitespace-nowrap ${active ? 'font-semibold text-blue-200' : 'font-medium text-gray-300'}`}>
+        {project.name}
+      </span>
+    </div>
   );
-  if (!expanded) {
-    return (
-      <div className="flex items-center gap-3 p-3 rounded-xl bg-[#1a1a1a] hover:bg-white/5">
-        {starBtn}
-        <button onClick={() => setExpanded(true)} className="flex items-center gap-3 flex-1 min-w-0 text-left">
-          <FolderGit2 size={16} className="text-blue-400 shrink-0" />
-          <div className="min-w-0">
-            <p className="text-sm font-semibold truncate">{project.name}</p>
-            {project.path && project.path !== project.name && (
-              <p className="text-[10px] text-gray-600 truncate">~/{project.path}</p>
-            )}
-          </div>
-          <div className="ml-auto flex items-center gap-3 shrink-0 text-[11px]">
-            {project.open_todos > 0 && <span className="text-emerald-400">{project.open_todos} TODOs</span>}
-            {project.notes_count > 0 && <span className="text-purple-400">{project.notes_count} notas</span>}
-          </div>
-        </button>
-      </div>
-    );
-  }
+}
+
+function ProjectPanels({
+  project, date, onChanged,
+}: {
+  project: CodeActivityProject;
+  date: string;
+  onChanged: () => void;
+}) {
+  const [notesTab, setNotesTab] = useState<'notas' | 'ia'>('notas');
+  const [todoReload, setTodoReload] = useState(0);
+  const hasActivity = project.saves > 0;
+
+  const handleConverted = () => {
+    setTodoReload(k => k + 1);
+    onChanged();
+  };
+
   return (
-    <div className="flex items-start gap-3">
-      <div className="pt-4">{starBtn}</div>
-      <div className="flex-1 min-w-0">
-        <ProjectCard project={asActivity} date={date} hasActivity={false} onChanged={onChanged} defaultExpanded />
+    <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-2 gap-px bg-[#222] rounded-2xl border border-[#222] overflow-hidden">
+      <div className="bg-[#161616] flex flex-col min-h-0">
+        <div className="px-4 pt-3 shrink-0">
+          <div className="inline-flex rounded-xl bg-[#1a1a1a] border border-[#222] p-0.5">
+            <button
+              onClick={() => setNotesTab('notas')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                notesTab === 'notas' ? 'bg-blue-500/20 text-blue-300' : 'text-gray-500 hover:text-gray-300'
+              }`}
+            >
+              <FileCode size={13} /> Notas
+            </button>
+            <button
+              onClick={() => setNotesTab('ia')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                notesTab === 'ia' ? 'bg-purple-500/20 text-purple-400' : 'text-gray-500 hover:text-gray-300'
+              }`}
+            >
+              <Sparkles size={13} /> Notas IA
+            </button>
+          </div>
+        </div>
+        {/* Os dois ficam montados: a nota IA do dia é gerada mesmo sem abrir o separador. */}
+        <div className={`flex-1 min-h-0 flex flex-col ${notesTab === 'notas' ? '' : 'hidden'}`}>
+          <NotesPanel
+            projectPath={project.path}
+            mode="manual"
+            date={date}
+            hasActivity={hasActivity}
+            onChanged={onChanged}
+            onConverted={handleConverted}
+          />
+        </div>
+        <div className={`flex-1 min-h-0 flex flex-col ${notesTab === 'ia' ? '' : 'hidden'}`}>
+          <NotesPanel
+            projectPath={project.path}
+            mode="ai"
+            date={date}
+            hasActivity={hasActivity}
+            onChanged={onChanged}
+            onConverted={handleConverted}
+          />
+        </div>
+      </div>
+      <div className="bg-[#161616] flex flex-col min-h-0">
+        <TodosPanel projectPath={project.path} reloadKey={todoReload} onChanged={onChanged} />
+      </div>
+    </div>
+  );
+}
+
+// A nota (da secção Notas) lado a lado com os TODOs, sem o separador de notas
+// IA — para quem só quer estas duas coisas, sem ter de trocar de aba.
+function NoteAndTodosPanels({
+  project, onChanged,
+}: {
+  project: CodeActivityProject;
+  onChanged: () => void;
+}) {
+  return (
+    <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-2 gap-px bg-[#222] rounded-2xl border border-[#222] overflow-hidden">
+      {/* No telemóvel ficam um por cima do outro e sem altura própria a Nota
+          encolhia até duas linhas. No computador dividem a altura como antes. */}
+      <div className="bg-[#161616] flex flex-col min-h-[320px] lg:min-h-0">
+        <LinkedNotePanel projectPath={project.path} projectName={project.name} embedded />
+      </div>
+      <div className="bg-[#161616] flex flex-col min-h-[320px] lg:min-h-0">
+        <TodosPanel projectPath={project.path} reloadKey={0} onChanged={onChanged} />
       </div>
     </div>
   );
 }
 
 function WakaTimePanel() {
-  const [range, setRange] = useState('last_7_days');
+  const [period, setPeriod] = useState('last_7_days');
+  const [periods, setPeriods] = useState<{ months: string[]; years: number[] }>({ months: [], years: [] });
   const [data, setData] = useState<WakaSummary | null>(null);
+  const [hours, setHours] = useState<WakaHours | null>(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
 
-  const load = (key: string) => {
+  const load = (p: string) => {
     setLoading(true);
-    wakatimeApi.summary(key)
+    wakatimeApi.summary(periodToArg(p))
       .then(setData)
       .catch(() => setData(null))
       .finally(() => setLoading(false));
+    wakatimeApi.hours(periodToArg(p)).then(setHours).catch(() => setHours(null));
   };
-  useEffect(() => { load(range); }, [range]);
+  useEffect(() => { load(period); }, [period]);
+  useEffect(() => { wakatimeApi.periods().then(setPeriods).catch(() => {}); }, []);
 
   const sync = async () => {
     if (syncing) return;
     setSyncing(true);
     try {
       await wakatimeApi.sync(14);
-      load(range);
+      load(period);
+      wakatimeApi.periods().then(setPeriods).catch(() => {});
     } catch { /* ignora */ } finally { setSyncing(false); }
   };
 
@@ -436,13 +601,29 @@ function WakaTimePanel() {
     <div className="space-y-6">
       <div className="flex items-center justify-end gap-2">
         <select
-          value={range}
-          onChange={e => setRange(e.target.value)}
+          value={period}
+          onChange={e => setPeriod(e.target.value)}
           className="bg-[#1a1a1a] border border-[#222] rounded-lg px-3 py-1.5 text-xs font-semibold text-cyan-300 focus:outline-none focus:border-cyan-500/50"
         >
-          {WAKA_RANGES.map(r => (
-            <option key={r.key} value={r.key} className="bg-[#161616] text-gray-200">{r.label}</option>
-          ))}
+          <optgroup label="Rápido">
+            {WAKA_RANGES.map(r => (
+              <option key={r.key} value={r.key} className="bg-[#161616] text-gray-200">{r.label}</option>
+            ))}
+          </optgroup>
+          {periods.months.length > 0 && (
+            <optgroup label="Por mês">
+              {periods.months.map(m => (
+                <option key={m} value={`m:${m}`} className="bg-[#161616] text-gray-200">{monthLabel(m)}</option>
+              ))}
+            </optgroup>
+          )}
+          {periods.years.length > 0 && (
+            <optgroup label="Por ano">
+              {periods.years.map(y => (
+                <option key={y} value={`y:${y}`} className="bg-[#161616] text-gray-200">{y}</option>
+              ))}
+            </optgroup>
+          )}
         </select>
         <button
           onClick={sync}
@@ -503,6 +684,10 @@ function WakaTimePanel() {
         </div>
       )}
 
+      <WakaHoursChart hours={hours} />
+
+      <AiTrendPanel />
+
       <div className="bg-[#161616] rounded-2xl border border-[#222] p-4">
         <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-4">Código com IA</h3>
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-4">
@@ -528,6 +713,113 @@ function WakaTimePanel() {
         <WakaBreakdown title="Projectos hoje" items={data.today_projects} max={8} />
         <WakaBreakdown title="Linguagens" items={data.languages} max={8} />
         <WakaBreakdown title="Categorias" items={data.categories} max={6} />
+      </div>
+    </div>
+  );
+}
+
+// Custo e peso da IA mês a mês — os dados já vinham do WakaTime, faltava vê-los.
+function AiTrendPanel() {
+  const [data, setData] = useState<WakaAiTrend | null>(null);
+  const [meses, setMeses] = useState(6);
+
+  useEffect(() => { wakatimeApi.aiTrend(meses).then(setData).catch(() => setData(null)); }, [meses]);
+  if (!data || data.months.length === 0) return null;
+
+  const maxCost = Math.max(1, ...data.months.map(m => m.cost));
+  const fmtLinhas = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+  const fmtH = (s: number) => `${Math.floor(s / 3600)}h`;
+
+  return (
+    <div className="bg-[#161616] rounded-2xl border border-[#222] p-4">
+      <div className="flex items-baseline justify-between gap-2 mb-4">
+        <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Custo e peso da IA</h3>
+        <select
+          value={meses}
+          onChange={e => setMeses(Number(e.target.value))}
+          className="bg-[#1a1a1a] border border-[#222] rounded-lg px-2 py-1 text-[11px] text-cyan-300 focus:outline-none"
+        >
+          {[3, 6, 12, 24].map(n => <option key={n} value={n} className="bg-[#161616] text-gray-200">{n} meses</option>)}
+        </select>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+        <WakaMini label="Custo total" value={`${data.total_cost.toFixed(2)}`} accent />
+        <WakaMini label="Linhas IA" value={fmtLinhas(data.total_ai_lines)} />
+        <WakaMini label="Linhas minhas" value={fmtLinhas(data.total_human_lines)} />
+        <WakaMini label="Peso da IA" value={`${data.ai_pct}%`} sub="das linhas escritas" />
+      </div>
+
+      <div className="flex items-end gap-2 mb-4">
+        {data.months.map(m => (
+          <div key={m.month} className="flex-1 flex flex-col items-center gap-1 group min-w-0">
+            <span className="text-[9px] text-cyan-300/80">{m.cost.toFixed(0)}</span>
+            <div className="w-full h-24 flex items-end">
+              <div
+                className="w-full rounded-t-md bg-cyan-400/40 group-hover:bg-cyan-400/70 transition-all"
+                style={{ height: `${Math.max(3, (m.cost / maxCost) * 100)}%` }}
+                title={`${m.month}: custo ${m.cost.toFixed(2)} · ${fmtLinhas(m.ai_lines)} linhas IA (${m.ai_pct}%) · ${m.prompts} prompts`}
+              />
+            </div>
+            <span className="text-[9px] text-gray-600">{m.month.slice(5)}/{m.month.slice(2, 4)}</span>
+          </div>
+        ))}
+      </div>
+
+      <div className="space-y-2">
+        <p className="text-[10px] text-gray-600 uppercase tracking-wider">Por projecto</p>
+        {data.projects.filter(p => p.cost > 0 || p.ai_lines > 0).slice(0, 6).map(p => (
+          <div key={p.name} className="flex items-center gap-3 text-xs">
+            <span className="w-28 truncate text-gray-300" title={p.name}>{p.name}</span>
+            <div className="flex-1 h-2 bg-[#1a1a1a] rounded-full overflow-hidden flex">
+              <div className="h-full bg-cyan-400/70" style={{ width: `${p.ai_pct}%` }} />
+              <div className="h-full bg-gray-600/50" style={{ width: `${100 - p.ai_pct}%` }} />
+            </div>
+            <span className="w-10 text-right text-gray-500">{p.ai_pct}%</span>
+            <span className="w-16 text-right text-cyan-300">{p.cost.toFixed(2)}</span>
+            <span className="w-20 text-right text-gray-600">
+              {p.cost_per_hour !== null ? `${p.cost_per_hour}/h` : fmtH(p.seconds)}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function WakaHoursChart({ hours }: { hours: WakaHours | null }) {
+  if (!hours || hours.total_seconds <= 0) return null;
+  const maxSec = Math.max(1, ...hours.hours.map(h => h.seconds));
+  const fmtH = (n: number) => `${String(n).padStart(2, '0')}h`;
+  return (
+    <div className="bg-[#161616] rounded-2xl border border-[#222] p-4">
+      <div className="flex items-baseline justify-between mb-4">
+        <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">A que horas programo</h3>
+        {hours.peak_hour !== null && (
+          <span className="text-[11px] text-gray-500">
+            pico às <span className="text-cyan-300 font-semibold">{fmtH(hours.peak_hour)}</span>
+          </span>
+        )}
+      </div>
+      <div className="flex items-end gap-[3px]">
+        {hours.hours.map(h => {
+          const pct = (h.seconds / maxSec) * 100;
+          const isPeak = h.hour === hours.peak_hour;
+          return (
+            <div key={h.hour} className="flex-1 flex flex-col items-center gap-1 group min-w-0">
+              <div className="relative w-full h-28 flex items-end">
+                <div className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1 hidden group-hover:block z-20 whitespace-nowrap rounded-md bg-[#222] border border-[#333] px-2 py-1 text-[10px] text-gray-100 shadow-lg">
+                  {fmtH(h.hour)} · {h.text}
+                </div>
+                <div
+                  className={`w-full rounded-t-sm transition-all ${isPeak ? 'bg-cyan-400' : 'bg-cyan-400/35 group-hover:bg-cyan-400/60'}`}
+                  style={{ height: `${Math.max(h.seconds > 0 ? 3 : 0, pct)}%` }}
+                />
+              </div>
+              <span className={`text-[8px] tabular-nums ${isPeak ? 'text-cyan-300 font-bold' : 'text-gray-600'}`}>{String(h.hour).padStart(2, '0')}</span>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -698,161 +990,318 @@ function WakaBreakdown({ title, items, max }: { title: string; items: WakaBreakd
   );
 }
 
-function SummaryTile({ label, value, accent }: { label: string; value: number; accent?: 'emerald' | 'purple' }) {
-  const ring = accent === 'emerald'
-    ? 'border-emerald-500/30'
-    : accent === 'purple'
-    ? 'border-purple-500/30'
-    : 'border-[#222]';
+// Nota da secção Notas associada ao projecto, editável aqui mesmo (autosave).
+function LinkedNotePanel({ projectPath, projectName, embedded }: { projectPath: string; projectName: string; embedded?: boolean }) {
+  const navigate = useNavigate();
+  const [linked, setLinked] = useState<Note[]>([]);
+  const [activeId, setActiveId] = useState<number | null>(null);
+  const [draft, setDraft] = useState('');
+  const [mode, setMode] = useState<'scroll' | 'pages'>('scroll');
+  const [status, setStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
+  const [modal, setModal] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Guarda o que ainda não foi gravado, para não se perder ao trocar de nota/projecto.
+  const pending = useRef<{ id: number; value: string } | null>(null);
+  const seededId = useRef<number | null>(null);
+
+  const flush = () => {
+    if (timer.current) { clearTimeout(timer.current); timer.current = null; }
+    const p = pending.current;
+    pending.current = null;
+    if (p) notesApi.update(p.id, { content: p.value }).catch(() => {});
+  };
+
+  const load = () => {
+    notesApi.list({ project_path: projectPath })
+      .then((ns: Note[]) => {
+        setLinked(ns);
+        setActiveId(prev => (prev && ns.some(n => n.id === prev) ? prev : ns[0]?.id ?? null));
+      })
+      .catch(() => {});
+  };
+  useEffect(() => {
+    flush();
+    seededId.current = null;
+    setActiveId(null);
+    setDraft('');
+    load();
+  }, [projectPath]);
+
+  useEffect(() => () => flush(), []);
+
+  const active = linked.find(n => n.id === activeId) || null;
+
+  // O texto só é semeado quando muda a nota — nunca a partir da resposta do servidor,
+  // senão o que se escrevesse durante o pedido de gravação era descartado.
+  useEffect(() => {
+    if (!active) { seededId.current = null; setDraft(''); return; }
+    if (seededId.current === active.id) return;
+    seededId.current = active.id;
+    setDraft(active.content || '');
+    setMode(localStorage.getItem(viewModeKey(active.id)) === 'pages' ? 'pages' : 'scroll');
+  }, [active?.id, active?.content]);
+
+  const changeMode = (m: 'scroll' | 'pages') => {
+    setMode(m);
+    if (active) localStorage.setItem(viewModeKey(active.id), m);
+  };
+
+  const switchNote = (id: number) => {
+    flush();
+    seededId.current = null;
+    setActiveId(id);
+  };
+
+  const edit = (value: string) => {
+    setDraft(value);
+    if (!active) return;
+    pending.current = { id: active.id, value };
+    if (timer.current) clearTimeout(timer.current);
+    setStatus('saving');
+    timer.current = setTimeout(async () => {
+      timer.current = null;
+      try {
+        await notesApi.update(active.id, { content: value });
+        setLinked(prev => prev.map(n => (n.id === active.id ? { ...n, content: value } : n)));
+        if (pending.current?.value === value) pending.current = null;
+        setStatus('saved');
+        setTimeout(() => setStatus(s => (s === 'saved' ? 'idle' : s)), 1500);
+      } catch {
+        setStatus('idle');
+      }
+    }, 700);
+  };
+
   return (
-    <div className={`bg-[#161616] rounded-2xl border ${ring} p-4`}>
-      <p className="text-xs text-gray-500 mb-1">{label}</p>
-      <p className="text-2xl font-bold">{value}</p>
+    <div className={`flex-1 min-h-0 flex flex-col ${embedded ? '' : 'bg-[#161616] rounded-2xl border border-[#222]'}`}>
+      <div className="flex items-center gap-2 px-3 py-2 shrink-0">
+        <StickyNote size={14} className="text-blue-300 shrink-0" />
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-xs font-bold text-blue-300 uppercase tracking-wider shrink-0">Nota</span>
+          <span className="text-xs text-gray-500 truncate">
+            {active ? (active.title || 'Sem título') : 'nenhuma nota associada'}
+          </span>
+        </div>
+        {status !== 'idle' && (
+          <span className="text-[10px] text-gray-600 shrink-0">{status === 'saving' ? 'a guardar…' : 'guardado'}</span>
+        )}
+        <div className="ml-auto flex items-center gap-1.5 shrink-0">
+          {active && <ModeToggle mode={mode} onChange={changeMode} />}
+          {active && (
+            <button
+              onClick={() => navigate(`/notes?note=${active.id}`)}
+              title="Abrir na secção Notas"
+              className="p-1.5 rounded-lg text-gray-500 hover:text-blue-300 hover:bg-white/5"
+            >
+              <ChevronRight size={15} />
+            </button>
+          )}
+          <button
+            onClick={() => setModal(true)}
+            title={active ? 'Gerir notas do projecto' : 'Criar/associar nota'}
+            className="p-1.5 rounded-lg text-gray-500 hover:text-gray-200 hover:bg-white/5"
+          >
+            {active ? <Link2 size={15} /> : <FilePlus2 size={15} />}
+          </button>
+        </div>
+      </div>
+      <div className="flex-1 min-h-0 flex flex-col gap-2 border-t border-[#222] p-3">
+        {linked.length > 1 && (
+          <div className="flex flex-wrap gap-1 shrink-0">
+            {linked.map(n => (
+              <button
+                key={n.id}
+                onClick={() => switchNote(n.id)}
+                className={`px-2 py-1 rounded-lg text-[11px] max-w-[160px] truncate ${
+                  n.id === activeId ? 'bg-blue-500/20 text-blue-300' : 'bg-[#1a1a1a] text-gray-500 hover:text-gray-300'
+                }`}
+              >
+                {n.title || 'Sem título'}
+              </button>
+            ))}
+          </div>
+        )}
+        {active ? (
+          <div className="flex-1 min-h-0 flex flex-col bg-[#1a1a1a] border border-[#222] rounded-lg px-3 py-2">
+            <NoteBody
+              key={active.id}
+              note={{ ...active, content: draft }}
+              mode={mode}
+              onContentChange={edit}
+              dense
+            />
+          </div>
+        ) : (
+          <button
+            onClick={() => setModal(true)}
+            className="flex-1 min-h-0 w-full flex items-center justify-center gap-2 px-3 rounded-lg bg-[#1a1a1a] hover:bg-white/5 text-xs text-gray-400"
+          >
+            <FilePlus2 size={14} /> Criar ou associar uma nota a {projectName}
+          </button>
+        )}
+      </div>
+      {modal && (
+        <ProjectNotesModal
+          projectPath={projectPath}
+          projectName={projectName}
+          linked={linked}
+          onClose={() => setModal(false)}
+          onChanged={load}
+        />
+      )}
     </div>
   );
 }
 
-function ProjectCard({
-  project, date, hasActivity, onChanged, defaultExpanded = true, favorite, onToggleFavorite,
+function ProjectNotesModal({
+  projectPath, projectName, linked, onClose, onChanged,
 }: {
-  project: CodeActivityProject;
-  date: string;
-  hasActivity: boolean;
+  projectPath: string;
+  projectName: string;
+  linked: Note[];
+  onClose: () => void;
   onChanged: () => void;
-  defaultExpanded?: boolean;
-  favorite?: boolean;
-  onToggleFavorite?: () => void;
 }) {
-  const [expanded, setExpanded] = useState(defaultExpanded);
-  const [showFiles, setShowFiles] = useState(false);
-  const [leftTab, setLeftTab] = useState<'notas' | 'todos'>('notas');
-  const [todoReload, setTodoReload] = useState(0);
+  const navigate = useNavigate();
+  const [all, setAll] = useState<Note[]>([]);
+  const [q, setQ] = useState('');
+  const [busy, setBusy] = useState(false);
 
-  const handleConverted = () => {
-    setTodoReload(k => k + 1);
-    setLeftTab('todos');
-    onChanged();
+  useEffect(() => { notesApi.list().then(setAll).catch(() => {}); }, []);
+
+  const goToNote = (id: number) => { onClose(); navigate(`/notes?note=${id}`); };
+
+  // Depois de criar/associar fica-se na Atividade — a nota já é editável ali.
+  const createNew = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await notesApi.create({ title: projectName, content: '', project_path: projectPath });
+      onChanged();
+      onClose();
+    } finally { setBusy(false); }
   };
+
+  const associate = async (note: Note) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await notesApi.update(note.id, { project_path: projectPath });
+      onChanged();
+      onClose();
+    } finally { setBusy(false); }
+  };
+
+  const unlink = async (note: Note) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await notesApi.update(note.id, { project_path: null });
+      onChanged();
+    } finally { setBusy(false); }
+  };
+
+  const linkedIds = new Set(linked.map(n => n.id));
+  const term = q.trim().toLowerCase();
+  const candidates = all
+    .filter(n => !linkedIds.has(n.id))
+    .filter(n => !term || (n.title || '').toLowerCase().includes(term) || (n.content || '').toLowerCase().includes(term))
+    .slice(0, 50);
+
   return (
-    <div className="bg-[#161616] rounded-2xl border border-[#222] overflow-hidden">
-      <div className="w-full flex items-center justify-between p-4 hover:bg-white/5">
-        {onToggleFavorite && (
-          <button
-            onClick={onToggleFavorite}
-            title={favorite ? 'Remover dos favoritos' : 'Marcar como favorito'}
-            className={`mr-3 shrink-0 transition-colors ${
-              favorite ? 'text-blue-400' : 'text-gray-600 hover:text-blue-400'
-            }`}
-          >
-            <Star size={16} fill={favorite ? 'currentColor' : 'none'} />
-          </button>
-        )}
-        <button
-          onClick={() => setExpanded(e => !e)}
-          className="flex items-center gap-3 min-w-0 flex-1 text-left"
-        >
-          <FolderGit2 size={18} className="text-blue-400 shrink-0" />
-          <div className="min-w-0">
-            <p className="text-sm font-semibold truncate">{project.name}</p>
-            {project.path && project.path !== project.name && (
-              <p className="text-[10px] text-gray-600 truncate">~/{project.path}</p>
-            )}
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div
+        className="bg-[#161616] rounded-2xl border border-[#2a2a2a] w-[420px] max-w-[90vw] max-h-[80vh] flex flex-col"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[#222]">
+          <div className="flex items-center gap-2 min-w-0">
+            <StickyNote size={16} className="text-blue-300 shrink-0" />
+            <h3 className="text-sm font-bold truncate">Notas · {projectName}</h3>
           </div>
-        </button>
-        <button
-          onClick={() => setExpanded(e => !e)}
-          className="flex items-center gap-3 shrink-0 pl-3"
-        >
-          <span className="text-xs text-gray-500">{project.files_count} ficheiros</span>
-          <span className="text-sm font-bold text-blue-400">{project.saves} saves</span>
-        </button>
-      </div>
-      {expanded && (
-        <div className="border-t border-[#222]">
-          <div className="px-4 pt-3 flex items-center justify-between">
-            <button
-              onClick={() => setShowFiles(s => !s)}
-              className="text-[11px] text-gray-500 hover:text-gray-300 flex items-center gap-1"
-            >
-              <FileCode size={12} />
-              {showFiles ? 'Esconder' : 'Mostrar'} {project.files_count} ficheiros
-            </button>
-          </div>
-          {showFiles && (
-            <div className="divide-y divide-[#1a1a1a] mx-4 my-2 rounded-lg border border-[#222] overflow-hidden">
-              {project.files.map(f => (
-                <div key={f.abs_path} className="flex items-center gap-3 p-2 hover:bg-white/5">
-                  <span className="text-base shrink-0">{fileIcon(f.filename)}</span>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm truncate">{f.filename}</p>
-                    <p className="text-[10px] text-gray-600 truncate">{f.rel_path}</p>
-                  </div>
-                  <span className="text-xs text-gray-500 shrink-0">{f.saves}×</span>
+          <button onClick={onClose} className="text-gray-500 hover:text-white shrink-0"><X size={18} /></button>
+        </div>
+
+        <div className="p-4 overflow-y-auto space-y-4">
+          {linked.length > 0 && (
+            <div className="space-y-1.5">
+              <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Notas associadas</p>
+              {linked.map(n => (
+                <div key={n.id} className="flex items-center gap-1 px-1 rounded-lg bg-[#1a1a1a]">
+                  <button
+                    onClick={() => unlink(n)}
+                    disabled={busy}
+                    title="Desassociar do projecto"
+                    className="p-2 text-gray-600 hover:text-red-400 shrink-0 disabled:opacity-50"
+                  >
+                    <Unlink size={13} />
+                  </button>
+                  <button
+                    onClick={() => goToNote(n.id)}
+                    className="flex items-center gap-2 flex-1 min-w-0 px-1 py-2 text-left hover:bg-white/5 rounded-lg"
+                  >
+                    <StickyNote size={13} className="text-blue-300 shrink-0" />
+                    <span className="text-sm truncate flex-1">{n.title || 'Sem título'}</span>
+                    <ChevronRight size={14} className="text-gray-600 shrink-0" />
+                  </button>
                 </div>
               ))}
             </div>
           )}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-px bg-[#222] mt-2">
-            <div className="bg-[#161616]">
-              <div className="px-4 pt-4">
-                <div className="inline-flex rounded-xl bg-[#1a1a1a] border border-[#222] p-0.5">
-                  <button
-                    onClick={() => setLeftTab('notas')}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
-                      leftTab === 'notas' ? 'bg-blue-500/20 text-blue-300' : 'text-gray-500 hover:text-gray-300'
-                    }`}
-                  >
-                    <FileCode size={13} /> Notas
-                  </button>
-                  <button
-                    onClick={() => setLeftTab('todos')}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
-                      leftTab === 'todos' ? 'bg-emerald-500/20 text-emerald-400' : 'text-gray-500 hover:text-gray-300'
-                    }`}
-                  >
-                    <ListChecks size={13} /> TODOs
-                  </button>
-                </div>
-              </div>
-              {leftTab === 'todos' ? (
-                <TodosPanel projectPath={project.path} reloadKey={todoReload} onChanged={onChanged} />
-              ) : (
-                <NotesPanel
-                  projectPath={project.path}
-                  mode="manual"
-                  date={date}
-                  hasActivity={hasActivity}
-                  onChanged={onChanged}
-                  onConverted={handleConverted}
-                />
-              )}
-            </div>
-            <div className="bg-[#161616]">
-              <NotesPanel
-                projectPath={project.path}
-                mode="ai"
-                date={date}
-                hasActivity={hasActivity}
-                onChanged={onChanged}
-                onConverted={handleConverted}
+
+          <button
+            onClick={createNew}
+            disabled={busy}
+            className="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 text-sm font-semibold disabled:opacity-50"
+          >
+            {busy ? <Loader2 size={15} className="animate-spin" /> : <FilePlus2 size={15} />}
+            Criar nova nota para este projecto
+          </button>
+
+          <div className="space-y-2">
+            <p className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Associar nota existente</p>
+            <div className="relative">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+              <input
+                value={q}
+                onChange={e => setQ(e.target.value)}
+                placeholder="Pesquisar notas..."
+                className="w-full bg-[#1a1a1a] border border-[#222] rounded-lg pl-9 pr-3 py-2 text-sm focus:outline-none focus:border-blue-500/50"
               />
+            </div>
+            <div className="space-y-1 max-h-[240px] overflow-y-auto">
+              {candidates.length === 0 ? (
+                <p className="text-xs text-gray-600 text-center py-3">Sem notas para associar.</p>
+              ) : candidates.map(n => (
+                <button
+                  key={n.id}
+                  onClick={() => associate(n)}
+                  disabled={busy}
+                  className="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-white/5 text-left disabled:opacity-50"
+                >
+                  <Link2 size={13} className="text-purple-400 shrink-0" />
+                  <span className="text-sm truncate flex-1">{n.title || 'Sem título'}</span>
+                </button>
+              ))}
             </div>
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 }
 
 function TodosPanel({ projectPath, reloadKey = 0, onChanged }: { projectPath: string; reloadKey?: number; onChanged: () => void }) {
   const [todos, setTodos] = useState<CodeProjectTodo[]>([]);
-  const [input, setInput] = useState('');
+  const [input, setInput] = useState(() => readDraft('todo', projectPath));
   const [busy, setBusy] = useState(false);
 
   const load = () => {
     codeActivityApi.listTodos(projectPath).then(setTodos).catch(() => {});
   };
-  useEffect(() => { load(); }, [projectPath, reloadKey]);
+  useEffect(() => { setInput(readDraft('todo', projectPath)); load(); }, [projectPath, reloadKey]);
+
+  const editInput = (v: string) => { setInput(v); writeDraft('todo', projectPath, v); };
 
   const add = async () => {
     const c = input.trim();
@@ -861,7 +1310,7 @@ function TodosPanel({ projectPath, reloadKey = 0, onChanged }: { projectPath: st
     try {
       const t = await codeActivityApi.createTodo(projectPath, c);
       setTodos(prev => [t, ...prev]);
-      setInput('');
+      editInput('');
       onChanged();
     } finally { setBusy(false); }
   };
@@ -878,21 +1327,29 @@ function TodosPanel({ projectPath, reloadKey = 0, onChanged }: { projectPath: st
     onChanged();
   };
 
+  const rename = async (t: CodeProjectTodo, content: string) => {
+    const c = content.trim();
+    if (!c || c === t.content) return;
+    const updated = await codeActivityApi.updateTodo(t.id, { content: c });
+    setTodos(prev => prev.map(x => x.id === t.id ? updated : x));
+    onChanged();
+  };
+
   const open = todos.filter(t => !t.done);
   const done = todos.filter(t => t.done);
 
   return (
-    <div className="p-4 space-y-3">
-      <div className="flex items-center gap-2 mb-1">
+    <div className="flex-1 min-h-0 flex flex-col gap-2.5 p-4">
+      <div className="flex items-center gap-2 shrink-0">
         <ListChecks size={14} className="text-emerald-400" />
         <h4 className="text-xs font-bold text-emerald-400 uppercase tracking-wider">TODOs</h4>
         <span className="text-[10px] text-gray-600 ml-auto">{todos.filter(t => !t.done).length} abertos</span>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 shrink-0">
         <input
           type="text"
           value={input}
-          onChange={e => setInput(e.target.value)}
+          onChange={e => editInput(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && add()}
           placeholder="Nova TODO..."
           className="flex-1 bg-[#1a1a1a] border border-[#222] rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-emerald-500/50"
@@ -908,34 +1365,141 @@ function TodosPanel({ projectPath, reloadKey = 0, onChanged }: { projectPath: st
       {todos.length === 0 ? (
         <p className="text-xs text-gray-600 text-center py-4">Sem TODOs neste projecto.</p>
       ) : (
-        <div className="space-y-1">
-          {open.map(t => <TodoRow key={t.id} todo={t} onToggle={() => toggle(t)} onDelete={() => remove(t.id)} />)}
+        <div className="flex-1 min-h-0 overflow-y-auto space-y-1 pr-1">
+          {open.map(t => <TodoRow key={t.id} todo={t} onToggle={() => toggle(t)} onDelete={() => remove(t.id)} onRename={c => rename(t, c)} />)}
           {done.length > 0 && (
             <p className="text-[10px] text-gray-600 uppercase tracking-wider mt-3 mb-1">Feitas</p>
           )}
-          {done.map(t => <TodoRow key={t.id} todo={t} onToggle={() => toggle(t)} onDelete={() => remove(t.id)} />)}
+          {done.map(t => <TodoRow key={t.id} todo={t} onToggle={() => toggle(t)} onDelete={() => remove(t.id)} onRename={c => rename(t, c)} />)}
         </div>
       )}
     </div>
   );
 }
 
-function TodoRow({ todo, onToggle, onDelete }: { todo: CodeProjectTodo; onToggle: () => void; onDelete: () => void }) {
+// Carregar no texto (ou no lápis) edita-o ali mesmo: Enter ou sair do campo
+// grava, Esc desiste.
+function TodoRow({ todo, onToggle, onDelete, onRename }: {
+  todo: CodeProjectTodo; onToggle: () => void; onDelete: () => void; onRename: (content: string) => void;
+}) {
+  const ts = todo.done && todo.done_at ? todo.done_at : todo.created_at;
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(todo.content);
+
+  const start = () => { setDraft(todo.content); setEditing(true); };
+  const save = () => { setEditing(false); onRename(draft); };
+
   return (
-    <div className="flex items-center gap-2 group py-1">
+    <div className="flex items-start gap-2 group py-1">
       <input
         type="checkbox"
         checked={todo.done}
         onChange={onToggle}
-        className="accent-emerald-500"
+        className="accent-emerald-500 mt-1"
       />
-      <span className={`flex-1 text-sm ${todo.done ? 'line-through text-gray-600' : ''}`}>{todo.content}</span>
+      {editing ? (
+        <textarea
+          autoFocus
+          rows={1}
+          value={draft}
+          ref={el => { if (el) { el.style.height = 'auto'; el.style.height = `${el.scrollHeight}px`; } }}
+          onChange={e => setDraft(e.target.value)}
+          onBlur={save}
+          onKeyDown={e => {
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); save(); }
+            else if (e.key === 'Escape') { setEditing(false); setDraft(todo.content); }
+          }}
+          className="flex-1 min-w-0 bg-[#1a1a1a] border border-emerald-500/40 rounded px-1.5 py-0.5 text-sm resize-none overflow-hidden focus:outline-none"
+        />
+      ) : (
+        <span onClick={start} title="carregar para editar"
+          className={`flex-1 min-w-0 text-sm cursor-text ${todo.done ? 'line-through text-gray-600' : ''}`}>{todo.content}</span>
+      )}
+      <span className="text-[10px] text-gray-700 shrink-0 mt-1">
+        {format(localDate(ts), "d MMM HH:mm", { locale: pt })}
+      </span>
+      {!editing && (
+        <button
+          onClick={start}
+          title="editar"
+          className="lg:opacity-0 lg:group-hover:opacity-100 text-gray-600 hover:text-emerald-400 transition-opacity mt-0.5"
+        >
+          <Pencil size={13} />
+        </button>
+      )}
       <button
         onClick={onDelete}
-        className="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-red-400 transition-opacity"
+        title="apagar"
+        className="lg:opacity-0 lg:group-hover:opacity-100 text-gray-600 hover:text-red-400 transition-opacity mt-0.5"
       >
         <Trash2 size={13} />
       </button>
+    </div>
+  );
+}
+
+// Relatório PDF: a IA organiza as notas do projecto no período escolhido.
+function ReportButton({ projectPath }: { projectPath: string }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const gerar = async (days: number) => {
+    if (busy !== null) return;
+    setBusy(days);
+    setError(null);
+    try {
+      const { blob, filename } = await codeActivityApi.notesReport(projectPath, days);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      setOpen(false);
+    } catch (e: any) {
+      setError(e?.message || 'Erro a gerar o PDF');
+    } finally { setBusy(null); }
+  };
+
+  return (
+    <div className="relative shrink-0">
+      <button
+        onClick={() => setOpen(o => !o)}
+        title="Relatório PDF das notas deste projecto, organizado pela IA"
+        className="flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-semibold text-gray-500 hover:text-blue-300 hover:bg-white/5"
+      >
+        {busy !== null ? <Loader2 size={12} className="animate-spin" /> : <FileDown size={12} />}
+        PDF
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => !busy && setOpen(false)} />
+          <div className="absolute right-0 top-full mt-1 z-40 w-52 bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-1.5 shadow-xl">
+            <p className="px-2 py-1 text-[10px] text-gray-500 uppercase tracking-wider">Período do relatório</p>
+            {[
+              { days: 7, label: 'Última semana' },
+              { days: 30, label: 'Último mês' },
+              { days: 90, label: 'Últimos 3 meses' },
+              { days: 365, label: 'Último ano' },
+            ].map(opt => (
+              <button
+                key={opt.days}
+                onClick={() => gerar(opt.days)}
+                disabled={busy !== null}
+                className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-gray-300 hover:bg-white/5 disabled:opacity-50"
+              >
+                {busy === opt.days ? <Loader2 size={12} className="animate-spin" /> : <FileDown size={12} className="text-gray-600" />}
+                {opt.label}
+              </button>
+            ))}
+            {busy !== null && (
+              <p className="px-2 py-1 text-[10px] text-gray-500">A IA está a organizar as notas — pode demorar ~1 min.</p>
+            )}
+            {error && <p className="px-2 py-1 text-[10px] text-red-400">{error}</p>}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -952,13 +1516,15 @@ function NotesPanel({
 }) {
   const isAi = mode === 'ai';
   const [allNotes, setAllNotes] = useState<CodeProjectNote[]>([]);
-  const [input, setInput] = useState('');
+  const [input, setInput] = useState(() => readDraft('nota', projectPath));
   const [busy, setBusy] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [genError, setGenError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [convertingId, setConvertingId] = useState<number | null>(null);
   const [convertError, setConvertError] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editDraft, setEditDraft] = useState('');
   const autoTried = useRef<string>('');
 
   const notes = allNotes.filter(n => (isAi ? n.source === 'ai' : n.source !== 'ai'));
@@ -980,7 +1546,27 @@ function NotesPanel({
       .then(ns => { setAllNotes(ns); setLoaded(true); })
       .catch(() => setLoaded(true));
   };
-  useEffect(() => { setLoaded(false); load(); }, [projectPath]);
+  useEffect(() => {
+    setLoaded(false);
+    setEditingId(null);
+    setInput(readDraft('nota', projectPath));
+    load();
+  }, [projectPath]);
+
+  const editInput = (v: string) => { setInput(v); writeDraft('nota', projectPath, v); };
+
+  const startEdit = (n: CodeProjectNote) => { setEditingId(n.id); setEditDraft(n.content); };
+
+  const saveEdit = async () => {
+    const c = editDraft.trim();
+    if (editingId === null || !c || busy) return;
+    setBusy(true);
+    try {
+      const updated = await codeActivityApi.updateNote(editingId, c);
+      setAllNotes(prev => prev.map(n => (n.id === updated.id ? updated : n)));
+      setEditingId(null);
+    } finally { setBusy(false); }
+  };
 
   const add = async () => {
     const c = input.trim();
@@ -989,7 +1575,7 @@ function NotesPanel({
     try {
       const n = await codeActivityApi.createNote(projectPath, c, date);
       setAllNotes(prev => [n, ...prev]);
-      setInput('');
+      editInput('');
       onChanged();
     } finally { setBusy(false); }
   };
@@ -1027,15 +1613,16 @@ function NotesPanel({
   const accentText = isAi ? 'text-purple-400' : 'text-blue-300';
 
   return (
-    <div className="p-4 space-y-3">
-      <div className="flex items-center gap-2 mb-1">
+    <div className="flex-1 min-h-0 flex flex-col gap-2.5 p-4">
+      <div className="flex items-center gap-2 shrink-0">
         {isAi ? <Sparkles size={14} className={accentText} /> : <FileCode size={14} className={accentText} />}
         <h4 className={`text-xs font-bold ${accentText} uppercase tracking-wider`}>{isAi ? 'Notas IA' : 'Notas'}</h4>
         {generating && <Loader2 size={12} className="text-purple-400 animate-spin" />}
         <span className="text-[10px] text-gray-600 ml-auto">{notes.length} notas</span>
+        {!isAi && <ReportButton projectPath={projectPath} />}
       </div>
       {isAi ? (
-        <div className="flex justify-end">
+        <div className="flex justify-end shrink-0">
           <button
             onClick={generate}
             disabled={generating}
@@ -1047,10 +1634,10 @@ function NotesPanel({
           </button>
         </div>
       ) : (
-        <div className="flex items-start gap-2">
+        <div className="flex items-start gap-2 shrink-0">
           <textarea
             value={input}
-            onChange={e => setInput(e.target.value)}
+            onChange={e => editInput(e.target.value)}
             placeholder="Nota sobre o projecto..."
             rows={2}
             className="flex-1 bg-[#1a1a1a] border border-[#222] rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-blue-500/50 resize-none"
@@ -1072,7 +1659,7 @@ function NotesPanel({
           {isAi ? 'Sem notas IA neste projecto.' : 'Sem notas neste projecto.'}
         </p>
       ) : (
-        <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
+        <div className="flex-1 min-h-0 space-y-2 overflow-y-auto pr-1">
           {notes.map(n => (
             <div key={n.id} className="group relative bg-[#1a1a1a] rounded-lg p-3">
               <div className="flex items-center gap-2 mb-1">
@@ -1081,8 +1668,19 @@ function NotesPanel({
                 }`}>{n.source === 'ai' ? '✨ IA' : 'Manual'}</span>
                 {n.note_date && <span className="text-[10px] text-gray-600">{n.note_date}</span>}
                 <span className="text-[10px] text-gray-700 ml-auto">
-                  {format(parseISO(n.created_at), "d MMM HH:mm", { locale: pt })}
+                  {format(localDate(n.created_at), "d MMM HH:mm", { locale: pt })}
                 </span>
+                {n.source !== 'ai' && (
+                  <button
+                    onClick={() => (editingId === n.id ? setEditingId(null) : startEdit(n))}
+                    title="Editar nota"
+                    className={`text-gray-600 hover:text-blue-300 transition-opacity ${
+                      editingId === n.id ? '' : 'opacity-0 group-hover:opacity-100'
+                    }`}
+                  >
+                    <Pencil size={12} />
+                  </button>
+                )}
                 <button
                   onClick={() => convert(n.id)}
                   disabled={convertingId !== null}
@@ -1098,7 +1696,44 @@ function NotesPanel({
                   <Trash2 size={12} />
                 </button>
               </div>
-              <p className="text-sm text-gray-300 whitespace-pre-wrap">{n.content}</p>
+              {editingId === n.id ? (
+                <div className="space-y-2">
+                  <textarea
+                    value={editDraft}
+                    onChange={e => setEditDraft(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Escape') setEditingId(null);
+                      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) saveEdit();
+                    }}
+                    autoFocus
+                    rows={Math.min(10, Math.max(3, editDraft.split('\n').length))}
+                    className="w-full bg-[#161616] border border-[#222] rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-blue-500/50 resize-none"
+                  />
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={saveEdit}
+                      disabled={!editDraft.trim() || busy}
+                      className="px-3 py-1 rounded-lg bg-blue-500/20 hover:bg-blue-500/30 disabled:opacity-40 text-blue-300 text-xs font-semibold"
+                    >
+                      Guardar
+                    </button>
+                    <button
+                      onClick={() => setEditingId(null)}
+                      className="px-3 py-1 rounded-lg bg-[#222] hover:bg-[#2a2a2a] text-gray-400 text-xs"
+                    >
+                      Cancelar
+                    </button>
+                    <span className="text-[10px] text-gray-600">⌘↵ guarda · Esc cancela</span>
+                  </div>
+                </div>
+              ) : (
+                <p
+                  onDoubleClick={() => n.source !== 'ai' && startEdit(n)}
+                  className="text-sm text-gray-300 whitespace-pre-wrap"
+                >
+                  {n.content}
+                </p>
+              )}
             </div>
           ))}
         </div>

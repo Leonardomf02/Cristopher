@@ -227,8 +227,10 @@ def format_sentiment_for_prompt(agg: dict) -> str:
 import sqlite3
 from datetime import datetime, date, timedelta
 
+from database import DB_PATH
 
-def persist_daily_sentiment(agg: dict, db_path: str = "cristopher.db") -> None:
+
+def persist_daily_sentiment(agg: dict, db_path: str = DB_PATH) -> None:
     """Upsert today's sentiment aggregate into daily_sentiment table."""
     if not agg or agg.get("engine") is None:
         return
@@ -255,7 +257,7 @@ def persist_daily_sentiment(agg: dict, db_path: str = "cristopher.db") -> None:
         logger.warning(f"persist_daily_sentiment failed: {e}")
 
 
-def compute_sentiment_delta(db_path: str = "cristopher.db") -> dict:
+def compute_sentiment_delta(db_path: str = DB_PATH) -> dict:
     """Return MA7 / MA30 / z-score delta for the sentiment time series.
 
     z-score interpretation:
@@ -310,7 +312,7 @@ def compute_sentiment_delta(db_path: str = "cristopher.db") -> dict:
     }
 
 
-def fetch_sentiment_history(days: int = 60, db_path: str = "cristopher.db") -> list[dict]:
+def fetch_sentiment_history(days: int = 60, db_path: str = DB_PATH) -> list[dict]:
     """Chronological list (oldest → newest) for charting."""
     try:
         conn = sqlite3.connect(db_path)

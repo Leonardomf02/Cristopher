@@ -5,7 +5,9 @@ from datetime import date, datetime, timedelta
 from dateutil.relativedelta import relativedelta
 from typing import Optional
 import json
+import os
 import subprocess
+import sys
 import logging
 import re
 
@@ -18,18 +20,30 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/events", tags=["Events"])
 
 
+def _date_set(raw: str | None) -> set[str]:
+    """Parse a JSON list-of-dates column into a set of 'YYYY-MM-DD' strings."""
+    try:
+        return {str(d) for d in json.loads(raw or "[]")}
+    except (json.JSONDecodeError, TypeError):
+        return set()
+
+
 def _expand_recurring(event: Event, range_start: date, range_end: date) -> list[dict]:
-    """Expand a recurring event into virtual instances within [range_start, range_end]."""
+    """Expand a recurring event into virtual instances within [range_start, range_end].
+
+    Uma tarefa **flexível** que se repete e que não foi feita num dia passado não
+    aparece nesse dia: "Projeto CS" todos os dias úteis é o que ele quer fazer
+    hoje, não uma dívida a acumular para trás no calendário. Um compromisso com
+    hora (fixo) continua a aparecer — aconteceu, tenha ele carimbado ou não.
+    """
     rec = event.recurrence or "none"
     if rec == "none":
         return []
 
-    exceptions = set()
-    try:
-        exc_list = json.loads(event.recurrence_exceptions or "[]")
-        exceptions = {str(d) for d in exc_list}
-    except (json.JSONDecodeError, TypeError):
-        pass
+    exceptions = _date_set(event.recurrence_exceptions)
+    completions = _date_set(getattr(event, "recurrence_completions", None))
+    so_se_feita = (event.event_type or "") == "flexible" and not event.start_time
+    hoje = date.today()
 
     rec_end = event.recurrence_end or range_end
     effective_end = min(rec_end, range_end)
@@ -40,7 +54,8 @@ def _expand_recurring(event: Event, range_start: date, range_end: date) -> list[
     while current <= effective_end:
         if current >= range_start and current != event.date:
             date_str = str(current)
-            if date_str not in exceptions:
+            passada_por_fazer = so_se_feita and current < hoje and date_str not in completions
+            if date_str not in exceptions and not passada_por_fazer:
                 instances.append({
                     "id": event.id,
                     "title": event.title,
@@ -51,7 +66,7 @@ def _expand_recurring(event: Event, range_start: date, range_end: date) -> list[
                     "event_type": event.event_type,
                     "category": event.category,
                     "color": event.color,
-                    "completed": False,
+                    "completed": date_str in completions,
                     "recurrence": event.recurrence,
                     "recurrence_end": event.recurrence_end,
                     "is_recurring_instance": True,
@@ -82,6 +97,43 @@ def _next_occurrence(current: date, recurrence: str) -> Optional[date]:
     elif recurrence == "yearly":
         return current + relativedelta(years=1)
     return None
+
+
+def _occurs_on(ev: Event, day: date) -> bool:
+    """True se o evento (ou uma sua instância recorrente) ocorre em `day`."""
+    if ev.date == day:
+        return True
+    if ev.recurrence and ev.recurrence not in ("none", ""):
+        return len(_expand_recurring(ev, day, day)) > 0
+    return False
+
+
+def events_due_now(db: Session, now: datetime, window_seconds: int = 90) -> list[tuple[str, str, str]]:
+    """Eventos com hora de início caída na janela (now-window, now] para hoje,
+    incluindo instâncias recorrentes. Devolve (chave_única, título, mensagem)."""
+    today = now.date()
+    due: list[tuple[str, str, str]] = []
+    candidates = (
+        db.query(Event)
+        .filter(Event.start_time.isnot(None), Event.completed == False)  # noqa: E712
+        .all()
+    )
+    for ev in candidates:
+        if not _occurs_on(ev, today):
+            continue
+        try:
+            sh, sm = (int(x) for x in ev.start_time.split(":")[:2])
+        except (ValueError, AttributeError):
+            continue
+        event_dt = datetime.combine(today, datetime.min.time()).replace(hour=sh, minute=sm)
+        if not (event_dt <= now < event_dt + timedelta(seconds=window_seconds)):
+            continue
+        key = f"{ev.id}:{today}:{ev.start_time}"
+        msg = f"{ev.start_time}"
+        if ev.end_time:
+            msg += f"–{ev.end_time}"
+        due.append((key, ev.title, msg))
+    return due
 
 
 @router.get("/", response_model=list[EventOut])
@@ -123,14 +175,16 @@ def list_events(
             if rec_end and rec_end < start_date:
                 continue
 
-            exceptions = set()
-            try:
-                exceptions = {str(d) for d in json.loads(ev.recurrence_exceptions or "[]")}
-            except (json.JSONDecodeError, TypeError):
-                pass
+            exceptions = _date_set(ev.recurrence_exceptions)
 
-            # Add original date if in range
-            if start_date <= ev.date <= end_date and str(ev.date) not in exceptions:
+            # A primeira ocorrência segue a mesma regra das outras: uma tarefa
+            # flexível por fazer não fica pendurada num dia que já passou.
+            passada_por_fazer = (
+                (ev.event_type or "") == "flexible" and not ev.start_time
+                and ev.date < date.today() and not ev.completed
+            )
+            if (start_date <= ev.date <= end_date and str(ev.date) not in exceptions
+                    and not passada_por_fazer):
                 d = EventOut.model_validate(ev)
                 d.is_recurring_instance = False
                 d.parent_id = None
@@ -202,9 +256,21 @@ class AppleCalendarImportRequest(BaseModel):
     days_forward: int = 90
 
 
+def _calendario_apple() -> bool:
+    """O Calendário da Apple fala-se por AppleScript: só existe no Mac. Na NAS
+    (CLOUD=1) nem se tenta — rebentava com o `open` a não existir."""
+    return sys.platform == "darwin" and os.getenv("CLOUD") != "1"
+
+
+def _exige_calendario_apple() -> None:
+    if not _calendario_apple():
+        raise HTTPException(status_code=501, detail="O Calendário da Apple só está disponível no Mac")
+
+
 @router.get("/apple-calendars")
 def list_apple_calendars():
     """List available Apple Calendar calendars via AppleScript."""
+    _exige_calendario_apple()
     # Ensure Calendar app is running
     subprocess.run(["open", "-a", "Calendar"], capture_output=True, timeout=5)
     import time as _time
@@ -236,6 +302,7 @@ def list_apple_calendars():
 @router.post("/import-apple-calendar")
 def import_apple_calendar(req: AppleCalendarImportRequest, db: Session = Depends(get_db)):
     """Import events from Apple Calendar via AppleScript."""
+    _exige_calendario_apple()
     # Ensure Calendar app is running
     subprocess.run(["open", "-a", "Calendar"], capture_output=True, timeout=5)
     import time as _time
@@ -360,6 +427,8 @@ def _escape_applescript(s: str) -> str:
 
 def _sync_event_to_apple(event: Event):
     """Create or update an event in Apple Calendar via AppleScript."""
+    if not _calendario_apple():
+        return False
     try:
         _ensure_calendar_app()
         cal_name = _CATEGORY_TO_APPLE_CALENDAR.get(event.category or "general", "Casa")
@@ -433,6 +502,8 @@ def _sync_event_to_apple(event: Event):
 
 def _delete_event_from_apple(title: str, event_date: date, start_time: str | None, category: str | None):
     """Delete an event from Apple Calendar."""
+    if not _calendario_apple():
+        return
     try:
         _ensure_calendar_app()
         cal_name = _CATEGORY_TO_APPLE_CALENDAR.get(category or "general", "Casa")
@@ -489,6 +560,7 @@ class ExportAppleCalendarRequest(BaseModel):
 @router.post("/export-apple-calendar")
 def export_to_apple_calendar(req: ExportAppleCalendarRequest, db: Session = Depends(get_db)):
     """Export Cristopher events to Apple Calendar."""
+    _exige_calendario_apple()
     today = date.today()
     start = today - timedelta(days=req.days_back)
     end = today + timedelta(days=req.days_forward)
@@ -572,19 +644,50 @@ def exclude_recurring_date(event_id: int, target_date: date = Query(...), db: Se
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    exceptions = []
-    try:
-        exceptions = json.loads(event.recurrence_exceptions or "[]")
-    except (json.JSONDecodeError, TypeError):
-        pass
-
+    exceptions = _date_set(event.recurrence_exceptions)
     date_str = str(target_date)
     if date_str not in exceptions:
-        exceptions.append(date_str)
-        event.recurrence_exceptions = json.dumps(exceptions)
+        exceptions.add(date_str)
+        event.recurrence_exceptions = json.dumps(sorted(exceptions))
         db.commit()
 
     return {"ok": True}
+
+
+@router.put("/{event_id}/occurrence")
+def set_occurrence_completed(
+    event_id: int,
+    target_date: date = Query(...),
+    completed: bool = Query(...),
+    completed_at: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Marca/desmarca UMA ocorrência de um evento recorrente. As instâncias recorrentes
+    são virtuais, por isso o estado guarda-se por data no evento-pai — marcar uma não
+    pode marcar as outras nem a ocorrência original.
+
+    `completed_at` (HH:MM) regista a hora a que foi dado check, para tarefas flexíveis
+    aparecerem na timeline à hora em que foram feitas."""
+    event = db.query(Event).filter(Event.id == event_id).first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    date_str = str(target_date)
+    # A data original do evento é uma linha real: mantém-se no campo `completed`.
+    if event.date == target_date:
+        event.completed = completed
+        event.completed_at = completed_at if completed else None
+        db.commit()
+        return {"ok": True, "date": date_str, "completed": completed}
+
+    done = _date_set(event.recurrence_completions)
+    if completed:
+        done.add(date_str)
+    else:
+        done.discard(date_str)
+    event.recurrence_completions = json.dumps(sorted(done))
+    db.commit()
+    return {"ok": True, "date": date_str, "completed": completed}
 
 
 @router.delete("/{event_id}")

@@ -249,23 +249,31 @@ def _is_scheduled(days: str, weekday: int) -> bool:
 @router.get("/analytics")
 def habit_analytics(
     days: int = Query(90, ge=7, le=365),
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
     db: Session = Depends(get_db),
 ):
-    """Full analytics: completion rates, streaks, heatmap, best/worst days."""
+    """Full analytics: completion rates, streaks, heatmap, best/worst days.
+    Com start_date/end_date (um mês, um ano) a janela é essa em vez dos últimos
+    `days`; o que ainda não chegou não conta como falhado."""
     today = date.today()
-    cutoff = today - timedelta(days=days)
+    if start_date:
+        cutoff = start_date
+        fim = min(end_date or today, today)
+    else:
+        cutoff = today - timedelta(days=days)
+        fim = today
+    # A streak actual é sempre a de hoje, seja qual for o período que se está a ver.
+    desde = min(cutoff, today - timedelta(days=400))
 
     habits = db.query(Habit).filter(Habit.active == True).order_by(Habit.position, Habit.id).all()
-    all_completions = (
-        db.query(HabitCompletion)
-        .filter(HabitCompletion.date >= cutoff)
-        .all()
-    )
+    todas = db.query(HabitCompletion).filter(HabitCompletion.date >= desde).all()
+    all_completions = [c for c in todas if cutoff <= c.date <= fim]
 
     # Get protected day types in range (Férias, Aulas, Doente, Viagem) — streak skips these days
     protected_dates = {
         str(dt.date) for dt in db.query(DayType).filter(
-            DayType.date >= cutoff,
+            DayType.date >= desde,
             DayType.type_name.in_(STREAK_PROTECTED_TYPES),
         ).all()
     }
@@ -273,8 +281,9 @@ def habit_analytics(
     # Group completions by habit
     comp_by_habit: dict[int, set[str]] = {}
     times_by_habit: dict[int, list[dict]] = {}
-    for c in all_completions:
+    for c in todas:
         comp_by_habit.setdefault(c.habit_id, set()).add(str(c.date))
+    for c in all_completions:
         times_by_habit.setdefault(c.habit_id, []).append({
             "date": str(c.date),
             "time": c.completed_at,
@@ -290,7 +299,8 @@ def habit_analytics(
 
     habit_details = []
     for h in habits:
-        dates_completed = comp_by_habit.get(h.id, set())
+        todas_feitas = comp_by_habit.get(h.id, set())
+        dates_completed = {ds for ds in todas_feitas if str(cutoff) <= ds <= str(fim)}
         entries = times_by_habit.get(h.id, [])
         time_by_date = {e["date"]: e["time"] for e in entries}
 
@@ -301,7 +311,7 @@ def habit_analytics(
         by_weekday_scheduled = [0] * 7
 
         d = cutoff
-        while d <= today:
+        while d <= fim:
             if _is_scheduled(h.days, d.weekday()) and str(d) not in protected_dates:
                 scheduled += 1
                 by_weekday_scheduled[d.weekday()] += 1
@@ -314,12 +324,12 @@ def habit_analytics(
         # Protected days (Férias/Aulas/Doente/Viagem) are skipped and do not break the streak.
         current_streak = 0
         d = today
-        while d >= cutoff:
+        while d >= desde:
             if str(d) in protected_dates:
                 d -= timedelta(days=1)
                 continue
             if _is_scheduled(h.days, d.weekday()):
-                if str(d) in dates_completed:
+                if str(d) in todas_feitas:
                     current_streak += 1
                 else:
                     break
@@ -329,7 +339,7 @@ def habit_analytics(
         best_streak = 0
         streak = 0
         d = cutoff
-        while d <= today:
+        while d <= fim:
             if str(d) in protected_dates:
                 d += timedelta(days=1)
                 continue
@@ -379,7 +389,7 @@ def habit_analytics(
                     "protected": str(d) in protected_dates,
                     "time": time_by_date.get(str(d)),
                 }
-                for d in (cutoff + timedelta(days=i) for i in range((today - cutoff).days + 1))
+                for d in (cutoff + timedelta(days=i) for i in range((fim - cutoff).days + 1))
             ],
             "times": sorted(entries, key=lambda e: e["date"], reverse=True),
             "time_stats": _time_stats(entries),
@@ -388,7 +398,7 @@ def habit_analytics(
     # Global heatmap for last N days
     heatmap_list = []
     d = cutoff
-    while d <= today:
+    while d <= fim:
         heatmap_list.append({
             "date": str(d),
             "count": heatmap.get(str(d), 0),

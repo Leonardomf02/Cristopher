@@ -221,9 +221,12 @@ function MiniTimer() {
   // ele está nisto.
   const semFim = activePreset.work_minutes <= 0 && phase === 'work';
   const segundos = semFim ? elapsedWorkSeconds : secondsLeft;
-  const m = Math.floor(segundos / 60);
+  // A partir de uma hora passa a "1h35", sem segundos — "95:11" obrigava a fazer contas.
+  const h = Math.floor(segundos / 3600);
+  const m = Math.floor((segundos % 3600) / 60);
   const s = segundos % 60;
-  const time = `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  const dois = (n: number) => n.toString().padStart(2, '0');
+  const time = h > 0 ? `${h}h${dois(m)}` : `${dois(m)}:${dois(s)}`;
 
   return (
     <div

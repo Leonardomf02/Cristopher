@@ -66,7 +66,8 @@ A app corre num contentor na NAS QNAP do Pedro (TS-431KX, **ARM de 32 bits**,
 páginas de 32K), com a mesma receita do Cinespot. Guia: [`DEPLOY-NAS.md`](DEPLOY-NAS.md).
 **Sem Tailscale** — é uma porta aberta no router pelo Pedro.
 
-- **https://NASPEDRO02.myqnapcloud.com:8443** → reverse proxy → contentor na 9011.
+- **https://<NAS_HOST>:8443** → reverse proxy → contentor na 9011. O `NAS_HOST` vive no
+  `.env.nas` (fora do git): o repo é público e aquilo é uma porta aberta em casa do Pedro.
 - Uma imagem só: o FastAPI serve a API e o build do React (`STATIC_DIR`).
 - Actualizar: `IMG=cristopher:vN ./build-nas.sh /tmp/x.tar && ./deploy-nas.sh /tmp/x.tar`,
   importar na Container Station, mudar a etiqueta no YAML. **Etiqueta nova sempre.**
@@ -159,6 +160,11 @@ TRACKER_AUTOSTART=1          # 1 em macOS local; 0 em Codespaces (auto-skipped e
 ## Repo & Deploy
 
 - Repo: https://github.com/Leonardomf02/Cristopher (público)
+- **Nenhum segredo em ficheiros do git**, nem como valor por omissão no código: a
+  chave da Riot esteve escrita em `routers/lol.py` de Maio a Outubro de 2026. Há um
+  pre-commit com gitleaks (`scripts/git-hooks/pre-commit`, regras em
+  `.gitleaks.toml`); num clone novo: `git config core.hooksPath scripts/git-hooks`.
+  Varrer o histórico: `gitleaks git . --log-opts=--all`.
 - Sem deploy online — corre localmente no Mac via LaunchAgent + Tailscale para acesso mobile/iPad
 - Em viagem: GitHub Codespaces (free tier 60h/mês)
 
@@ -274,9 +280,18 @@ salário + recebido − gasto. As setas
 do cabeçalho andam de salário em salário. O selector vive na fila das Transações
 (ao lado do título ele não o quis), mas **manda na página toda**: cartões,
 cabeçalho e Resumo, que soma as categorias da própria lista e compara com o
-salário anterior. Só o Orçamento fica no mês civil (tectos e envelopes são
-mensais), e o salto do Ano para as Transações volta ao mês. Antes valia só nas
-Transações e ao passar ao Resumo os cartões voltavam ao mês sem aviso.
+salário anterior, e o **Plano do Salário** do Orçamento (`/budgets/salary-plan`
+com `start_date`/`end_date`/`salary`). O salto do Ano para as Transações volta ao
+mês. Antes valia só nas Transações e ao passar ao Resumo os cartões voltavam ao
+mês sem aviso.
+
+Os **Envelopes da semana** e os **Limites por categoria** saíram da página a
+pedido dele (os endpoints ficam). Quem manda no orçamento é o Plano do Salário:
+**um grupo por categoria, a somar 100%** — 70% para gastar e 30% para investir,
+com os valores pensados a partir de Abril-Setembro sem as compras pontuais
+(`main.PLANO_SALARIO_2026_10`). Foi posto uma vez por migração
+(`_migrate_plano_salario_100`, marca em `api_cache`); daí em diante é dele, e cada
+grupo edita-se em % ou em € por mês. Gasto do plano = gasto líquido, como os cartões.
 
 O dia lê-se da conta (`salario.py`, `GET /api/expenses/paydays`): a maior entrada
 do mês que chegue a **80% do Rendimento declarado** — os 598€ que a universidade
@@ -351,6 +366,19 @@ por igual: a janela alarga para 45 dias e a pastilha
 **"A receber"** soma o que falta. Os reembolsos ficam fora dos estornos e do
 `classifica_movimentos`, seguem a categoria da conta quando ela muda, e voltam a
 ser entradas se a conta for apagada.
+
+## Wishlist: "Comprei" liga a uma transacção, nunca cria uma
+
+A compra já está na conta — o banco trouxe-a. O "Comprei" criava um gasto novo
+com o preço da wishlist e a data de hoje, e a viseira passou a contar duas vezes
+(e pelo preço inteiro, quando ele pagou uma prestação da Klarna de vinte e tal
+euros). Agora abre a lista das transacções (`GET /wishlist/{id}/candidates`,
+ordenadas pelo valor: o preço, ou o total de um movimento marcado como Klarna —
+o banco escreve a loja, não o produto) e liga-se a uma (`expense_id`). Nos
+comprados mostra-se o que saiu de facto, e com Klarna "€X × N (k/N pagas)".
+Desfazer só desliga; apaga apenas os gastos que a wishlist antiga inventou
+(nota "Da wishlist" e sem `bank_tx_id`), e esses aparecem com um aviso para
+escolher a transacção verdadeira.
 
 ## Klarna: o movimento é a prestação, e as outras procuram-se na conta
 

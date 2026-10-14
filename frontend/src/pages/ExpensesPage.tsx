@@ -3,9 +3,9 @@ import { format, startOfMonth, endOfMonth, subMonths, addMonths, addDays, differ
 import { pt } from 'date-fns/locale';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { inkColor } from '../theme';
-import { Plus, X, Upload, Wallet, Loader2, Clock, MapPin, Tag, Landmark, Trash2, ChevronLeft, ChevronRight, Receipt, FileSpreadsheet, FileText, Sparkles, Pencil, Shield, CreditCard, AlertTriangle, PiggyBank, Gift, Check, ExternalLink, Search, TrendingUp, Users, HandCoins } from 'lucide-react';
+import { Plus, X, Upload, Loader2, Clock, MapPin, Tag, Landmark, Trash2, ChevronLeft, ChevronRight, Receipt, FileSpreadsheet, FileText, Sparkles, Pencil, CreditCard, AlertTriangle, PiggyBank, Gift, Check, ExternalLink, Search, TrendingUp, Users, HandCoins } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip } from 'recharts';
-import { expensesApi, budgetsApi, wishlistApi, bankingApi, BankBalances, BankStatus, BankRule, WeeklyEnvelopes, CitySpending, WishPlan , ExpenseKind, KlarnaPorPagar, KlarnaPlano, DiaDeSalario, Reembolsos, ContaParaDescontar } from '../api';
+import { expensesApi, budgetsApi, wishlistApi, bankingApi, BankBalances, BankStatus, BankRule, CitySpending, WishPlan , ExpenseKind, KlarnaPorPagar, KlarnaPlano, DiaDeSalario, Reembolsos, ContaParaDescontar, WishCandidate } from '../api';
 import { Expense, ExpenseCreate, ExpenseSummary } from '../types';
 import { useCategorias, infoCategoria, criaCategoria, apagaCategoria } from '../expenseCategories';
 
@@ -443,97 +443,6 @@ function CustoDeVida() {
   );
 }
 
-// Envelopes semanais: o limite mensal partido por semanas, com o que sobrou (ou
-// faltou) das semanas anteriores do mês a entrar na semana actual.
-function EnvelopesSemana() {
-  const [offset, setOffset] = useState(0);
-  const [dados, setDados] = useState<WeeklyEnvelopes | null>(null);
-
-  useEffect(() => { budgetsApi.envelopes(offset).then(setDados).catch(() => setDados(null)); }, [offset]);
-  if (!dados || dados.categories.length === 0) return null;
-
-  const MES = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
-  const dia = (iso: string) => { const [, m, d] = iso.split('-').map(Number); return `${d} ${MES[m - 1]}`; };
-  const info = (cat: string) => infoCategoria(cat);
-  const cor = (s: string) => (s === 'danger' ? '#EF4444' : s === 'warning' ? '#F59E0B' : '#10B981');
-  const pctTotal = dados.total_envelope > 0 ? Math.min(100, (dados.total_spent / dados.total_envelope) * 100) : 0;
-
-  return (
-    <div className="bg-[#161616] rounded-2xl border border-[#222] p-4 sm:p-5
-      flex flex-col lg:flex-1 lg:min-h-0">
-      <div className="flex items-center justify-between gap-2 mb-1 flex-wrap shrink-0">
-        <h3 className="text-sm font-medium text-gray-300 flex items-center gap-2">
-          <Wallet size={15} className="text-blue-400" /> Envelopes da semana
-        </h3>
-        <div className="flex items-center gap-1">
-          <button onClick={() => setOffset(o => o - 1)} className="p-1 rounded text-gray-500 hover:text-white hover:bg-white/5">
-            <ChevronLeft size={14} />
-          </button>
-          <span className="text-[11px] text-gray-500 w-[104px] text-center">
-            {dia(dados.week_start)} – {dia(dados.week_end)}
-          </span>
-          <button
-            onClick={() => setOffset(o => Math.min(0, o + 1))}
-            disabled={offset >= 0}
-            className="p-1 rounded text-gray-500 hover:text-white hover:bg-white/5 disabled:opacity-30"
-          >
-            <ChevronRight size={14} />
-          </button>
-        </div>
-      </div>
-
-      <p className="text-[11px] text-gray-500 mb-3">
-        €{dados.total_spent.toFixed(0)} de €{dados.total_envelope.toFixed(0)}
-        {dados.is_current && dados.days_left > 0 && (
-          dados.total_remaining > 0
-            ? <> · sobram €{dados.total_remaining.toFixed(0)} para {dados.days_left} dia{dados.days_left === 1 ? '' : 's'} (€{dados.per_day_left.toFixed(0)}/dia)</>
-            : <> · já passaste o envelope em €{Math.abs(dados.total_remaining).toFixed(0)}</>
-        )}
-      </p>
-      <div className="h-1.5 bg-[#222] rounded-full overflow-hidden mb-4">
-        <div className="h-full rounded-full transition-all"
-          style={{ width: `${pctTotal}%`, backgroundColor: cor(dados.total_spent > dados.total_envelope ? 'danger' : pctTotal >= 80 ? 'warning' : 'ok') }} />
-      </div>
-
-      <div className="space-y-3">
-        {dados.categories.map(c => {
-          const i = info(c.category);
-          const barra = cor(c.status);
-          return (
-            <div key={c.category}>
-              <div className="flex items-center justify-between gap-2 mb-1">
-                <span className="text-xs flex items-center gap-1.5 min-w-0">
-                  <span>{i.emoji}</span>
-                  <span className="truncate">{i.label}</span>
-                  {c.source === 'media' && (
-                    <span className="text-[9px] text-gray-600 shrink-0" title="Sem tecto definido — a usar a média dos últimos 3 meses">média</span>
-                  )}
-                </span>
-                <span className="text-[11px] shrink-0" style={{ color: inkColor(barra) }}>
-                  €{c.spent.toFixed(0)} / €{c.envelope.toFixed(0)}
-                </span>
-              </div>
-              <div className="h-1.5 bg-[#222] rounded-full overflow-hidden">
-                <div className="h-full rounded-full transition-all"
-                  style={{ width: `${Math.min(100, c.percentage)}%`, backgroundColor: barra }} />
-              </div>
-              <p className="text-[10px] text-gray-600 mt-0.5">
-                {c.rollover >= 0.5 && <>+€{c.rollover.toFixed(0)} das semanas anteriores · </>}
-                {c.rollover <= -0.5 && <>−€{Math.abs(c.rollover).toFixed(0)} de estouro anterior · </>}
-                {dados.is_current && dados.days_left > 0 && c.remaining > 0
-                  ? <>€{c.per_day_left.toFixed(0)}/dia até domingo</>
-                  : c.remaining < 0
-                    ? <>€{Math.abs(c.remaining).toFixed(0)} acima</>
-                    : <>base €{c.base.toFixed(0)}/semana</>}
-              </p>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
 // Mapa de gastos por cidade: as coordenadas entram directamente numa projecção
 // simples, sem depender de nenhum mapa de fora. O tamanho da bola é o dinheiro.
 function MapaDeGastos({ ano }: { ano: number }) {
@@ -711,66 +620,6 @@ function GastosPorHora() {
   );
 }
 
-// Sem limites definidos, propõe-os a partir da média dos últimos 3 meses.
-function SugestoesDeLimites({ onCreated }: { onCreated: () => void }) {
-  const [sug, setSug] = useState<{ category: string; avg_3m: number; suggested: number; has_limit: boolean }[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [aberto, setAberto] = useState(false);
-
-  useEffect(() => { budgetsApi.limitSuggestions().then(r => setSug(r.filter(x => !x.has_limit))).catch(() => {}); }, []);
-  if (sug.length === 0) return null;
-
-  const aplicar = async (cats: { category: string; suggested: number }[]) => {
-    setBusy(true);
-    try {
-      for (const c of cats) await budgetsApi.createLimit({ category: c.category, monthly_limit: c.suggested });
-      onCreated();
-    } finally { setBusy(false); }
-  };
-
-  return (
-    <div className="bg-[#161616] rounded-2xl border border-[#222] p-4 mb-6">
-      <div className="flex items-center justify-between gap-2 mb-3">
-        <h3 className="text-sm font-medium text-gray-300 flex items-center gap-2">
-          <Shield size={14} className="text-green-400" /> Limites por categoria
-        </h3>
-        <div className="flex items-center gap-2">
-          <button onClick={() => setAberto(a => !a)} className="text-xs text-gray-500 hover:text-gray-300">
-            {aberto ? 'fechar' : 'escolher'}
-          </button>
-          <button
-            onClick={() => aplicar(sug.slice(0, 6))}
-            disabled={busy}
-            className="text-xs px-3 py-1.5 rounded-lg bg-green-500/15 text-green-300 hover:bg-green-500/25 disabled:opacity-40"
-          >
-            {busy ? 'a criar...' : 'usar sugestões'}
-          </button>
-        </div>
-      </div>
-      <p className="text-xs text-gray-500 mb-2">
-        Ainda não tens limites. Estes vêm da tua média dos últimos 3 meses.
-      </p>
-      {aberto && (
-        <div className="space-y-1.5">
-          {sug.map(s => (
-            <div key={s.category} className="flex items-center gap-3 text-xs">
-              <span className="w-32 truncate text-gray-300">{s.category}</span>
-              <span className="flex-1 text-gray-500">média €{s.avg_3m.toFixed(0)}/mês</span>
-              <button
-                onClick={() => aplicar([s])}
-                disabled={busy}
-                className="px-2 py-1 rounded-lg bg-blue-500/15 text-blue-300 hover:bg-blue-500/25 disabled:opacity-40"
-              >
-                limite €{s.suggested}
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 // Nem tudo o que passa na conta é gasto. Só o que não é gasto ganha etiqueta —
 // as linhas normais ficam limpas.
 const ETIQUETA_TIPO: Record<ExpenseKind, { rot: string; cls: string; dica: string }> = {
@@ -843,13 +692,10 @@ export default function ExpensesPage() {
   const [incomeInput, setIncomeInput] = useState('');
 
   // Budget & Subscriptions
-  const [budgetStatus, setBudgetStatus] = useState<any>(null);
   const [subscriptions, setSubscriptions] = useState<any[]>([]);
   const [subsSummary, setSubsSummary] = useState<any>(null);
   const [showSubModal, setShowSubModal] = useState(false);
   const [editingSub, setEditingSub] = useState<any>(null);
-  const [showBudgetSetup, setShowBudgetSetup] = useState(false);
-  const [budgetForm, setBudgetForm] = useState({ category: '', monthly_limit: 0 });
   const [subForm, setSubForm] = useState({ name: '', amount: 0, currency: 'EUR', billing_cycle: 'monthly', next_renewal: '', category: 'subscriptions', notes: '' });
 
   // Plano do salário (grupos por %)
@@ -906,10 +752,9 @@ export default function ExpensesPage() {
 
   // Um dia corrigido para o futuro ainda não abre ciclo nenhum.
   const salariosPassados = salarios.filter(s => s.date <= format(new Date(), 'yyyy-MM-dd'));
-  // Escolhido nas Transações, manda na página toda (cartões, cabeçalho, Resumo).
-  // Só o Orçamento fica no mês civil: os tectos e os envelopes são mensais.
-  const abaComPeriodo = tab !== 'orcamento';
-  const modoSalario = abaComPeriodo && periodo === 'salario' && salariosPassados.length > 0;
+  // Escolhido nas Transações, manda na página toda (cartões, cabeçalho, Resumo,
+  // e o plano do salário no Orçamento).
+  const modoSalario = periodo === 'salario' && salariosPassados.length > 0;
   const iCiclo = cicloIdx == null ? salariosPassados.length - 1 : Math.min(cicloIdx, salariosPassados.length - 1);
   const ciclo = (() => {
     if (!modoSalario) return null;
@@ -987,21 +832,21 @@ export default function ExpensesPage() {
     const month = currentMonth.getMonth() + 1;
     const year = currentMonth.getFullYear();
 
-    const [expData, sumData, incData, budgetData, subsData, subsSumData, planData] = await Promise.all([
+    const [expData, sumData, incData, subsData, subsSumData, planData] = await Promise.all([
       expensesApi.list({ start_date: start, end_date: end }),
       expensesApi.summary({ month, year }),
       expensesApi.getIncome(month, year),
-      budgetsApi.status(month, year).catch(() => null),
       budgetsApi.subscriptions().catch(() => []),
       budgetsApi.subscriptionsSummary().catch(() => null),
-      budgetsApi.salaryPlan(month, year).catch(() => null),
+      // Desde o salário, o plano é do período e mede-se contra esse salário.
+      (ciclo ? budgetsApi.salaryPlan({ start, end, salary: ciclo.amount ?? undefined })
+             : budgetsApi.salaryPlan({ month, year })).catch(() => null),
     ]);
     // Mudar de ciclo depressa: a resposta de um pedido antigo não pisa a do novo.
     if (pedido !== ultimoPedido.current) return;
     setExpenses(expData);
     setSummary(sumData);
     setIncome(incData.amount);
-    setBudgetStatus(budgetData);
     setSubscriptions(subsData);
     setSubsSummary(subsSumData);
     setSalaryPlan(planData);
@@ -1094,9 +939,34 @@ export default function ExpensesPage() {
     loadWishlist();
   }
 
-  async function purchaseWish(item: any) {
-    if (!window.confirm(`Comprar "${item.name}" por €${item.price.toFixed(2)}? Cria um gasto real hoje.`)) return;
-    await wishlistApi.purchase(item.id);
+  // "Comprei" não cria gasto nenhum: a compra já está na conta (o banco trouxe-a),
+  // e o que falta é dizer qual das transacções é. Criar outra contava-a duas vezes.
+  const [aLigar, setALigar] = useState<any | null>(null);
+  const [candidatos, setCandidatos] = useState<WishCandidate[] | null>(null);
+  const [procuraCand, setProcuraCand] = useState('');
+  useEffect(() => {
+    if (!aLigar) return;
+    let vivo = true;
+    setCandidatos(null);
+    const t = setTimeout(() => {
+      wishlistApi.candidates(aLigar.id, procuraCand)
+        .then(r => { if (vivo) setCandidatos(r); }).catch(() => { if (vivo) setCandidatos([]); });
+    }, procuraCand ? 250 : 0);
+    return () => { vivo = false; clearTimeout(t); };
+  }, [aLigar, procuraCand]);
+
+  function purchaseWish(item: any) {
+    setProcuraCand('');
+    setALigar(item);
+  }
+
+  async function ligaCompra(expenseId: number) {
+    if (!aLigar) return;
+    // Um item ligado a um gasto que a wishlist inventou: desfaz-se (o gasto
+    // inventado vai embora) e liga-se à transacção verdadeira.
+    if (aLigar.purchased) await wishlistApi.unpurchase(aLigar.id);
+    await wishlistApi.purchase(aLigar.id, expenseId);
+    setALigar(null);
     setShowWishModal(false);
     loadData();
   }
@@ -1424,19 +1294,6 @@ export default function ExpensesPage() {
   const categoryOptions = Array.from(new Set([...monthCategories, ...(categoryFilter ? [categoryFilter] : [])]));
   const hasActiveFilters = !!categoryFilter || typeFilter !== 'all' || searchQuery.trim() !== '';
 
-  async function saveBudgetLimit() {
-    if (!budgetForm.category || budgetForm.monthly_limit <= 0) return;
-    await budgetsApi.createLimit({ category: budgetForm.category, monthly_limit: budgetForm.monthly_limit });
-    setBudgetForm({ category: '', monthly_limit: 0 });
-    setShowBudgetSetup(false);
-    loadData();
-  }
-
-  async function deleteBudgetLimit(id: number) {
-    await budgetsApi.deleteLimit(id);
-    loadData();
-  }
-
   function openBucketNew() {
     setEditingBucket(null);
     setBucketForm({ name: '', percentage: 10, kind: 'spend', color: '#3B82F6', categories: [] });
@@ -1698,7 +1555,6 @@ export default function ExpensesPage() {
       {tab === 'orcamento' && (<>
       <BancoLigado />
       <CustoDeVida />
-      <EnvelopesSemana />
       <GastosPorHora />
       {/* Plano do Salário */}
       {salaryPlan && (
@@ -1709,7 +1565,10 @@ export default function ExpensesPage() {
                 <PiggyBank size={15} className="text-green-400" /> Plano do Salário
               </h3>
               <p className="text-[11px] text-gray-500 mt-0.5">
-                Salário €{salaryPlan.salary.toFixed(0)} · {salaryPlan.allocated_pct}% alocado · {salaryPlan.savings_pct}% poupança
+                {ciclo
+                  ? <>Desde o salário de {format(ciclo.inicio, 'd MMM', { locale: pt })}{ciclo.fim ? ` até ${format(ciclo.fim, 'd MMM', { locale: pt })}` : ''}</>
+                  : <span className="capitalize">{format(currentMonth, 'MMMM yyyy', { locale: pt })}</span>}
+                {' · '}Salário €{salaryPlan.salary.toFixed(0)} · {salaryPlan.allocated_pct}% alocado · {salaryPlan.savings_pct}% poupança
               </p>
             </div>
             <button onClick={openBucketNew} className="text-xs text-green-400 hover:text-green-300">+ Grupo</button>
@@ -1781,7 +1640,7 @@ export default function ExpensesPage() {
                     <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: saved < 0 ? '#EF4444' : '#10B981' }} />
                   </div>
                   <p className="text-[10px] text-gray-600 mt-1">
-                    {saved < 0 ? `Gastaste €${Math.abs(saved).toFixed(0)} acima do salário` : met ? 'Objetivo de poupança atingido ✓' : `Sobrou €${saved.toFixed(0)} este mês`}
+                    {saved < 0 ? `Gastaste €${Math.abs(saved).toFixed(0)} acima do salário` : met ? 'Objetivo de poupança atingido ✓' : `Sobrou €${saved.toFixed(0)} ${ciclo ? 'deste salário' : 'este mês'}`}
                   </p>
                 </div>
               );
@@ -1797,79 +1656,6 @@ export default function ExpensesPage() {
       )}
 
       {tab === 'orcamento' && <SubscricoesDetectadas onAdded={loadData} />}
-
-      {/* Sugestões de limites — para não ser preciso adivinhar números */}
-      {budgetStatus && (!budgetStatus.categories || budgetStatus.categories.length === 0) && (
-        <SugestoesDeLimites onCreated={loadData} />
-      )}
-
-      {/* Budget Status Bars */}
-      {budgetStatus && budgetStatus.categories && budgetStatus.categories.length > 0 && (
-        <div className="bg-[#161616] rounded-2xl border border-[#222] p-4 mb-6">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-sm font-medium text-gray-300 flex items-center gap-2">
-              <Shield size={14} className="text-green-400" /> Limites por categoria
-            </h3>
-            <button onClick={() => setShowBudgetSetup(!showBudgetSetup)}
-              className="text-xs text-blue-400 hover:text-blue-300">
-              {showBudgetSetup ? 'Fechar' : '+ Limite'}
-            </button>
-          </div>
-
-          {showBudgetSetup && (
-            <div className="flex items-center gap-2 mb-3 p-3 bg-[#1a1a1a] rounded-xl">
-              <select
-                value={budgetForm.category}
-                onChange={e => setBudgetForm(f => ({ ...f, category: e.target.value }))}
-                className="bg-[#222] border border-[#333] rounded-lg px-3 py-2 text-sm text-white focus:outline-none"
-              >
-                <option value="">Categoria...</option>
-                {categorias.map(c => (
-                  <option key={c.value} value={c.value}>{c.emoji} {c.label}</option>
-                ))}
-              </select>
-              <input
-                type="number"
-                placeholder="Limite €"
-                value={budgetForm.monthly_limit || ''}
-                onChange={e => setBudgetForm(f => ({ ...f, monthly_limit: parseFloat(e.target.value) || 0 }))}
-                className="bg-[#222] border border-[#333] rounded-lg px-3 py-2 text-sm text-white focus:outline-none w-28"
-              />
-              <button onClick={saveBudgetLimit} className="px-3 py-2 bg-green-600 hover:bg-green-700 rounded-lg text-xs font-medium">
-                Guardar
-              </button>
-            </div>
-          )}
-
-          <div className="space-y-3">
-            {budgetStatus.categories.map((cat: any) => {
-              const catInfo = getCategoryInfo(cat.category);
-              const pct = Math.min(cat.percentage, 100);
-              const barColor = cat.status === 'over' ? '#EF4444' : cat.status === 'warning' ? '#F59E0B' : '#10B981';
-              return (
-                <div key={cat.category} className="group">
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-xs text-gray-400">{catInfo.emoji} {catInfo.label}</span>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-medium" style={{ color: barColor }}>
-                        €{cat.spent.toFixed(0)} / €{cat.limit.toFixed(0)}
-                      </span>
-                      {cat.status === 'over' && <AlertTriangle size={12} className="text-red-400" />}
-                      <button onClick={() => deleteBudgetLimit(cat.id)}
-                        className="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-red-400 transition-all">
-                        <X size={12} />
-                      </button>
-                    </div>
-                  </div>
-                  <div className="h-2 bg-[#222] rounded-full overflow-hidden">
-                    <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: barColor }} />
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
 
       {/* Subscriptions Tracker — always visible */}
       <div className="bg-[#161616] rounded-2xl border border-[#222] p-4 mb-6">
@@ -2022,17 +1808,34 @@ export default function ExpensesPage() {
             {wishItems.some(w => w.purchased) && (
               <div className="pt-2 mt-1 border-t border-[#1a1a1a] space-y-1">
                 <p className="text-[10px] text-gray-600 uppercase tracking-wide mb-1">Comprados</p>
-                {wishItems.filter(w => w.purchased).map(w => (
-                  <div key={w.id} className="flex items-center gap-2 py-1.5 px-1 text-gray-500">
-                    <Check size={13} className="text-green-500 shrink-0" />
-                    <span className="text-xs line-through flex-1 truncate">{w.name}</span>
-                    <span className="text-[10px] text-gray-600">
-                      {w.purchased_date && format(new Date(w.purchased_date), 'd MMM', { locale: pt })} · €{w.price.toFixed(0)}
-                    </span>
-                    <button onClick={() => unpurchaseWish(w)} className="text-[10px] text-gray-600 hover:text-gray-300">desfazer</button>
-                    <button onClick={() => deleteWish(w.id)} className="text-gray-700 hover:text-red-400"><Trash2 size={12} /></button>
+                {wishItems.filter(w => w.purchased).map(w => {
+                  const pg = w.paid;
+                  const k = pg?.klarna;
+                  return (
+                  <div key={w.id} className="py-1.5 px-1 text-gray-500">
+                    <div className="flex items-center gap-2">
+                      <Check size={13} className="text-green-500 shrink-0" />
+                      <span className="text-xs line-through flex-1 truncate">{w.name}</span>
+                      <span className="text-[10px] text-gray-600 text-right"
+                        title={pg ? `${pg.description} · ${pg.date}` : undefined}>
+                        {w.purchased_date && format(new Date(`${w.purchased_date}T00:00:00`), 'd MMM', { locale: pt })}
+                        {' · '}
+                        {k
+                          ? <>€{k.installment.toFixed(2)} × {k.of} <span className="text-pink-400">Klarna</span> ({k.paid}/{k.of} pagas · €{k.total.toFixed(0)})</>
+                          : `€${(pg?.amount ?? w.price).toFixed(2)}`}
+                      </span>
+                      <button onClick={() => unpurchaseWish(w)} className="text-[10px] text-gray-600 hover:text-gray-300">desfazer</button>
+                      <button onClick={() => deleteWish(w.id)} className="text-gray-700 hover:text-red-400"><Trash2 size={12} /></button>
+                    </div>
+                    {(pg?.made_here || (!pg && w.expense_id == null)) && (
+                      <button onClick={() => purchaseWish(w)}
+                        className="ml-5 mt-0.5 text-[10px] text-amber-400 hover:text-amber-300">
+                        {pg?.made_here ? 'este gasto foi criado pela wishlist e é uma cópia — escolher a transação verdadeira' : 'escolher a transação desta compra'}
+                      </button>
+                    )}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -2965,14 +2768,25 @@ export default function ExpensesPage() {
               <input type="text" placeholder="Nome (ex: Despesas, Pessoal...)" value={bucketForm.name}
                 onChange={e => setBucketForm(f => ({ ...f, name: e.target.value }))}
                 className="w-full bg-[#222] border border-[#333] rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-green-500" autoFocus />
-              <div className="flex gap-3">
+              <div className="flex flex-wrap gap-3">
                 <div className="flex-1">
                   <label className="text-xs text-gray-500 block mb-1">% do salário</label>
-                  <input type="number" step="1" min="0" max="100" value={bucketForm.percentage || ''}
+                  <input type="number" step="0.1" min="0" max="100" value={bucketForm.percentage || ''}
                     onChange={e => setBucketForm(f => ({ ...f, percentage: parseFloat(e.target.value) || 0 }))}
                     className="w-full bg-[#222] border border-[#333] rounded-xl px-4 py-2 text-sm focus:outline-none focus:border-green-500" />
-                  {salaryPlan && <p className="text-[10px] text-gray-600 mt-1">≈ €{(salaryPlan.salary * (bucketForm.percentage || 0) / 100).toFixed(0)}/mês</p>}
                 </div>
+                {salaryPlan?.salary > 0 && (
+                  <div className="flex-1">
+                    <label className="text-xs text-gray-500 block mb-1">€ por mês</label>
+                    <input type="number" step="1" min="0"
+                      value={bucketForm.percentage ? Math.round(salaryPlan.salary * bucketForm.percentage / 100) : ''}
+                      onChange={e => {
+                        const euros = parseFloat(e.target.value) || 0;
+                        setBucketForm(f => ({ ...f, percentage: Math.round(euros / salaryPlan.salary * 10000) / 100 }));
+                      }}
+                      className="w-full bg-[#222] border border-[#333] rounded-xl px-4 py-2 text-sm focus:outline-none focus:border-green-500" />
+                  </div>
+                )}
                 <div className="flex-1">
                   <label className="text-xs text-gray-500 block mb-1">Tipo</label>
                   <div className="flex gap-1 bg-[#222] border border-[#333] rounded-xl p-1">
@@ -3037,6 +2851,51 @@ export default function ExpensesPage() {
                 className="px-4 py-2.5 bg-[#222] hover:bg-[#2a2a2a] rounded-xl text-sm">Cancelar</button>
               <button onClick={saveBucket}
                 className="px-6 py-2.5 bg-green-600 hover:bg-green-700 rounded-xl text-sm font-medium">{editingBucket ? 'Guardar' : 'Adicionar'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {aLigar && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={() => setALigar(null)}>
+          <div className="bg-[#1a1a1a] rounded-2xl p-5 max-w-[90vw] w-[520px] border border-[#333] max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-1">
+              <h3 className="text-base font-bold truncate">Qual foi a compra de “{aLigar.name}”?</h3>
+              <button onClick={() => setALigar(null)} className="text-gray-500 hover:text-white"><X size={18} /></button>
+            </div>
+            <p className="text-[11px] text-gray-500 mb-3">
+              Escolhe a transação que já está na conta. Com a Klarna, escolhe uma das prestações.
+            </p>
+            <div className="relative mb-3">
+              <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+              <input value={procuraCand} onChange={e => setProcuraCand(e.target.value)} autoFocus
+                placeholder="Procurar pela descrição (ex: klarna, amazon)…"
+                className="w-full bg-[#222] border border-[#333] rounded-xl pl-8 pr-3 py-2 text-sm focus:outline-none focus:border-pink-500" />
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-[#222]">
+              {candidatos === null ? (
+                <p className="py-6 text-center text-xs text-gray-500">a procurar…</p>
+              ) : candidatos.length === 0 ? (
+                <p className="py-6 text-center text-xs text-gray-500">Nenhuma transação encontrada.</p>
+              ) : candidatos.map(c => (
+                <button key={c.id} onClick={() => ligaCompra(c.id)}
+                  className="w-full flex items-center gap-3 py-2.5 px-2 text-left hover:bg-white/5 rounded-lg">
+                  <span className="text-base shrink-0">{getCategoryInfo(c.category).emoji}</span>
+                  <span className="flex-1 min-w-0">
+                    <span className="block text-sm truncate">{c.description}</span>
+                    <span className="block text-[10px] text-gray-500">
+                      {format(new Date(`${c.date}T00:00:00`), 'd MMM yyyy', { locale: pt })}
+                      {c.likely && <span className="text-green-400"> · parece esta</span>}
+                    </span>
+                  </span>
+                  <span className="text-right shrink-0">
+                    <span className="block text-sm font-medium">€{c.amount.toFixed(2)}</span>
+                    {c.klarna_installments && (
+                      <span className="block text-[10px] text-pink-400">Klarna × {c.klarna_installments} · €{(c.amount * c.klarna_installments).toFixed(0)}</span>
+                    )}
+                  </span>
+                </button>
+              ))}
             </div>
           </div>
         </div>

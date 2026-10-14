@@ -1,9 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException
+import re
+import unicodedata
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from datetime import date
+from datetime import date, timedelta
+from typing import Optional
 
 from database import get_db
 from models import WishlistItem, Expense
+import expense_kind as ek
 from schemas import (
     WishlistItemCreate, WishlistItemUpdate, WishlistItemOut, WishlistPurchase,
 )
@@ -22,10 +26,98 @@ def _sort_key(item: WishlistItem):
     )
 
 
+# Marca dos gastos que a wishlist criava sozinha ao carimbar "Comprei". Já não
+# cria nenhum: a compra está sempre na conta, e criar outra era contá-la duas vezes.
+NOTA_ANTIGA = "Da wishlist"
+
+
+def _pago(db: Session, items: list[WishlistItem]) -> None:
+    """Põe em cada item comprado o que saiu de facto da conta. Com a Klarna o
+    movimento é uma prestação: diz-se de quantas, quantas já foram e o total."""
+    ligados = [i for i in items if i.purchased and i.expense_id]
+    if not ligados:
+        return
+    gastos = {e.id: e for e in db.query(Expense).filter(
+        Expense.id.in_([i.expense_id for i in ligados])).all()}
+    planos = None
+    for i in ligados:
+        e = gastos.get(i.expense_id)
+        if not e:
+            continue
+        info = {"expense_id": e.id, "date": e.date.isoformat(), "description": e.description,
+                "amount": round(e.amount, 2), "klarna": None,
+                "made_here": (e.notes or "") == NOTA_ANTIGA and not e.bank_tx_id}
+        if e.klarna_installments:
+            if planos is None:
+                from routers.expenses import _planos_klarna
+                planos = _planos_klarna(db)
+            p = next((p for p in planos if p["expense_id"] == e.id
+                      or any(x["expense_id"] == e.id for x in p["payments"])), None)
+            if p:
+                info["klarna"] = {"of": p["of"], "paid": p["paid"], "installment": p["amount"],
+                                  "total": round(p["amount"] * p["of"], 2)}
+        i.paid = info
+
+
 @router.get("/", response_model=list[WishlistItemOut])
 def list_items(db: Session = Depends(get_db)):
     items = db.query(WishlistItem).all()
+    _pago(db, items)
     return sorted(items, key=_sort_key)
+
+
+def _palavras(texto: str) -> set[str]:
+    t = unicodedata.normalize("NFKD", (texto or "").lower())
+    t = "".join(c for c in t if not unicodedata.combining(c))
+    return {w for w in re.findall(r"[a-z0-9]+", t) if len(w) >= 3}
+
+
+@router.get("/{item_id}/candidates")
+def candidatos(item_id: int, q: Optional[str] = Query(None), db: Session = Depends(get_db)):
+    """As transacções que podem ser esta compra, da mais provável para a menos.
+    O banco escreve a loja e não o produto ("youget.pt", "Klarna"), por isso o
+    que pesa mais é o valor: o preço inteiro, ou uma prestação dele quando o
+    movimento é da Klarna."""
+    item = db.query(WishlistItem).filter(WishlistItem.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    ja_ligados = {i.expense_id for i in db.query(WishlistItem).filter(
+        WishlistItem.expense_id.isnot(None), WishlistItem.id != item_id).all()}
+
+    query = db.query(Expense).filter(Expense.kind == ek.GASTO, Expense.amount > 0)
+    if q and q.strip():
+        query = query.filter(Expense.description.ilike(f"%{q.strip()}%"))
+    else:
+        query = query.filter(Expense.date >= date.today() - timedelta(days=120))
+    gastos = [e for e in query.order_by(Expense.date.desc()).limit(400).all()
+              if e.id not in ja_ligados and (e.notes or "") != NOTA_ANTIGA]
+
+    preco = item.price or 0
+    nome = _palavras(item.name)
+
+    def perto(valor: float) -> bool:
+        return preco > 0 and abs(valor - preco) <= max(2.0, preco * 0.15)
+
+    def pontos(e: Expense) -> float:
+        p = 0.0
+        if nome & _palavras(f"{e.description} {e.notes or ''}"):
+            p += 3
+        if perto(e.amount):
+            p += 3
+        elif e.klarna_installments and perto(e.amount * e.klarna_installments):
+            p += 3
+        elif any(perto(e.amount * n) for n in (3, 4)) and "klarna" in (e.description or "").lower():
+            p += 2
+        if e.klarna_installments:
+            p += 0.5
+        return p
+
+    fora = sorted(gastos, key=lambda e: (-pontos(e), -e.date.toordinal()))[:25]
+    return [{
+        "id": e.id, "date": e.date.isoformat(), "description": e.description,
+        "amount": round(e.amount, 2), "category": e.category,
+        "klarna_installments": e.klarna_installments, "likely": pontos(e) >= 3,
+    } for e in fora]
 
 
 @router.get("/summary")
@@ -76,44 +168,36 @@ def add_saving(item_id: int, amount: float, db: Session = Depends(get_db)):
 
 @router.post("/{item_id}/purchase", response_model=WishlistItemOut)
 def purchase(item_id: int, payload: WishlistPurchase, db: Session = Depends(get_db)):
-    """Mark as purchased and create a real expense on the given date/amount."""
+    """Liga o item à transacção da compra, que já está na conta. Nunca cria uma."""
     item = db.query(WishlistItem).filter(WishlistItem.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
     if item.purchased:
         raise HTTPException(status_code=400, detail="Already purchased")
-
-    when = payload.date or date.today()
-    amount = payload.amount if payload.amount is not None else item.price
-
-    expense = Expense(
-        description=item.name,
-        amount=round(amount, 2),
-        category=item.category or "other",
-        date=when,
-        notes="Da wishlist",
-        kind="spend",
-    )
-    db.add(expense)
-    db.flush()
+    e = db.query(Expense).filter(Expense.id == payload.expense_id).first()
+    if not e:
+        raise HTTPException(status_code=404, detail="Transação não encontrada")
 
     item.purchased = True
-    item.purchased_date = when
-    item.expense_id = expense.id
+    item.purchased_date = e.date
+    item.expense_id = e.id
     db.commit()
     db.refresh(item)
+    _pago(db, [item])
     return item
 
 
 @router.post("/{item_id}/unpurchase", response_model=WishlistItemOut)
 def unpurchase(item_id: int, db: Session = Depends(get_db)):
-    """Undo a purchase: delete the created expense and reopen the item."""
+    """Desfaz a compra: a transacção fica, só deixa de estar ligada. A excepção
+    são os gastos que a wishlist inventava antes (sem banco, com a nota dela) —
+    esses eram cópias e vão-se embora."""
     item = db.query(WishlistItem).filter(WishlistItem.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
     if item.expense_id:
         exp = db.query(Expense).filter(Expense.id == item.expense_id).first()
-        if exp:
+        if exp and (exp.notes or "") == NOTA_ANTIGA and not exp.bank_tx_id:
             db.delete(exp)
     item.purchased = False
     item.purchased_date = None

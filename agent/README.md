@@ -21,7 +21,7 @@ ligar, o agente volta a sincronizar. A ingestão é **idempotente** (upsert).
 ## Instalar
 
 ```bash
-CRISTOPHER_CLOUD_URL=https://NASPEDRO02.myqnapcloud.com:8443 \
+CRISTOPHER_CLOUD_URL=https://<NAS_HOST>:8443 \
 INGEST_TOKEN=<o mesmo INGEST_TOKEN definido no backend da NAS> \
 ./install.sh
 ```

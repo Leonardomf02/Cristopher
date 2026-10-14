@@ -25,6 +25,11 @@ from models import AppUsageSession, Base, GarminDay
 DIA = date(2026, 8, 12)
 
 
+def _janela(dias):
+    """A janela das relações conta a partir de hoje, não do DIA dos testes."""
+    return (date.today() - DIA).days + dias
+
+
 def _sessao():
     tmp = Path(tempfile.mkdtemp()) / "teste.db"
     motor = create_engine(f"sqlite:///{tmp}")
@@ -188,7 +193,7 @@ def test_ecra_antes_de_dormir_aparece_quando_a_relacao_existe():
                                start_time=adormeceu - timedelta(minutes=minutos),
                                end_time=adormeceu, duration_seconds=minutos * 60))
     db.commit()
-    achadas = {r["key"] for r in gi.relacoes(db)}
+    achadas = {r["key"] for r in gi.relacoes(db, dias=_janela(90))}
     assert any("sleep_score" in k for k in achadas)
 
 
@@ -325,7 +330,7 @@ def test_relacao_entre_duas_medidas_do_relogio():
              sleep_start=datetime.combine(quando, datetime.min.time())
              .replace(hour=2 if tarde else 22, minute=i * 3) - timedelta(days=0 if tarde else 1),
              sleep_hours=7.0, deep_min=(40 if tarde else 100) + i, light_min=300, rem_min=80)
-    chaves = {r["key"] for r in gi.relacoes(db, dias=40)}
+    chaves = {r["key"] for r in gi.relacoes(db, dias=_janela(40))}
     assert any("bedtime" not in k and "pct_deep" in k for k in chaves)
 
 
@@ -339,7 +344,7 @@ def test_analise_do_sono_ve_a_composicao_e_o_que_puxa_a_pontuacao():
         _dia(db, quando, sleep_hours=7.0, sleep_score=85 - (0 if boa else 25),
              deep_min=(110 if boa else 40) + i, light_min=250, rem_min=80, awake_min=8,
              awake_count=1)
-    r = gi.estatisticas_do_sono(db, dias=40)
+    r = gi.estatisticas_do_sono(db, dias=_janela(40))
     assert r["nights"] == 20
     fases = {f["key"]: f for f in r["composition"]}
     assert fases["deep_min"]["pct"] > 0 and fases["deep_min"]["reference"] == [13, 23]
@@ -350,5 +355,5 @@ def test_analise_do_sono_ve_a_composicao_e_o_que_puxa_a_pontuacao():
 
 def test_analise_do_sono_sem_noites_nao_inventa():
     db = _sessao()
-    r = gi.estatisticas_do_sono(db, dias=40)
+    r = gi.estatisticas_do_sono(db, dias=_janela(40))
     assert r["nights"] == 0 and r["drivers"] == [] and r["composition"] == []

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# O repositório é público: nada entra com uma chave lá dentro.
+# Activar uma vez por clone: git config core.hooksPath scripts/git-hooks
+# Regras em .gitleaks.toml. Um falso positivo passa com `git commit --no-verify`.
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "pre-commit: gitleaks não está instalado (brew install gitleaks) — commit sem verificação de chaves." >&2
+  exit 0
+fi
+exec gitleaks git --pre-commit --staged --redact --no-banner -v

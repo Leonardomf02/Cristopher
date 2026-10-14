@@ -180,8 +180,7 @@ class WishlistItemUpdate(BaseModel):
 
 
 class WishlistPurchase(BaseModel):
-    date: Optional[date] = None
-    amount: Optional[float] = None
+    expense_id: int
 
 
 class WishlistItemOut(BaseModel):
@@ -198,6 +197,7 @@ class WishlistItemOut(BaseModel):
     expense_id: Optional[int]
     watch_id: Optional[int] = None
     created_at: Optional[datetime]
+    paid: Optional[dict] = None   # a transacção ligada (e o plano da Klarna, se for)
 
     model_config = {"from_attributes": True}
 

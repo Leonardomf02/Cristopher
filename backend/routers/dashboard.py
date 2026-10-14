@@ -467,7 +467,7 @@ def consistency(days: int = Query(30, ge=7, le=180), db: Session = Depends(get_d
         return maior
 
     # alvo de gasto diário: plano do salário / dias do mês (fallback 30€)
-    plano = salary_plan(hoje.month, hoje.year, db)
+    plano = salary_plan(hoje.month, hoje.year, start_date=None, end_date=None, salary=None, db=db)
     alvo_mes = sum(g["target"] for g in plano.get("groups", []) if g.get("kind") == "spend")
     alvo_dia = (alvo_mes / 30) if alvo_mes else 30.0
 

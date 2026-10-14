@@ -256,6 +256,11 @@ export const expensesApi = {
 
 // ── Wishlist ────────────────────────────────────────────────────
 
+export interface WishCandidate {
+  id: number; date: string; description: string; amount: number; category: string;
+  klarna_installments: number | null; likely: boolean;
+}
+
 export const wishlistApi = {
   list: () => request<any[]>('/wishlist/'),
   summary: () => request<{ count: number; total_wanted: number; total_saved: number; total_remaining: number }>('/wishlist/summary'),
@@ -263,8 +268,11 @@ export const wishlistApi = {
   update: (id: number, data: any) => request<any>(`/wishlist/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   delete: (id: number) => request<any>(`/wishlist/${id}`, { method: 'DELETE' }),
   addSaving: (id: number, amount: number) => request<any>(`/wishlist/${id}/save?amount=${amount}`, { method: 'POST' }),
-  purchase: (id: number, data?: { date?: string; amount?: number }) =>
-    request<any>(`/wishlist/${id}/purchase`, { method: 'POST', body: JSON.stringify(data || {}) }),
+  // A compra liga-se a uma transacção que já está na conta — nunca se cria outra.
+  purchase: (id: number, expenseId: number) =>
+    request<any>(`/wishlist/${id}/purchase`, { method: 'POST', body: JSON.stringify({ expense_id: expenseId }) }),
+  candidates: (id: number, q?: string) =>
+    request<WishCandidate[]>(`/wishlist/${id}/candidates${q?.trim() ? `?q=${encodeURIComponent(q.trim())}` : ''}`),
   unpurchase: (id: number) => request<any>(`/wishlist/${id}/unpurchase`, { method: 'POST' }),
   createWatch: (id: number) =>
     request<{ watch_id: number; created: boolean; title: string }>(`/wishlist/${id}/watch`, { method: 'POST' }),
@@ -1199,6 +1207,8 @@ export const habitsApi = {
     request<any[]>(`/habits/completions/range?start_date=${startDate}&end_date=${endDate}`),
   today: () => request<any[]>('/habits/today'),
   analytics: (days = 90) => request<any>(`/habits/analytics?days=${days}`),
+  analyticsPeriodo: (start: string, end: string) =>
+    request<any>(`/habits/analytics?start_date=${start}&end_date=${end}`),
 };
 
 // ── Dashboard / Weekly Review ───────────────────────────────────
@@ -1471,10 +1481,13 @@ export const budgetsApi = {
   updateBucket: (id: number, data: any) =>
     request<any>(`/budgets/buckets/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteBucket: (id: number) => request<any>(`/budgets/buckets/${id}`, { method: 'DELETE' }),
-  salaryPlan: (month?: number, year?: number) => {
+  salaryPlan: (p: { month?: number; year?: number; start?: string; end?: string; salary?: number }) => {
     const qs = new URLSearchParams();
-    if (month) qs.set('month', String(month));
-    if (year) qs.set('year', String(year));
+    if (p.month) qs.set('month', String(p.month));
+    if (p.year) qs.set('year', String(p.year));
+    if (p.start) qs.set('start_date', p.start);
+    if (p.end) qs.set('end_date', p.end);
+    if (p.salary != null) qs.set('salary', String(p.salary));
     return request<any>(`/budgets/salary-plan?${qs}`);
   },
 };

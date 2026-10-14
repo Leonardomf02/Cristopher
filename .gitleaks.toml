@@ -1,0 +1,33 @@
+# Regras do gitleaks para este repositório (é PÚBLICO no GitHub).
+# Corre antes de cada commit pelo scripts/git-hooks/pre-commit.
+# Varrer o histórico todo: gitleaks git . --log-opts=--all
+
+[extend]
+useDefault = true
+
+# As regras de origem deixam passar a password da NAS, a frase das cópias e o id
+# da Enable Banking — testado contra os .env verdadeiros.
+[[rules]]
+id = "cristopher-env-secret"
+description = "Variável de ambiente com segredo escrita com valor"
+regex = '''\b[A-Z0-9_]*(?:PASSWORD|PASSWD|_PASS|PASSPHRASE|SECRET|TOKEN|API_KEY|APP_ID)[ \t]*[:=][ \t]*["'`]?([^\s"'`$<{(#…]{8,})'''
+secretGroup = 1
+keywords = ["password", "passwd", "_pass", "passphrase", "secret", "token", "api_key", "app_id"]
+
+[[rules.allowlists]]
+regexes = [
+  '''^(os\.|process\.env|import\.meta)''',
+  '''^(cole_aqui|o-teu-|chave:segredo|dev-insecure|uma-passe|seja-o-que)''',
+  '''\.\.\.$''',
+  '''^[A-Z][A-Z0-9]*_[A-Z0-9_]+$''',
+]
+
+[[rules]]
+id = "riot-api-key"
+description = "Chave da API da Riot"
+regex = '''RGAPI-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'''
+keywords = ["rgapi-"]
+
+[[allowlists]]
+description = "Nome de um modelo do HuggingFace, não é uma chave"
+regexes = ['''ProsusAI/finbert''']

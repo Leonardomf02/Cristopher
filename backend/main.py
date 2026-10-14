@@ -890,6 +890,63 @@ def _migrate_categoria_noite():
 _migrate_categoria_noite()
 
 
+# O plano do salário a 100%: uma linha por categoria, com valores pensados a
+# partir do que ele gastou de Abril a Setembro sem as compras pontuais (a
+# Vinted de Julho, a Worten, as peças e o seguro da mota, a mota em si). Em
+# percentagem do salário (1.090,98€): 70% para gastar, 30% para investir.
+PLANO_SALARIO_2026_10 = [
+    ("Supermercado", 15, "groceries"),        # 65-194€/mês; em Setembro, já na Covilhã, 181€
+    ("Compras", 11, "shopping"),              # sem as compras grandes ficava ~100€
+    ("Outro", 8, "other"),                    # levantamentos e MB Way a amigos
+    ("Transporte", 8, "transport"),           # a mota: gasolina e manutenção
+    ("Contas", 6, "bills"),                   # o gás da casa e o seguro da mota, à parte
+    ("Comida", 5, "food"),                    # 40-100€/mês
+    ("Viagens", 5, "travel"),                 # o Erasmus acabou: era 700-1100€/mês
+    ("Noite", 4, "nightlife"),
+    ("Subscrições", 4, "subscriptions"),      # Claude, iCloud e o resto: 25-45€
+    ("Entretenimento", 2, "entertainment"),
+    ("Saúde", 2, "health"),
+]
+CORES_PLANO = ["#EF4444", "#F59E0B", "#6B7280", "#3B82F6", "#8B5CF6", "#EC4899",
+               "#14B8A6", "#6366F1", "#06B6D4", "#84CC16", "#F97316"]
+
+
+def _migrate_plano_salario_100():
+    """Corre uma vez (marca em api_cache): depois disto o plano é dele e as
+    edições ficam. Uma categoria criada por ele e usada nos últimos 90 dias
+    entra no Outro, para nada ficar fora do plano."""
+    import sqlite3
+    import cache
+    CHAVE = "migracao:plano_salario_2026_10"
+    try:
+        if cache.cache_get(CHAVE):
+            return
+        conn = sqlite3.connect(_DB_PATH)
+        usadas = {r[0] for r in conn.execute(
+            "SELECT DISTINCT category FROM expenses WHERE kind = 'spend' "
+            "AND date >= date('now', '-90 day') AND category IS NOT NULL")}
+        no_plano = {c for _, _, c in PLANO_SALARIO_2026_10} | {"invest"}
+        extra = sorted(usadas - no_plano)
+
+        conn.execute("DELETE FROM salary_buckets")
+        for i, (nome, pct, cat) in enumerate(PLANO_SALARIO_2026_10):
+            cats = ",".join([cat] + extra) if cat == "other" else cat
+            conn.execute(
+                "INSERT INTO salary_buckets (name, percentage, categories, kind, color, sort_order) "
+                "VALUES (?, ?, ?, 'spend', ?, ?)", (nome, pct, cats, CORES_PLANO[i], i))
+        conn.execute(
+            "INSERT INTO salary_buckets (name, percentage, categories, kind, color, sort_order) "
+            "VALUES ('Investir', 30, 'invest', 'save', '#10B981', ?)", (len(PLANO_SALARIO_2026_10),))
+        conn.commit()
+        conn.close()
+        cache.cache_set(CHAVE, True, 10 * 365 * 24 * 3600)
+    except Exception as ex:
+        print(f"[migrate] plano do salário: {ex}")
+
+
+_migrate_plano_salario_100()
+
+
 def _migrate_user_lists_apple_name():
     import sqlite3
     try:

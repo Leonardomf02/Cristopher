@@ -207,19 +207,37 @@ export function FlowProvider({ children }: { children: ReactNode }) {
   }, [phase, secondsLeft, isPaused, activePreset, sessionStartTime, elapsedWorkSeconds, nota]);
 
   // ── Tick ────────────────────────────────────────────────
-  const tick = useCallback(() => {
-    setSecondsLeft(prev => (prev <= 1 ? 0 : prev - 1));
+  // Conta-se pelo relógio, não pelo número de ticks. Com o separador em segundo
+  // plano o browser estrangula o setInterval (o Chrome chega a um por minuto) e
+  // o Mac a dormir pára-o: uma hora sem fim aparecia como 19 minutos.
+  const ultimoTickRef = useRef(0);
+  const secondsLeftRef = useRef(secondsLeft);
+  secondsLeftRef.current = secondsLeft;
 
+  const tick = useCallback(() => {
+    const passou = Math.floor((Date.now() - ultimoTickRef.current) / 1000);
+    if (passou < 1) return;
+    ultimoTickRef.current += passou * 1000;
+
+    const temFim = !!activePreset && activePreset.work_minutes > 0;
+    setSecondsLeft(prev => Math.max(0, prev - passou));
     if (phase === 'work') {
-      setElapsedWorkSeconds(prev => prev + 1);
+      // Num pomodoro com fim, o tempo de trabalho não passa do que faltava.
+      const conta = temFim ? Math.min(passou, secondsLeftRef.current) : passou;
+      setElapsedWorkSeconds(prev => prev + conta);
     }
-  }, [phase]);
+  }, [phase, activePreset]);
 
   useEffect(() => {
     if ((phase === 'work' || phase === 'break') && !isPaused) {
+      ultimoTickRef.current = Date.now();
       timerRef.current = setInterval(tick, 1000);
+      document.addEventListener('visibilitychange', tick);
     }
-    return () => { if (timerRef.current) clearInterval(timerRef.current); };
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+      document.removeEventListener('visibilitychange', tick);
+    };
   }, [phase, isPaused, tick]);
 
   // Phase transitions

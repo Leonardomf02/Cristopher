@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import TresJogosPorDia from '../components/TresJogosPorDia';
-import { format, getDay } from 'date-fns';
+import { format, getDay, startOfMonth, endOfMonth, startOfYear, endOfYear, addMonths, addYears, differenceInCalendarDays, isAfter } from 'date-fns';
 import { pt } from 'date-fns/locale';
-import { Flame, Target, Calendar, Plus, X, Clock, Pencil, ChevronDown, PauseCircle, PlayCircle, Check } from 'lucide-react';
+import { Flame, Target, Calendar, Plus, X, Clock, Pencil, ChevronDown, ChevronLeft, ChevronRight, PauseCircle, PlayCircle, Check } from 'lucide-react';
 import { habitsApi, screenTimeApi } from '../api';
 
 // O backend numera os dias 0=Seg … 6=Dom (ao contrário do getDay do date-fns).
@@ -117,7 +117,23 @@ function fmtHoursMin(seconds: number): string {
 
 export default function HabitAnalyticsPage() {
   const [analytics, setAnalytics] = useState<any>(null);
-  const [days, setDays] = useState(90);
+  // O período vê-se por mês ou por ano, e anda-se para trás para ver os outros.
+  const [vista, setVista] = useState<'mes' | 'ano'>(() => {
+    try { return localStorage.getItem('habitos_vista') === 'ano' ? 'ano' : 'mes'; } catch { return 'mes'; }
+  });
+  useEffect(() => { try { localStorage.setItem('habitos_vista', vista); } catch { /* ignora */ } }, [vista]);
+  const [ref, setRef] = useState(() => new Date());
+  const inicio = vista === 'mes' ? startOfMonth(ref) : startOfYear(ref);
+  const fimPeriodo = vista === 'mes' ? endOfMonth(ref) : endOfYear(ref);
+  const hoje = new Date();
+  const fimVisto = isAfter(fimPeriodo, hoje) ? hoje : fimPeriodo;
+  const days = differenceInCalendarDays(fimVisto, inicio) + 1;
+  const deI = format(inicio, 'yyyy-MM-dd');
+  const ateI = format(fimPeriodo, 'yyyy-MM-dd');
+  const noPresente = !isAfter(hoje, fimPeriodo);
+  const anda = (n: number) => setRef(r => vista === 'mes' ? addMonths(r, n) : addYears(r, n));
+  const rotulo = vista === 'mes' ? format(inicio, 'MMMM yyyy', { locale: pt }) : format(inicio, 'yyyy');
+  const carregaAnalytics = () => habitsApi.analyticsPeriodo(deI, ateI);
 
   const [habits, setHabits] = useState<any[]>([]);
   const [showHabitModal, setShowHabitModal] = useState(false);
@@ -138,8 +154,9 @@ export default function HabitAnalyticsPage() {
 
   useEffect(() => {
     // Falha da analytics não pode bloquear a gestão dos hábitos.
-    habitsApi.analytics(days).then(setAnalytics).catch(() => setAnalytics({ habits: [], heatmap: [] }));
-  }, [days]);
+    carregaAnalytics().then(setAnalytics).catch(() => setAnalytics({ habits: [], heatmap: [] }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deI, ateI]);
 
   useEffect(() => { loadHabits(); loadScreenGoals(); }, []);
 
@@ -152,7 +169,7 @@ export default function HabitAnalyticsPage() {
     if (expandedHabit == null) return;
     const meta = screenGoals.find(g => g.habit_id === expandedHabit);
     if (!meta) return;
-    const janela = Math.min(days, 90);
+    const janela = Math.min(Math.max(days, 7), 90);
     const key = `${meta.category}:${janela}`;
     if (categoryHours[key]) return;
     screenTimeApi.byHour(meta.category, janela).then(r => setCategoryHours(prev => ({ ...prev, [key]: r.hours }))).catch(() => {});
@@ -182,7 +199,7 @@ export default function HabitAnalyticsPage() {
         });
       }
       await loadHabits();
-      habitsApi.analytics(days).then(setAnalytics).catch(() => {});
+      carregaAnalytics().then(setAnalytics).catch(() => {});
     } finally {
       setTogglingId(null);
     }
@@ -243,7 +260,7 @@ export default function HabitAnalyticsPage() {
       setShowHabitModal(false);
       await loadHabits();
       loadScreenGoals();
-      habitsApi.analytics(days).then(setAnalytics).catch(() => {});
+      carregaAnalytics().then(setAnalytics).catch(() => {});
     } finally {
       setSavingHabit(false);
     }
@@ -259,7 +276,7 @@ export default function HabitAnalyticsPage() {
     await habitsApi.delete(h.id);
     setShowHabitModal(false);
     await loadHabits();
-    habitsApi.analytics(days).then(setAnalytics).catch(() => {});
+    carregaAnalytics().then(setAnalytics).catch(() => {});
   }
 
   const selectedDays = habitForm.days === 'daily'
@@ -288,17 +305,32 @@ export default function HabitAnalyticsPage() {
         </div>
         {/* Uma linha só, também no telemóvel: no ecrã pequeno o botão fica só com o + */}
         <div className="w-full sm:w-auto sm:ml-auto flex flex-nowrap gap-1.5 sm:gap-2 items-center overflow-x-auto">
-          {[30, 60, 90, 180, 365].map(d => (
-            <button
-              key={d}
-              onClick={() => setDays(d)}
-              className={`shrink-0 px-2.5 sm:px-3 py-1.5 text-xs rounded-lg transition-all ${
-                days === d ? 'bg-green-600 text-white font-medium' : 'bg-[#222] text-gray-400 hover:text-white'
-              }`}
-            >
-              {d}d
+          <div className="shrink-0 flex bg-[#222] rounded-lg p-0.5">
+            {([['mes', 'Mês'], ['ano', 'Ano']] as const).map(([k, label]) => (
+              <button key={k} onClick={() => { setVista(k); setRef(new Date()); }}
+                className={`px-2.5 sm:px-3 py-1 text-xs rounded-md transition-all ${
+                  vista === k ? 'bg-green-600 text-white font-medium' : 'text-gray-400 hover:text-white'
+                }`}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="shrink-0 flex items-center gap-0.5">
+            <button onClick={() => anda(-1)} title={vista === 'mes' ? 'Mês anterior' : 'Ano anterior'}
+              className="p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-white/10">
+              <ChevronLeft size={14} />
             </button>
-          ))}
+            <button onClick={() => setRef(new Date())} disabled={noPresente}
+              title={noPresente ? undefined : 'Voltar ao actual'}
+              className="text-xs text-gray-300 capitalize w-28 text-center disabled:cursor-default enabled:hover:text-white">
+              {rotulo}
+            </button>
+            <button onClick={() => anda(1)} disabled={noPresente}
+              title={vista === 'mes' ? 'Mês seguinte' : 'Ano seguinte'}
+              className="p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-white/10 disabled:opacity-30 disabled:hover:bg-transparent">
+              <ChevronRight size={14} />
+            </button>
+          </div>
           <button onClick={openNewHabit} title="Novo hábito"
             className="shrink-0 flex items-center gap-2 px-2.5 sm:px-4 py-1.5 bg-green-600 hover:bg-green-500 rounded-lg text-xs font-medium">
             <Plus size={14} /> <span className="hidden sm:inline">Novo Hábito</span>
@@ -464,14 +496,14 @@ export default function HabitAnalyticsPage() {
 
                       <div>
                         <p className="text-[11px] text-gray-500 mb-2 flex items-center gap-1.5">
-                          <Calendar size={11} /> Mapa de atividade — últimos {days} dias
+                          <Calendar size={11} /> Mapa de atividade — <span className="capitalize">{rotulo}</span>
                         </p>
                         <HabitHeatmap heatmap={a.heatmap} color={h.color} />
                       </div>
 
                       {(() => {
                         const metaCat = screenGoals.find(g => g.habit_id === h.id)?.category;
-                        const janela = Math.min(days, 90);
+                        const janela = Math.min(Math.max(days, 7), 90);
                         // Um hábito ligado a uma categoria de ecrã: mais informativo saber
                         // a que horas essa categoria é usada do que a que horas o auto-check
                         // aconteceu. Sem meta associada, fica o histórico de quando marcaste.

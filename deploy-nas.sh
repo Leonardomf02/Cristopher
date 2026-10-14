@@ -30,7 +30,7 @@ done
 [ -n "$TAR" ] || $DADOS || { echo "uso: ./deploy-nas.sh [imagem.tar] [--dados] [--forcar]"; exit 1; }
 [ -z "$TAR" ] || [ -f "$TAR" ] || { echo "não existe: $TAR"; exit 1; }
 
-NAS_HOST="${NAS_HOST:-NASPEDRO02.myqnapcloud.com}"
+NAS_HOST="${NAS_HOST:?falta NAS_HOST}"
 NAS_USER="${NAS_USER:?falta NAS_USER}"
 NAS_PASS="${NAS_PASS:?falta NAS_PASS}"
 DEST_IMAGEM="/Web/cristopher"

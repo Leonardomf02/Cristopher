@@ -265,33 +265,45 @@ def delete_bucket(bucket_id: int, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
+def _gasto_por_categoria(db: Session, inicio: date, fim: date) -> dict[str, float]:
+    """Gasto por categoria entre duas datas, como os cartões dos Gastos o contam:
+    só `spend`, sem o extraordinário, e com a parte dos amigos a descontar na
+    conta (é gasto negativo da mesma categoria). Nenhuma categoria fica abaixo
+    de zero — um reembolso do mês seguinte não faz um envelope crescer."""
+    rows = (
+        db.query(Expense.category, func.sum(Expense.amount))
+        .filter(Expense.date >= inicio, Expense.date <= fim,
+                Expense.kind == ek.GASTO, Expense.extraordinary.is_(False))
+        .group_by(Expense.category)
+        .all()
+    )
+    return {(c or "other"): max(0.0, float(t or 0)) for c, t in rows}
+
+
 @router.get("/salary-plan")
 def salary_plan(
     month: Optional[int] = Query(None),
     year: Optional[int] = Query(None),
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    salary: Optional[float] = Query(None),
     db: Session = Depends(get_db),
 ):
-    """Alvo (% do salário) vs gasto real por grupo, no mês. Sobra = poupança."""
+    """Alvo (% do salário) vs gasto real por grupo, no mês — ou, com
+    start_date/end_date, no período de salário a salário. Sobra = poupança."""
     today = date.today()
     m = month or today.month
     y = year or today.year
+    if start_date:
+        inicio, fim = start_date, end_date or today
+    else:
+        inicio = date(y, m, 1)
+        fim = date(y, m, calendar.monthrange(y, m)[1])
 
-    salary = resolve_income(db, m, y)
+    if salary is None:
+        salary = resolve_income(db, inicio.month, inicio.year)
 
-    from sqlalchemy import extract
-    expenses = (
-        db.query(Expense)
-        .filter(extract("month", Expense.date) == m, extract("year", Expense.date) == y,
-                Expense.kind == ek.GASTO, Expense.extraordinary.is_(False))
-        .all()
-    )
-    # gasto bruto por categoria (reembolsos/entradas não abatem)
-    spent_by_cat: dict[str, float] = {}
-    for e in expenses:
-        if e.amount <= 0:
-            continue
-        cat = e.category or "other"
-        spent_by_cat[cat] = spent_by_cat.get(cat, 0) + e.amount
+    spent_by_cat = {c: v for c, v in _gasto_por_categoria(db, inicio, fim).items() if v > 0}
     total_spent = round(sum(spent_by_cat.values()), 2)
 
     buckets = _ensure_buckets(db)
@@ -325,7 +337,8 @@ def salary_plan(
     unbudgeted = {c: round(v, 2) for c, v in spent_by_cat.items() if c not in covered and v > 0}
 
     return {
-        "month": m, "year": y, "salary": round(salary, 2),
+        "month": m, "year": y, "start_date": str(inicio), "end_date": str(fim),
+        "salary": round(salary, 2),
         "groups": groups,
         "allocated_pct": round(allocated_pct, 1),
         "over_allocated": allocated_pct > 100,
@@ -442,7 +455,7 @@ def month_forecast(
         por_cat[c] = por_cat.get(c, 0) + e.amount      # reembolsos abatem na categoria
     por_cat = {c: v for c, v in por_cat.items() if v > 0.005}
 
-    plano = salary_plan(m, y, db)
+    plano = salary_plan(m, y, start_date=None, end_date=None, salary=None, db=db)
     salario = plano.get("salary") or 0
     alvo_gasto = round(sum(g["target"] for g in plano.get("groups", []) if g.get("kind") == "spend"), 2)
 

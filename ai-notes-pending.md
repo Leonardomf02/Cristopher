@@ -212,3 +212,60 @@
 - a lista de treinos passa a ter os de antes de a app estar na NAS (faltava o de 9 de Setembro)
 
 ---
+
+## 2026-10-13T00:27:32Z — Documents/Projects/Cristopher
+
+- reescrevi o README: como correr, o que há em cada secção, configuração das integrações e deploy na NAS
+- o exemplo das variáveis de ambiente passou a ter todas as opções, agrupadas e explicadas
+- corrigi o exemplo que deixava o regresso do banco sem endereço quando copiado tal como estava
+- pus o código todo no GitHub, sem chaves nem cópias do .env
+
+---
+
+## 2026-10-13T15:00:25Z — Documents/Projects/Cristopher
+
+- corrigi o cronómetro do Flow que atrasava com o separador em segundo plano (1h aparecia como 19 min)
+- o tempo passa a contar pelo relógio real, e acerta logo ao voltar à página
+
+---
+
+## 2026-10-13T15:19:02Z — Documents/Projects/Cristopher
+
+- Hábitos: escolho ver por mês ou por ano e ando para trás para ver meses e anos anteriores
+- tirei os Envelopes da semana e os Limites por categoria do Orçamento
+- o Plano do Salário tem um botão para refazer os grupos com a média dos gastos dos últimos 3 meses, uma categoria por grupo
+- cada grupo do plano pode ser editado em percentagem ou em euros por mês
+- o Plano do Salário segue o Mês ou Desde o salário escolhido nas Transações
+
+---
+
+## 2026-10-13T15:35:35Z — Documents/Projects/Cristopher
+
+- o Plano do Salário vem já definido a 100%: uma linha por categoria, 70% para gastar e 30% para investir
+- os valores saem do que gastei de Abril a Setembro, sem as compras pontuais
+- tirei o botão de recalcular pelos gastos
+
+---
+
+## 2026-10-13T16:54:19Z — Documents/Projects/Cristopher
+
+- o Comprei da Wishlist já não cria um gasto: escolho a transação que já está na conta
+- a lista de transações põe primeiro as que batem com o preço, contando as prestações da Klarna
+- nos comprados aparece o que paguei de facto, e com Klarna o valor da prestação e quantas já foram
+- compras antigas com o gasto duplicado avisam e deixam trocar pela transação verdadeira
+
+---
+
+## 2026-10-13T17:19:57Z — Documents/Projects/Cristopher
+
+- o cronómetro do pomodoro passa a mostrar horas a partir de uma hora (1:35:11 em vez de 95:11)
+
+---
+
+## 2026-10-14T14:37:13Z — Documents/Projects/Cristopher
+
+- verifiquei o histórico todo do git: a única chave exposta era a da Riot, e continua activa
+- o endereço da NAS do Pedro deixou de aparecer nos ficheiros públicos do repositório
+- cada commit passa a ser verificado e é recusado se levar uma chave ou password
+
+---

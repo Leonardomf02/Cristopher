@@ -4,7 +4,7 @@ O Cristopher a correr na NAS QNAP do Pedro (TS-431KX, ARM 32 bits), ao lado da
 Gestão da PedroTec e do Cinespot. A receita é a mesma do Cinespot; o que muda vem
 assinalado.
 
-**Link final:** https://NASPEDRO02.myqnapcloud.com:8443
+**Link final:** https://<NAS_HOST>:8443 — o `NAS_HOST` está no `.env.nas`, fora do git: o repositório é público e o endereço é uma porta aberta na casa do Pedro.
 **Password:** a `CRISTOPHER_PASSWORD` do [`nas-compose.yml`](nas-compose.yml)
 
 > Menus em **inglês**, como aparecem no painel.
@@ -139,7 +139,7 @@ Control Panel → Network & File Services → Network Access → separador "Reve
 | Campo | Valor |
 |---|---|
 | Source — Protocol | **HTTPS** |
-| Source — Hostname | `naspedro02.myqnapcloud.com` |
+| Source — Hostname | `<NAS_HOST>` |
 | Source — Port | **8443** |
 | Destination — Protocol | **HTTP** |
 | Destination — Hostname | `127.0.0.1` |
@@ -169,25 +169,25 @@ Preciso de duas coisas para o Cristopher abrir de fora:
 Para testar de fora da rede dele:
 
 ```bash
-nc -z -G 8 NASPEDRO02.myqnapcloud.com 8443 && echo aberta || echo fechada
+nc -z -G 8 <NAS_HOST> 8443 && echo aberta || echo fechada
 ```
 
 ## Passo 7 — ligar o resto
 
-1. **Entrar** em https://NASPEDRO02.myqnapcloud.com:8443 com a password.
+1. **Entrar** em https://<NAS_HOST>:8443 com a password.
 2. **Telemóvel**: abrir o link novo → *Adicionar ao ecrã principal* → activar os
    avisos na app. A app instalada do endereço antigo não passa sozinha para o novo.
 3. **Banco** — no painel do Enable Banking, na aplicação → *Redirect URLs* →
-   acrescentar `https://NASPEDRO02.myqnapcloud.com:8443/expenses`. Sem isto, ligar
+   acrescentar `https://<NAS_HOST>:8443/expenses`. Sem isto, ligar
    outro banco ou renovar o consentimento falha no regresso.
 4. **Atalho iOS da captura rápida** — mudar o URL para
-   `https://NASPEDRO02.myqnapcloud.com:8443/api/ingest/capture` (o
+   `https://<NAS_HOST>:8443/api/ingest/capture` (o
    `X-Ingest-Token` é o mesmo).
 5. **Agente do Mac** (tracker de apps, Screen Time, o **champ select** do LoL,
    que só o Mac vê — ver `lol_live.py` — e a ponte para os **Reminders da
    Apple**), no Mac:
    ```bash
-   CRISTOPHER_CLOUD_URL=https://NASPEDRO02.myqnapcloud.com:8443 \
+   CRISTOPHER_CLOUD_URL=https://<NAS_HOST>:8443 \
    INGEST_TOKEN=<o INGEST_TOKEN do nas-compose.yml> \
    ./agent/install.sh
    ```
